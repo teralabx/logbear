@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/core",
+  "crates/shim",
+  "crates/daemon",
+  "crates/mcp",
+  "crates/hook",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/teralabx/runlog"
+homepage = "https://runlog.sh"
+
+[workspace.dependencies]
+runlog-core = { path = "crates/core" }
+
+anyhow = "1"
+blake3 = "1.8"
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+libc = "0.2"
+portable-pty = "0.9"
+regex = "1"
+rusqlite = { version = "0.40", features = ["bundled", "functions", "hooks", "backup", "limits", "column_decltype"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.4"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+vte = "0.15"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

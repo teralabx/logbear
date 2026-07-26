@@ -1,0 +1,21 @@
+[package]
+name = "runlog-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Capture, storage, parsing and query core for runlog"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+vte.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

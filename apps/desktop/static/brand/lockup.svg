@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 64" width="260" height="64" role="img" aria-label="runlog">
+  <g fill="#0F1214">
+    <rect x="2"  y="17" width="18" height="4.4" rx="2.2"/>
+    <rect x="2"  y="26" width="18" height="4.4" rx="2.2"/>
+    <rect x="2"  y="35" width="12" height="4.4" rx="2.2"/>
+    <rect x="2"  y="44" width="18" height="4.4" rx="2.2"/>
+    <rect x="26" y="17" width="18" height="4.4" rx="2.2"/>
+    <rect x="26" y="35" width="12" height="4.4" rx="2.2"/>
+    <rect x="26" y="44" width="18" height="4.4" rx="2.2"/>
+  </g>
+  <rect x="28.5" y="26" width="18" height="4.4" rx="2.2" fill="#E5533D"/>
+  <text x="64" y="42" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace"
+        font-size="30" font-weight="600" letter-spacing="-1.2" fill="#0F1214">runlog</text>
+</svg>

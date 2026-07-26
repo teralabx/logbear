@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en" data-theme="runlog-dark">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%sveltekit.assets%/brand/app-icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>runlog</title>
+    <script>
+      // Resolve the theme before first paint: a stored choice wins, otherwise
+      // follow the OS. Inline and synchronous so there is no flash of the
+      // wrong ground colour.
+      (function () {
+        try {
+          var stored = localStorage.getItem("runlog:theme");
+          var theme =
+            stored === "runlog-dark" || stored === "runlog-light"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "runlog-light"
+                : "runlog-dark";
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "runlog-dark");
+        }
+      })();
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>
