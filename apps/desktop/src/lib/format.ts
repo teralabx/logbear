@@ -5,8 +5,17 @@
  * The store records unix time. Accept seconds or milliseconds and normalise —
  * anything past ~2001 in milliseconds is above 1e12.
  */
-export function toMs(t: number): number {
-	return t > 1e12 ? t : t * 1000;
+/**
+ * Every timestamp the backend produces is **unix microseconds**. There is nothing to
+ * guess about, and guessing is what broke this: the previous version inferred the unit
+ * from magnitude, which read a microsecond value as milliseconds and rendered every run
+ * as a date in the year 58,000 — invisible because the format shows no year.
+ */
+export const MICROS_PER_MS = 1000;
+export const MICROS_PER_SEC = 1_000_000;
+
+export function toMs(microseconds: number): number {
+	return microseconds / MICROS_PER_MS;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {
@@ -67,9 +76,10 @@ export function fmtDuration(seconds: number | null): string {
 	return `${h}h ${String(m % 60).padStart(2, '0')}m`;
 }
 
+/** Seconds, which is what fmtDuration takes. The stored values are microseconds. */
 export function runDuration(run: { started_at: number; ended_at: number | null }): number | null {
 	if (run.ended_at === null) return null;
-	return Math.max(0, run.ended_at - run.started_at);
+	return Math.max(0, (run.ended_at - run.started_at) / MICROS_PER_SEC);
 }
 
 /** Elapsed seconds for a run that has not finished. */

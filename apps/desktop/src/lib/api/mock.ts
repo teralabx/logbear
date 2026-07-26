@@ -64,9 +64,14 @@ function hexHash(n = 16): string {
 	return s;
 }
 
-const NOW = Math.floor(Date.now() / 1000);
-const HOUR = 3600;
-const DAY = 86400;
+// Microseconds, because that is what the real backend emits. Keeping the mock in seconds
+// is what hid a unit bug all the way to a packaged build: the formatter's guess happened
+// to be right for mock data and wrong for every real run.
+const SEC = 1_000_000;
+const NOW = Date.now() * 1000;
+const MIN = 60 * SEC;
+const HOUR = 3600 * SEC;
+const DAY = 86400 * SEC;
 
 /* -------------------------------------------------------------------------- */
 /* projects                                                                    */
@@ -90,7 +95,7 @@ const projects: Project[] = [
 		root: '/Users/dev/code/pearl-web',
 		db_path: '/Users/dev/.runlog/projects/pearl-web/runlog.db',
 		created_at: NOW - 48 * DAY,
-		last_seen_at: NOW - 51 * 60,
+		last_seen_at: NOW - 51 * MIN,
 		retention_bytes: null,
 		push_enabled: false,
 		notify_enabled: true
@@ -583,7 +588,7 @@ function buildRun(project: Project, startedAt: number, opts: { active?: boolean 
 	const command = pick(COMMANDS[pid]);
 	const branch = pick(BRANCHES[pid]);
 	const dirty = rand() < 0.35;
-	const duration = opts.active ? 0 : Math.round(between(1.2, 210));
+	const duration = opts.active ? 0 : Math.round(between(1.2, 210) * SEC);
 	// Roughly one run in four fails, clustered a little by command.
 	const isTest = command.includes('test') || command.includes('vitest') || command.includes('tsc');
 	const failed = !opts.active && rand() < (isTest ? 0.34 : 0.16);
@@ -695,7 +700,7 @@ for (const project of projects) {
 	let t = NOW - 26 * DAY;
 	for (let i = 0; i < n; i++) {
 		t += Math.round(between(0.15, 1.1) * DAY * (project.id === 1 ? 0.62 : 0.66));
-		if (t > NOW - 20 * 60) t = NOW - intBetween(21, 400) * 60;
+		if (t > NOW - 20 * MIN) t = NOW - intBetween(21, 400) * MIN;
 		runData.push(buildRun(project, t));
 	}
 }
@@ -703,7 +708,7 @@ for (const project of projects) {
 runData.sort((a, b) => a.run.started_at - b.run.started_at);
 
 // One live run on the Phoenix project: the dev server, currently streaming.
-const liveStart = NOW - 18 * 60;
+const liveStart = NOW - 18 * MIN;
 const live = buildRun(projects[0], liveStart, { active: true });
 live.run.command = ['mix', 'phx.server'];
 live.run.git_branch = 'fix/idempotency-keys';
@@ -728,11 +733,11 @@ for (const project of projects) {
 
 	// Pull it forward so it lands inside the "last hour" window.
 	const length = (newest.run.ended_at ?? newest.run.started_at) - newest.run.started_at;
-	newest.run.started_at = NOW - 31 * 60;
-	newest.run.ended_at = newest.run.started_at + Math.max(4, length);
+	newest.run.started_at = NOW - 31 * MIN;
+	newest.run.ended_at = newest.run.started_at + Math.max(4 * SEC, length);
 	newest.run.exit_code = newest.run.exit_code === 0 ? 1 : newest.run.exit_code;
 	for (const e of newest.entries) {
-		e.captured_at = newest.run.started_at + Math.round(rand() * Math.max(4, length));
+		e.captured_at = newest.run.started_at + Math.round(rand() * Math.max(4 * SEC, length));
 	}
 
 	const lastLine = newest.entries[newest.entries.length - 1]?.end_line ?? 1;
@@ -741,7 +746,7 @@ for (const project of projects) {
 		'error',
 		reserved.s.render(),
 		reserved.id,
-		newest.run.ended_at - 2,
+		newest.run.ended_at - 2 * SEC,
 		lastLine + 2
 	);
 	newest.entries.push(injected);
@@ -752,7 +757,7 @@ for (const project of projects) {
 		(r) => r.run.project_id === project.id && r.run.ended_at === null
 	);
 	if (active) {
-		for (const at of [NOW - 11 * 60, NOW - 3 * 60]) {
+		for (const at of [NOW - 11 * MIN, NOW - 3 * MIN]) {
 			const e = makeEntry(active.run, 'error', reserved.s.render(), reserved.id, at, 1);
 			active.entries.push(e);
 			bump(active.run.counters, 'error');
