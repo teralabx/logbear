@@ -1,1 +1,63 @@
-fn main() { eprintln!("not yet implemented"); }
+//! `runlog-mcp` — stdio MCP server.
+//!
+//! Read a line, answer it, flush. The only rule worth restating at the top of the binary:
+//! **stdout is the protocol**. Every diagnostic goes to stderr, because a single stray byte
+//! on stdout desynchronises the client's parser and the failure surfaces to the user as
+//! "the runlog MCP server doesn't work", with nothing to go on.
+
+use runlog_mcp::{derive_session_id, DaemonBackend, Server};
+use std::io::{BufRead, Write};
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    if let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--version" | "-V" => {
+                println!("runlog-mcp {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--help" | "-h" => {
+                println!(
+                    "runlog-mcp {}\n\nAn MCP (Model Context Protocol) server over stdio.\n\
+                     It is started by your coding agent, not by hand.\n",
+                    env!("CARGO_PKG_VERSION")
+                );
+                return;
+            }
+            other => {
+                eprintln!("runlog-mcp: unknown argument {other:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let session_id = derive_session_id();
+    eprintln!("runlog-mcp {} session {session_id}", env!("CARGO_PKG_VERSION"));
+    let mut server = Server::new(DaemonBackend::new(), session_id);
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("runlog-mcp: stdin read failed: {e}");
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        for message in server.handle_line(&line) {
+            // A write failure means the client is gone; there is nothing useful left to do.
+            if serde_json::to_writer(&mut stdout, &message)
+                .map_err(|e| e.to_string())
+                .and_then(|_| stdout.write_all(b"\n").map_err(|e| e.to_string()))
+                .and_then(|_| stdout.flush().map_err(|e| e.to_string()))
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+}

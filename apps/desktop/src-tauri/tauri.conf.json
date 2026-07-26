@@ -40,12 +40,6 @@
     "category": "DeveloperTool",
     "shortDescription": "Local run history and agent memory",
     "longDescription": "runlog wraps a development process, records everything it emits, and tells your coding agent the moment something breaks.",
-    "externalBin": [
-      "binaries/runlogd",
-      "binaries/runlog",
-      "binaries/runlog-mcp",
-      "binaries/runlog-hook"
-    ],
     "macOS": {
       "minimumSystemVersion": "11.0"
     }
