@@ -286,16 +286,16 @@ fn check_mcp_codex() -> Check {
         // Matched textually rather than by parsing TOML: this is a presence check, and
         // adding a TOML parser to the shim to answer it would be a poor trade.
         Ok(text) if text.contains("mcp_servers.runlog") => {
-            Check::ok("MCP · Codex", path.display().to_string())
+            Check::ok("MCP · Codex", tilde(&path))
         }
         Ok(_) => Check::missing(
             "MCP · Codex",
-            format!("no [mcp_servers.runlog] in {}", path.display()),
+            format!("no [mcp_servers.runlog] in {}", tilde(&path)),
             "register it from the runlog app",
         ),
         Err(e) => Check::broken(
             "MCP · Codex",
-            format!("cannot read {}: {e}", path.display()),
+            format!("cannot read {}: {e}", tilde(&path)),
             "check the file's permissions",
         ),
     }
@@ -333,12 +333,12 @@ fn scan_json(
         };
         seen_any = true;
         match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(value) if found(&value) => return Check::ok(name, path.display().to_string()),
+            Ok(value) if found(&value) => return Check::ok(name, tilde(path)),
             Ok(_) => continue,
             Err(e) => {
                 return Check::broken(
                     name,
-                    format!("{} is not valid JSON: {e}", path.display()),
+                    format!("{} is not valid JSON: {e}", tilde(path)),
                     "fix the JSON — while it is invalid the harness ignores the whole file",
                 )
             }

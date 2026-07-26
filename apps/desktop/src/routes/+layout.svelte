@@ -11,6 +11,12 @@
 	// One subscription to the daemon event channel for the whole app, and one
 	// media-query listener for the theme. Everything else reads the stores.
 	onMount(() => {
+		// macOS draws its window buttons *over* the content when the title bar is an
+		// overlay, so the rail has to reserve room for them. Marking the platform on the
+		// root keeps that as one CSS rule rather than a conditional in every component.
+		if (navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Mac OS X')) {
+			document.documentElement.dataset.platform = 'macos';
+		}
 		const stopTheme = theme.init();
 		const stopApp = app.init();
 		return () => {

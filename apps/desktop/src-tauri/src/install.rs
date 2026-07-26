@@ -59,6 +59,35 @@ pub struct InstallStatus {
     pub hook_codex: StepState,
 }
 
+/// Run the two local steps once, on first launch, without asking.
+///
+/// The design says every step is confirmed. That still holds for the steps that write to
+/// files the *user* owns — their Claude Code and Codex configs are never touched without
+/// a click. But putting our own binary on PATH and registering our own background service
+/// are not really consent questions: without them the product does nothing at all, and a
+/// user who has just dragged an app to Applications and opened it has already said yes to
+/// the thing the app is for. Both are reversible from Settings.
+///
+/// Returns what it did, or `None` if this is not a first launch.
+pub fn first_run_setup() -> Option<Vec<(&'static str, Result<StepState, String>)>> {
+    let marker = runlog_core::paths::home().join(".setup-done");
+    if marker.exists() {
+        return None;
+    }
+    let _ = runlog_core::paths::ensure_home();
+
+    let done = vec![
+        ("PATH", install(Step::Path)),
+        ("daemon", install(Step::Daemon)),
+    ];
+
+    // Written whatever happened. Retrying automatically on every launch would mean a
+    // machine where this genuinely cannot work gets nagged forever; Settings still has
+    // the button, and `runlog doctor` still explains what is missing.
+    let _ = std::fs::write(&marker, runlog_core::now_micros().to_string());
+    Some(done)
+}
+
 pub fn status() -> InstallStatus {
     InstallStatus {
         path: path_status(),
@@ -118,105 +147,320 @@ fn home() -> PathBuf {
 // PATH
 // ---------------------------------------------------------------------------
 
-/// `/usr/local/bin` needs admin rights on a stock macOS, and asking for them during a
-/// first launch is a bad trade. `~/.local/bin` is on PATH for most developers and is
-/// writable without a prompt, so it is tried first.
-fn path_targets() -> Vec<PathBuf> {
-    vec![home().join(".local/bin"), PathBuf::from("/usr/local/bin")]
+/// The user's *real* PATH, as their login shell would build it.
+///
+/// This is the whole reason the first version of this step failed silently. A GUI app
+/// launched from Finder inherits launchd's PATH — roughly `/usr/bin:/bin:/usr/sbin:/sbin`
+/// — and knows nothing about `~/.local/bin`, homebrew, mise, asdf or anything else the
+/// user has spent years setting up. Asking `std::env::var("PATH")` inside the app answers
+/// a question nobody asked, so we ask the login shell instead.
+fn user_path() -> Vec<PathBuf> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let name = Path::new(&shell)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // fish does not understand `-lc` the way POSIX shells do; ask it in its own dialect.
+    let args: Vec<&str> = if name == "fish" {
+        vec!["-l", "-c", "echo $PATH | tr ' ' ':'"]
+    } else {
+        vec!["-l", "-c", "printf '%s' \"$PATH\""]
+    };
+
+    let output = std::process::Command::new(&shell)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .output();
+
+    let raw = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        // A login shell that fails or hangs must not stop the install; fall back to
+        // whatever this process has, which at least contains the system directories.
+        _ => std::env::var("PATH").unwrap_or_default(),
+    };
+
+    std::env::split_paths(&raw).collect()
+}
+
+fn on_user_path(dir: &Path) -> bool {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    user_path()
+        .into_iter()
+        .any(|p| p.canonicalize().unwrap_or(p) == dir)
+}
+
+fn writable(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        // Can we create it? Only claim so for paths under the user's home.
+        return dir.starts_with(home());
+    }
+    // The honest test is a write, not a permission-bit guess: `/usr/local/bin` is
+    // group-writable on a homebrew Intel Mac and root-only on a stock Apple Silicon one.
+    let probe = dir.join(".runlog-write-probe");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Where the symlink could go, best first.
+///
+/// `~/.local/bin` leads because it needs no admin rights and is already on PATH for most
+/// developers. The homebrew prefixes come next because when they exist they are certainly
+/// on PATH. `/usr/local/bin` is last: on a stock Apple Silicon machine it needs sudo, and
+/// prompting for admin rights during a first launch is a bad trade.
+fn path_candidates() -> Vec<PathBuf> {
+    vec![
+        home().join(".local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        home().join("bin"),
+    ]
+}
+
+/// The directory we would actually use: on the user's PATH and writable, if such a thing
+/// exists; otherwise `~/.local/bin`, which we will then put on their PATH ourselves.
+fn chosen_dir() -> (PathBuf, bool) {
+    for dir in path_candidates() {
+        if on_user_path(&dir) && writable(&dir) {
+            return (dir, true);
+        }
+    }
+    (home().join(".local/bin"), false)
+}
+
+fn existing_link() -> Option<(PathBuf, PathBuf)> {
+    for dir in path_candidates() {
+        let link = dir.join("runlog");
+        if let Ok(target) = std::fs::read_link(&link) {
+            return Some((link, target));
+        }
+    }
+    None
 }
 
 fn path_status() -> StepState {
-    for dir in path_targets() {
-        let link = dir.join("runlog");
-        if let Ok(target) = std::fs::read_link(&link) {
-            if target == bin("runlog") {
-                return StepState {
+    let wanted = bin("runlog");
+    match existing_link() {
+        Some((link, target)) if target == wanted => {
+            let dir = link.parent().unwrap_or(Path::new("/")).to_path_buf();
+            if on_user_path(&dir) {
+                StepState {
                     installed: true,
                     available: true,
-                    detail: format!("{} → {}", link.display(), target.display()),
+                    detail: format!("{} → this app", tilde(&link)),
                     backup: None,
-                };
+                }
+            } else {
+                StepState {
+                    installed: false,
+                    available: true,
+                    detail: format!(
+                        "{} exists but {} is not on your PATH. Install again to add it.",
+                        tilde(&link),
+                        tilde(&dir)
+                    ),
+                    backup: None,
+                }
             }
-            return StepState {
+        }
+        Some((link, target)) => StepState {
+            installed: false,
+            available: true,
+            detail: format!(
+                "{} points at {}. Installing will repoint it at this app.",
+                tilde(&link),
+                tilde(&target)
+            ),
+            backup: None,
+        },
+        None => {
+            let (dir, on_path) = chosen_dir();
+            StepState {
                 installed: false,
                 available: true,
-                detail: format!(
-                    "{} points at a different runlog ({}). Installing will repoint it.",
-                    link.display(),
-                    target.display()
-                ),
+                detail: if on_path {
+                    format!("not installed — will link into {}", tilde(&dir))
+                } else {
+                    format!(
+                        "not installed — will link into {} and add it to your shell profile",
+                        tilde(&dir)
+                    )
+                },
                 backup: None,
-            };
+            }
         }
-        if link.exists() {
-            return StepState {
-                installed: false,
-                available: true,
-                detail: format!("{} exists and is not a symlink; it will be left alone", link.display()),
-                backup: None,
-            };
-        }
-    }
-    StepState {
-        installed: false,
-        available: true,
-        detail: "runlog is not on your PATH".into(),
-        backup: None,
     }
 }
 
 fn install_path() -> Result<StepState, String> {
     let source = bin("runlog");
     if !source.exists() {
-        return Err(format!("the runlog binary is missing from {}", bin_dir().display()));
+        return Err(format!(
+            "the runlog binary is missing from {}",
+            bin_dir().display()
+        ));
     }
-    let mut last_error = String::new();
-    for dir in path_targets() {
-        if std::fs::create_dir_all(&dir).is_err() {
-            last_error = format!("cannot create {}", dir.display());
-            continue;
-        }
-        let link = dir.join("runlog");
-        // Replace only a symlink. A real file there belongs to someone else.
-        if link.is_symlink() {
-            let _ = std::fs::remove_file(&link);
-        } else if link.exists() {
-            last_error = format!("{} already exists and is not a symlink", link.display());
-            continue;
-        }
-        match std::os::unix::fs::symlink(&source, &link) {
-            Ok(()) => {
-                let on_path = std::env::var_os("PATH")
-                    .map(|p| std::env::split_paths(&p).any(|d| d == dir))
-                    .unwrap_or(false);
-                return Ok(StepState {
-                    installed: true,
-                    available: true,
-                    detail: if on_path {
-                        format!("linked into {}", dir.display())
-                    } else {
-                        format!(
-                            "linked into {}, which is not on your PATH — add it to your shell profile",
-                            dir.display()
-                        )
-                    },
-                    backup: None,
-                });
+
+    let (dir, already_on_path) = chosen_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let link = dir.join("runlog");
+
+    // Replace only a symlink. A real file there belongs to someone else.
+    if link.is_symlink() {
+        let _ = std::fs::remove_file(&link);
+    } else if link.exists() {
+        return Err(format!(
+            "{} already exists and is not a symlink, so it was left alone",
+            link.display()
+        ));
+    }
+    std::os::unix::fs::symlink(&source, &link)
+        .map_err(|e| format!("could not link {}: {e}", link.display()))?;
+
+    let mut detail = format!("linked into {}", tilde(&dir));
+    if !already_on_path {
+        match add_to_shell_profiles(&dir) {
+            Ok(files) if !files.is_empty() => {
+                detail = format!(
+                    "linked into {} and added it to {}. Open a new terminal to pick it up.",
+                    tilde(&dir),
+                    files.join(", ")
+                );
             }
-            Err(e) => last_error = format!("{}: {e}", link.display()),
+            Ok(_) => {
+                detail = format!(
+                    "linked into {}, which is not on your PATH — add it to your shell profile",
+                    tilde(&dir)
+                );
+            }
+            Err(e) => detail = format!("linked into {}, but {e}", tilde(&dir)),
         }
     }
-    Err(last_error)
+
+    Ok(StepState {
+        installed: true,
+        available: true,
+        detail,
+        backup: None,
+    })
+}
+
+/// The marker that lets this be run repeatedly without stacking up duplicate lines.
+const PROFILE_MARKER: &str = "# added by runlog";
+
+/// Put `dir` on PATH for every shell the user actually has, and return what was touched.
+///
+/// fish gets a drop-in under `conf.d/` rather than an edit to `config.fish`: it is the
+/// documented extension point, it is one file to delete on uninstall, and it means we
+/// never rewrite a file the user has been curating for years.
+fn add_to_shell_profiles(dir: &Path) -> Result<Vec<String>, String> {
+    let mut touched = Vec::new();
+    let d = dir.display().to_string();
+
+    if Path::new(&home().join(".config/fish")).is_dir() || which_shell_is("fish") {
+        let conf_d = home().join(".config/fish/conf.d");
+        std::fs::create_dir_all(&conf_d).map_err(|e| format!("{}: {e}", conf_d.display()))?;
+        let file = conf_d.join("runlog.fish");
+        let body = format!(
+            "{PROFILE_MARKER}
+# Remove this file to take runlog off your PATH.
+fish_add_path -g {d}
+"
+        );
+        std::fs::write(&file, body).map_err(|e| format!("{}: {e}", file.display()))?;
+        touched.push(tilde(&file));
+    }
+
+    for (rc, shell) in [(".zshrc", "zsh"), (".bashrc", "bash"), (".profile", "sh")] {
+        let path = home().join(rc);
+        if !path.exists() && !which_shell_is(shell) {
+            continue;
+        }
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        if existing.contains(PROFILE_MARKER) {
+            continue;
+        }
+        // Back up before touching a file the user owns, every time, without exception.
+        let _ = back_up(&path);
+        let block = format!("\n{PROFILE_MARKER}\nexport PATH=\"{d}:$PATH\"\n");
+        let mut updated = existing;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(&block);
+        std::fs::write(&path, updated).map_err(|e| format!("{}: {e}", path.display()))?;
+        touched.push(tilde(&path));
+    }
+
+    Ok(touched)
+}
+
+fn which_shell_is(name: &str) -> bool {
+    std::env::var("SHELL")
+        .map(|s| s.ends_with(name))
+        .unwrap_or(false)
 }
 
 fn uninstall_path() -> Result<StepState, String> {
-    for dir in path_targets() {
+    for dir in path_candidates() {
         let link = dir.join("runlog");
         if link.is_symlink() {
             let _ = std::fs::remove_file(&link);
         }
     }
+    let _ = std::fs::remove_file(home().join(".config/fish/conf.d/runlog.fish"));
+    for rc in [".zshrc", ".bashrc", ".profile"] {
+        let path = home().join(rc);
+        let Ok(existing) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !existing.contains(PROFILE_MARKER) {
+            continue;
+        }
+        let _ = back_up(&path);
+        let cleaned = strip_profile_block(&existing);
+        let _ = std::fs::write(&path, cleaned);
+    }
     Ok(path_status())
+}
+
+/// Drop our marker line and the export that follows it, leaving everything else alone.
+fn strip_profile_block(source: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skip_next_export = false;
+    for line in source.lines() {
+        if line.trim() == PROFILE_MARKER {
+            skip_next_export = true;
+            continue;
+        }
+        if skip_next_export {
+            skip_next_export = false;
+            if line.trim_start().starts_with("export PATH=") {
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    let mut s = out.join("\n");
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// `~/.local/bin` reads better than `/Users/someone/.local/bin` in a UI.
+fn tilde(p: &Path) -> String {
+    let s = p.display().to_string();
+    let h = home().display().to_string();
+    match s.strip_prefix(&h) {
+        Some(rest) => format!("~{rest}"),
+        None => s,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -773,6 +1017,54 @@ mod tests {
         std::fs::write(&path, "{\"model\":\"opus\"}").unwrap();
         let backup = back_up(&path).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(backup).unwrap(), "{\"model\":\"opus\"}");
+    }
+
+    #[test]
+    fn a_profile_block_is_removed_cleanly() {
+        let before = "export EDITOR=nvim\n\n# added by runlog\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n\nalias g=git\n";
+        let after = strip_profile_block(before);
+        assert!(!after.contains("added by runlog"), "{after}");
+        assert!(!after.contains(".local/bin"), "{after}");
+        assert!(after.contains("export EDITOR=nvim"), "an unrelated line was lost: {after}");
+        assert!(after.contains("alias g=git"), "an unrelated line was lost: {after}");
+    }
+
+    #[test]
+    fn removing_the_block_leaves_a_users_own_path_export_alone() {
+        let before = "export PATH=\"/opt/mine:$PATH\"\n# added by runlog\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n";
+        let after = strip_profile_block(before);
+        assert!(after.contains("/opt/mine"), "their own PATH export was eaten: {after}");
+        assert!(!after.contains(".local/bin"), "{after}");
+    }
+
+    #[test]
+    fn the_user_path_is_read_from_the_login_shell_not_this_process() {
+        // The bug this guards: a Finder-launched app inherits launchd's PATH, so asking
+        // this process would answer a question nobody asked. A login shell knows about
+        // ~/.local/bin, homebrew, mise and asdf; launchd does not.
+        let from_shell = user_path();
+        assert!(!from_shell.is_empty(), "the login shell returned no PATH at all");
+        assert!(
+            from_shell.len() > 4,
+            "suspiciously short PATH ({} entries) — this looks like launchd's, not the user's",
+            from_shell.len()
+        );
+    }
+
+    #[test]
+    fn the_chosen_directory_is_writable_without_admin_rights() {
+        let (dir, _) = chosen_dir();
+        assert!(
+            dir.starts_with(home()) || writable(&dir),
+            "{} would need sudo during a first launch",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn tilde_shortens_paths_under_home_only() {
+        assert_eq!(tilde(&home().join(".local/bin")), "~/.local/bin");
+        assert_eq!(tilde(Path::new("/usr/local/bin")), "/usr/local/bin");
     }
 
     #[test]

@@ -34,10 +34,14 @@
 </script>
 
 <nav class="rail" aria-label="Primary">
-	<a class="brand" href="/" title="runlog — all projects">
-		<Mark size={22} />
-		<span class="wordmark">runlog</span>
-	</a>
+	<!-- The whole strip is a drag handle: with an overlay title bar there is otherwise
+	     nothing left to move the window by. The link itself opts back out. -->
+	<div class="brand-bar" data-tauri-drag-region>
+		<a class="brand" href="/" title="runlog — all projects">
+			<Mark size={22} />
+			<span class="wordmark">runlog</span>
+		</a>
+	</div>
 
 	<div class="scroll pane">
 		<div class="group">
@@ -142,16 +146,26 @@
 		height: 100%;
 		min-height: 0;
 	}
+	.brand-bar {
+		display: flex;
+		align-items: center;
+		height: 46px;
+		border-bottom: 1px solid var(--rl-hair);
+		flex: none;
+		/* Room for the macOS window buttons, which are drawn over this area. */
+		padding-left: 14px;
+	}
+	:global(:root[data-platform='macos']) .brand-bar {
+		padding-left: 78px;
+	}
 	.brand {
 		display: flex;
 		align-items: center;
 		gap: 9px;
-		height: 46px;
-		padding: 0 14px;
-		border-bottom: 1px solid var(--rl-hair);
 		color: var(--color-base-content);
 		text-decoration: none;
-		flex: none;
+		/* Opt out of the drag region so the link stays clickable. */
+		-webkit-app-region: no-drag;
 	}
 	.wordmark {
 		font-size: 15px;

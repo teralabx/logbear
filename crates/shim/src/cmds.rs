@@ -324,12 +324,15 @@ fn diff(a: Option<String>, b: Option<String>, json: bool) -> Result<i32, String>
 
 fn print_diff(diff: &RunDiff) {
     let describe = |run: &Option<Run>| match run {
-        Some(r) => format!(
-            "#{} {} ({})",
-            r.id,
-            ui::short_sha(r.git_sha.as_ref()),
-            ui::rel_time(r.started_at)
-        ),
+        Some(r) => match &r.git_sha {
+            Some(_) => format!(
+                "#{} {} ({})",
+                r.id,
+                ui::short_sha(r.git_sha.as_ref()),
+                ui::rel_time(r.started_at)
+            ),
+            None => format!("#{} ({})", r.id, ui::rel_time(r.started_at)),
+        },
         None => "nothing".to_string(),
     };
     println!(

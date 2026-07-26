@@ -408,6 +408,21 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(Backend::new())
         .setup(|app| {
+            // Off the main thread: linking a binary and registering a launch agent both
+            // shell out, and a window that will not paint until that finishes reads as a
+            // hang on exactly the launch where first impressions are formed.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Some(done) = install::first_run_setup() {
+                    for (what, outcome) in &done {
+                        match outcome {
+                            Ok(state) => eprintln!("runlog: {what} — {}", state.detail),
+                            Err(e) => eprintln!("runlog: {what} failed — {e}"),
+                        }
+                    }
+                    let _ = handle.emit("runlog://first-run", install::status());
+                }
+            });
             spawn_event_bridge(app.handle().clone());
             Ok(())
         })

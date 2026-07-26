@@ -281,13 +281,33 @@ pub fn daemon_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
+    // Canonicalise first. On macOS `current_exe()` reports the path used to launch the
+    // process, so when `runlog` is reached through the symlink the installer places on
+    // PATH, the parent directory is `~/.local/bin` — where `runlogd` will never be. The
+    // daemon lives beside the real binary, inside the app bundle.
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+        let resolved = exe.canonicalize().unwrap_or(exe);
+        if let Some(dir) = resolved.parent() {
             for candidate in [dir.join("runlogd"), dir.join("../runlogd")] {
                 if candidate.exists() {
                     return Some(candidate);
                 }
             }
+        }
+    }
+    // The app bundle, for the case where `runlog` was copied rather than linked.
+    for bundle in ["/Applications/runlog.app", "~/Applications/runlog.app"] {
+        let expanded = if let Some(rest) = bundle.strip_prefix("~/") {
+            match std::env::var_os("HOME") {
+                Some(h) => PathBuf::from(h).join(rest),
+                None => continue,
+            }
+        } else {
+            PathBuf::from(bundle)
+        };
+        let candidate = expanded.join("Contents/MacOS/runlogd");
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
     which("runlogd")
@@ -322,4 +342,41 @@ pub fn spawn_daemon() -> Result<()> {
         .spawn()
         .map_err(|e| Error::io(paths::home(), e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_daemon_is_found_through_the_symlink_the_installer_places_on_path() {
+        // The failure this guards: on macOS `current_exe()` reports the launch path, so
+        // reaching `runlog` through ~/.local/bin/runlog put the search in ~/.local/bin,
+        // where runlogd will never be. `runlog doctor` then reported the daemon binary
+        // missing while that very binary was running the daemon.
+        let tmp = tempfile::tempdir().unwrap();
+        let real_dir = tmp.path().join("Contents/MacOS");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let real_exe = real_dir.join("runlog");
+        std::fs::write(&real_exe, b"#!/bin/sh\n").unwrap();
+        std::fs::write(real_dir.join("runlogd"), b"#!/bin/sh\n").unwrap();
+
+        let link_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("runlog");
+        std::os::unix::fs::symlink(&real_exe, &link).unwrap();
+
+        // Resolving the link is what makes the sibling lookup land in the bundle.
+        // Both sides are canonicalised: on macOS /var is itself a symlink to /private/var,
+        // so comparing a resolved path against an unresolved one fails for the wrong reason.
+        let resolved = link.canonicalize().unwrap();
+        assert_eq!(
+            resolved.parent().unwrap().join("runlogd"),
+            real_dir.canonicalize().unwrap().join("runlogd")
+        );
+        assert!(
+            !link_dir.join("runlogd").exists(),
+            "the unresolved path must not find it, or this test proves nothing"
+        );
+    }
 }
