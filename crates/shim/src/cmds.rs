@@ -131,10 +131,14 @@ fn logs(
     Ok(0)
 }
 
+/// Width of the widest level name, so `error` and `unknown` do not shift the text column
+/// between one line and the next.
+const LEVEL_WIDTH: usize = 7;
+
 fn write_entry(out: &mut impl Write, view: &EntryView) {
     let time = ui::local_hms(view.entry.captured_at);
     let level = view.entry.level;
-    let tag = format!("{:<5}", level.as_str());
+    let tag = format!("{:<LEVEL_WIDTH$}", level.as_str());
     let marker = if view.is_new_signature && view.entry.is_error {
         ui::flare(" NEW")
     } else {
@@ -143,7 +147,7 @@ fn write_entry(out: &mut impl Write, view: &EntryView) {
     // The gutter is the timestamp plus the level, and continuation lines line up under
     // the text rather than under the gutter: a stack trace that re-indents itself every
     // line is unreadable.
-    let indent = " ".repeat(8 + 1 + 5 + 1);
+    let indent = " ".repeat("00:00:00".len() + 1 + LEVEL_WIDTH + 1);
     let mut lines = view.text.lines();
     let first = lines.next().unwrap_or("");
     let _ = writeln!(

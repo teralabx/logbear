@@ -42,6 +42,12 @@
     "longDescription": "runlog wraps a development process, records everything it emits, and tells your coding agent the moment something breaks.",
     "macOS": {
       "minimumSystemVersion": "11.0"
-    }
+    },
+    "externalBin": [
+      "binaries/runlogd",
+      "binaries/runlog",
+      "binaries/runlog-mcp",
+      "binaries/runlog-hook"
+    ]
   }
 }

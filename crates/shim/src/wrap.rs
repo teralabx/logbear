@@ -262,7 +262,7 @@ fn run_pty(
     // in play. Restored on every exit path, including panics and signals.
     let _raw = term::raw_mode(libc::STDIN_FILENO);
 
-    spawn_stdin_forwarder(writer);
+    spawn_stdin_forwarder(writer, master_fd);
     spawn_signal_forwarder(master_fd, child_pid, sink.handle());
 
     pump(&mut reader, sink);
@@ -302,12 +302,14 @@ fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
     }
 }
 
-fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>) {
+fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i32>) {
     // Never joined. A blocking read on stdin cannot be cancelled portably, and the run is
     // over by the time it would matter — the process exits and takes the thread with it.
     std::thread::Builder::new()
         .name("runlog-stdin".into())
         .spawn(move || {
+            let interactive = crate::ui::is_tty(libc::STDIN_FILENO);
+            let mut forwarded_anything = false;
             let mut buf = [0u8; 8192];
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
@@ -319,13 +321,45 @@ fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>) {
                             break;
                         }
                         let _ = writer.flush();
+                        forwarded_anything = true;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
+            if interactive || forwarded_anything {
+                send_eof(&mut writer, master_fd);
+            }
+            // Dropping `writer` would make portable-pty send a newline *and* an EOT, and
+            // that newline is a byte the child never received from the user — it lands in
+            // the child's input, echoes back, and ends up in the captured stream as a
+            // phantom blank line. Under `runlog cmd < /dev/null` it happens before the
+            // command has printed anything. Leaking one fd for the remaining life of the
+            // process is the cheaper mistake.
+            std::mem::forget(writer);
         })
         .ok();
+}
+
+/// Our stdin ended, so the child's should too, or `echo x | runlog cat` never returns.
+/// A pty has no way to signal EOF except the line discipline's own EOF character, which is
+/// exactly what a user pressing Ctrl-D sends — so this is faithful rather than synthetic.
+///
+/// It is only sent when there was a real stdin behind us: an interactive terminal, or a
+/// pipe that actually delivered something. Under `runlog npm test < /dev/null` — every CI
+/// run — stdin is empty from the start, and forwarding an EOF there buys nothing while the
+/// pty dutifully echoes it as `^D` into the first bytes of the captured stream.
+fn send_eof(writer: &mut Box<dyn Write + Send>, master_fd: Option<i32>) {
+    let Some(fd) = master_fd else { return };
+    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
+        return;
+    }
+    let eof = termios.c_cc[libc::VEOF];
+    if eof != 0 {
+        let _ = writer.write_all(&[eof]);
+        let _ = writer.flush();
+    }
 }
 
 fn spawn_signal_forwarder(master_fd: Option<i32>, child_pid: Option<i32>, sink: crate::sink::SinkHandle) {

@@ -22,3 +22,6 @@ apps/desktop/src-tauri/gen
 .env
 .env.*
 !.env.example
+
+# Staged Tauri sidecars are build artifacts
+apps/desktop/src-tauri/binaries/

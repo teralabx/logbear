@@ -204,7 +204,7 @@ fn stop_with_new_errors_blocks_and_says_what_and_where() {
     assert_eq!(out["decision"], "block");
     let reason = out["reason"].as_str().expect("a reason");
     assert!(reason.contains("2 new errors"), "{reason}");
-    assert!(reason.contains("1 new signature"), "{reason}");
+    assert!(reason.contains("1 distinct signature"), "{reason}");
     // The entries themselves.
     assert!(reason.contains("Ecto.NoResultsError"), "{reason}");
     assert!(reason.contains("GenServer Demo.Worker terminating"), "{reason}");
@@ -212,7 +212,7 @@ fn stop_with_new_errors_blocks_and_says_what_and_where() {
     assert!(reason.contains("signature: [error] GenServer <*> terminating"), "{reason}");
     // New vs previously seen.
     assert!(reason.contains("NEW SIGNATURE"), "{reason}");
-    assert!(reason.contains("seen before"), "{reason}");
+    assert!(reason.contains("recurring"), "{reason}");
     // The run they came from.
     assert!(reason.contains("run 42"), "{reason}");
     // Nothing else leaks into the response: Codex denies unknown properties on Stop.

@@ -104,10 +104,13 @@ fn block_reason(u: &UnreadState) -> String {
         out.push_str(&format!(
             "[{}] {} · run {} · {} · {}\n",
             i + 1,
+            // `is_new_signature` is scoped to the whole project, while the count in the
+            // header is scoped to this session. Spelling both out avoids the reading where
+            // "2 signatures" sits above two entries labelled "seen before".
             if e.is_new_signature {
-                "NEW SIGNATURE"
+                "NEW SIGNATURE — never seen in this project before"
             } else {
-                "seen before"
+                "recurring — this signature appeared in an earlier run"
             },
             e.entry.run_id,
             ago(e.entry.captured_at),
@@ -176,7 +179,7 @@ pub fn watermark(u: &UnreadState) -> Option<i64> {
 
 fn signatures(n: i64) -> String {
     if n > 0 {
-        format!(" ({n} new signature{})", plural(n))
+        format!(" ({n} distinct signature{})", plural(n))
     } else {
         String::new()
     }

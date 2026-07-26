@@ -246,12 +246,12 @@ pub fn table(headers: &[&str], rows: &[Vec<Cell>]) -> String {
     out.push_str(&ash(header.trim_end()));
     out.push('\n');
 
+    let empty = Cell::plain("");
     for row in rows {
         let mut line = String::new();
-        for i in 0..cols {
-            let empty = Cell::plain("");
+        for (i, width) in widths.iter().enumerate() {
             let cell = row.get(i).unwrap_or(&empty);
-            line.push_str(&cell.render(widths[i], i + 1 == cols));
+            line.push_str(&cell.render(*width, i + 1 == cols));
             if i + 1 != cols {
                 line.push_str("  ");
             }

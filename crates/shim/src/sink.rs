@@ -77,7 +77,7 @@ impl Sink {
         let degrade = Arc::new(AtomicBool::new(false));
 
         let state = SenderState {
-            client: client.zip(run_id).map(|(c, id)| (c, id)),
+            client: client.zip(run_id),
             spool: None,
             token,
             stamp,
@@ -363,7 +363,7 @@ impl SpoolWriter {
         // If the finished header somehow outgrew its reserve the started-state header
         // already on disk is still valid; a missing exit code is better than a corrupt
         // file, so leave it alone.
-        if encoded.len() + 1 <= self.reserve {
+        if encoded.len() < self.reserve {
             let file = self.file.get_mut();
             file.seek(SeekFrom::Start(0))?;
             write_padded_header(file, &encoded, self.reserve)?;
