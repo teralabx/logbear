@@ -141,6 +141,33 @@ BEFORE="$("$BIN/runlog" logs -n 100 --json 2>&1 | grep -c "captured_at")"
 AFTER="$("$BIN/runlog" logs -n 100 --json 2>&1 | grep -c "captured_at")"
 [ "$BEFORE" = "$AFTER" ] && ok "entry count is stable" || bad "entry count is stable" "$BEFORE then $AFTER"
 
+step "A run abandoned by a dead daemon does not stay 'running'"
+# Start something long-lived, then kill the daemon underneath it. On restart the run must
+# be closed: the home screen claiming a dead run is live is worse than a missing exit code.
+"$BIN/runlog" /bin/sh -c 'echo "listening on 4000"; sleep 60' >/dev/null 2>&1 &
+WRAPPED=$!
+sleep 1.5
+OPEN_BEFORE="$("$BIN/runlog" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
+contains "the run is live while it runs" "$OPEN_BEFORE" '"n"'
+
+pkill -f "runlogd serve" 2>/dev/null
+kill "$WRAPPED" 2>/dev/null
+wait "$WRAPPED" 2>/dev/null
+sleep 0.5
+
+"$BIN/runlogd" serve >>"$RUNLOG_HOME/daemon.out" 2>&1 &
+for _ in $(seq 1 100); do
+  [ -S "$RUNLOG_HOME/runlogd.sock" ] && break
+  sleep 0.1
+done
+sleep 0.5
+STILL_OPEN="$("$BIN/runlog" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
+if printf '%s' "$STILL_OPEN" | grep -qF '"rows":[[0]]'; then
+  ok "the abandoned run was closed on the next daemon start"
+else
+  bad "the abandoned run was closed on the next daemon start" "$STILL_OPEN"
+fi
+
 step "Doctor reports the world"
 DOC="$("$BIN/runlog" doctor 2>&1)"
 contains "doctor mentions the daemon" "$DOC" "daemon"

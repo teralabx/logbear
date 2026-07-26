@@ -97,6 +97,15 @@ fn serve() -> i32 {
         socket.display()
     ));
 
+    // Before anything can read: a run whose daemon died is not running, whatever the
+    // database still says.
+    let orphans = daemon.reconcile_orphaned_runs();
+    if orphans > 0 {
+        log(&format!(
+            "closed {orphans} run(s) left open by a previous daemon"
+        ));
+    }
+
     let drained = spool::drain_all(&daemon);
     if drained > 0 {
         log(&format!("backfilled {drained} spooled run(s)"));
@@ -110,6 +119,7 @@ fn serve() -> i32 {
     let _ = listener.set_nonblocking(true);
     accept_loop(&listener, &daemon);
 
+    daemon.close_active_runs();
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(paths::pid_file());
     log("runlogd stopped");

@@ -548,3 +548,117 @@ mod tests {
         assert_eq!(run.counters.n_entries, 250);
     }
 }
+
+/// Close runs that were live when the daemon last stopped.
+///
+/// If the daemon is starting up, nothing can still be running: it owns every writer in
+/// memory, so a run with no `ended_at` is a run whose daemon was killed, upgraded, or lost
+/// to a power cut. Left alone it shows as "running" on the home screen forever, which is
+/// worse than a wrong exit code because it is a claim about *now*.
+///
+/// The end time is the last byte actually captured, not the current clock. A run that died
+/// at 20:28 and is reconciled at 23:34 lasted four minutes, not three hours, and recording
+/// the latter would poison every duration statistic that touches it.
+pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
+    let orphans: Vec<(RunId, i64)> = db.with(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT r.id, COALESCE(
+                      (SELECT max(c.captured_at) FROM chunks c WHERE c.run_id = r.id),
+                      r.started_at)
+               FROM runs r WHERE r.ended_at IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    })?;
+
+    if orphans.is_empty() {
+        return Ok(0);
+    }
+    db.with_mut(|conn| {
+        let tx = conn.transaction()?;
+        for (run_id, ended_at) in &orphans {
+            // No exit code and no signal is exactly how an unexpected death is recorded
+            // elsewhere, so `run_failed` already classifies these correctly.
+            tx.execute(
+                "UPDATE runs SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
+                rusqlite::params![run_id, ended_at],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    Ok(orphans.len())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::store::{index::IndexDb, read};
+
+    #[test]
+    fn a_run_abandoned_by_a_dead_daemon_is_closed_on_the_next_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = IndexDb::open(&tmp.path().join("index.db")).unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = index.register(&root, "proj", &tmp.path().join("p.db")).unwrap();
+        let db = Db::open(&tmp.path().join("p.db"), p.id).unwrap();
+
+        // A run that starts, produces output, and is never finished — the daemon died.
+        let mut w = Writer::start(
+            &db,
+            &index,
+            &RunStamp {
+                command: vec!["mix".into(), "phx.server".into()],
+                ..Default::default()
+            },
+            Arc::new(Redactor::disabled()),
+        )
+        .unwrap();
+        let output_at = crate::now_micros();
+        w.push(b"listening on port 4000\n", output_at).unwrap();
+        w.flush().unwrap();
+        drop(w);
+
+        assert_eq!(read::active_runs(&db).unwrap().len(), 1, "setup failed");
+
+        assert_eq!(close_orphaned_runs(&db).unwrap(), 1);
+        assert!(
+            read::active_runs(&db).unwrap().is_empty(),
+            "the home screen would still claim this run is live"
+        );
+
+        let run = read::get_run(&db, 1).unwrap();
+        assert!(!run.is_clean(), "an abandoned run did not succeed");
+        assert_eq!(run.exit_code, None);
+        // Ends when output stopped, not when we noticed.
+        let ended = run.ended_at.unwrap();
+        assert!(
+            (ended - output_at).abs() < 1_000_000,
+            "duration was stretched to the reconciliation time"
+        );
+    }
+
+    #[test]
+    fn reconciliation_leaves_finished_runs_alone_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = IndexDb::open(&tmp.path().join("index.db")).unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = index.register(&root, "proj", &tmp.path().join("p.db")).unwrap();
+        let db = Db::open(&tmp.path().join("p.db"), p.id).unwrap();
+
+        let mut w = Writer::start(&db, &index, &RunStamp::default(), Arc::new(Redactor::disabled()))
+            .unwrap();
+        w.push(b"all fine\n", crate::now_micros()).unwrap();
+        w.finish(&index, Some(0), None).unwrap();
+        let before = read::get_run(&db, w.run_id()).unwrap();
+
+        assert_eq!(close_orphaned_runs(&db).unwrap(), 0);
+        assert_eq!(close_orphaned_runs(&db).unwrap(), 0);
+
+        let after = read::get_run(&db, w.run_id()).unwrap();
+        assert_eq!(before.ended_at, after.ended_at);
+        assert_eq!(after.exit_code, Some(0));
+    }
+}

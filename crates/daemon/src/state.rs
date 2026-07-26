@@ -473,6 +473,43 @@ impl Daemon {
         });
     }
 
+    /// Close runs left open by a daemon that stopped without finishing them.
+    ///
+    /// Runs at startup, before the socket accepts anything, because until it has run the
+    /// home screen would claim a dead run is live. Every registered project is opened for
+    /// this — it happens once and costs a file open each.
+    pub fn reconcile_orphaned_runs(&self) -> usize {
+        let mut closed = 0;
+        for project in self.index.list().unwrap_or_default() {
+            let Ok(handle) = self.handle_for(project) else {
+                continue;
+            };
+            match runlog_core::store::write::close_orphaned_runs(&handle.db) {
+                Ok(n) => closed += n,
+                Err(e) => eprintln!("runlogd: could not reconcile {}: {e}", handle.project.name),
+            }
+        }
+        closed
+    }
+
+    /// Finish everything still streaming, so a deliberate shutdown does not leave behind
+    /// exactly the orphans the startup pass has to clean up.
+    pub fn close_active_runs(&self) {
+        let live: Vec<Arc<LiveRun>> = match self.runs.lock() {
+            Ok(m) => m.values().cloned().collect(),
+            Err(_) => return,
+        };
+        for run in live {
+            let Ok(handle) = self.resolve(&ProjectRef::Id(run.project_id)) else {
+                continue;
+            };
+            // No exit code: the process may well still be alive, and claiming to know how
+            // it ended would be a lie. This reads as an unexpected death, which is true
+            // from runlog's point of view — it stopped watching.
+            let _ = self.finish_run(&handle, &run, None, None);
+        }
+    }
+
     pub fn active_run_count(&self) -> usize {
         self.runs.lock().map(|r| r.len()).unwrap_or(0)
     }
