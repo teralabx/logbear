@@ -1,0 +1,12 @@
+{
+  "session_id": "cc-sess-0001",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/home/dev/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/dev/demo",
+  "permission_mode": "default",
+  "effort": { "level": "medium" },
+  "hook_event_name": "Stop",
+  "last_assistant_message": "I've fixed the handler and everything looks good.",
+  "stop_reason": "end_turn",
+  "stop_hook_active": false
+}

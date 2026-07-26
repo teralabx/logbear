@@ -1,0 +1,11 @@
+{
+  "session_id": "cc-sess-0001",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440001",
+  "transcript_path": "/home/dev/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/dev/demo",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "last_assistant_message": "I looked at the logs; the error is unrelated.",
+  "stop_reason": "end_turn",
+  "stop_hook_active": true
+}

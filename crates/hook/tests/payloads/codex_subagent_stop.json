@@ -1,0 +1,14 @@
+{
+  "session_id": "codex-sess-0001",
+  "turn_id": "turn_01HZY",
+  "transcript_path": "/home/dev/.codex/sessions/demo.jsonl",
+  "agent_id": "agent_7",
+  "agent_type": "explore",
+  "agent_transcript_path": "/home/dev/.codex/sessions/demo-agent-7.jsonl",
+  "cwd": "/home/dev/demo",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "hook_event_name": "SubagentStop",
+  "last_assistant_message": "Search complete.",
+  "stop_hook_active": false
+}

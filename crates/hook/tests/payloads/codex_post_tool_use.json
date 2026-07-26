@@ -1,0 +1,13 @@
+{
+  "session_id": "codex-sess-0001",
+  "turn_id": "turn_01HZZ",
+  "transcript_path": "/home/dev/.codex/sessions/demo.jsonl",
+  "cwd": "/home/dev/demo",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "shell",
+  "tool_input": { "command": ["bash", "-lc", "mix compile"] },
+  "tool_use_id": "call_9f2",
+  "tool_response": { "output": "Compiling 1 file (.ex)" }
+}

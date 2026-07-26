@@ -1,0 +1,11 @@
+{
+  "session_id": "codex-sess-0001",
+  "turn_id": "turn_01HZX",
+  "transcript_path": "/home/dev/.codex/sessions/demo.jsonl",
+  "cwd": "/home/dev/demo",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "last_assistant_message": "Done — the endpoint returns 200 now.",
+  "stop_hook_active": false
+}

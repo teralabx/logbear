@@ -1,0 +1,17 @@
+{
+  "session_id": "cc-sess-0001",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440002",
+  "transcript_path": "/home/dev/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/dev/demo",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "/home/dev/demo/lib/demo_web/controllers/user_controller.ex",
+    "old_string": "Repo.get!",
+    "new_string": "Repo.get"
+  },
+  "tool_use_id": "toolu_01ABC123",
+  "tool_result": "The file has been updated.",
+  "tool_result_is_error": false
+}
