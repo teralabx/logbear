@@ -1,0 +1,490 @@
+//! One connection handler.
+//!
+//! The socket serves three kinds of client and tells them apart by what they send first,
+//! rather than by having three sockets: there is one thing to start and one thing to
+//! check. A connection that sends `StartRun` becomes an ingest stream, one that sends
+//! `Subscribe` becomes an event feed, and everything else is request/response.
+
+use crate::state::{Daemon, LiveRun, ProjectHandle};
+use runlog_core::model::*;
+use runlog_core::proto::*;
+use runlog_core::store::{read, retention, sandbox, schema};
+use runlog_core::{diff, Error, Result};
+use std::io::{BufReader, BufWriter, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::sync::Arc;
+
+pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
+    let peer = stream.try_clone();
+    let mut reader = BufReader::new(stream);
+    let Ok(write_half) = peer else { return };
+    let mut writer = BufWriter::new(write_half);
+
+    let mut ingest: Option<(Arc<ProjectHandle>, Arc<LiveRun>)> = None;
+
+    loop {
+        let frame = match Frame::read_from(&mut reader) {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(_) => break,
+        };
+
+        match frame {
+            Frame::Data { captured_at, bytes } => {
+                if let Some((handle, live)) = &ingest {
+                    // A storage failure must not stop the stream: the user's process is
+                    // still running and its output is still arriving.
+                    let _ = daemon.ingest(handle, live, &bytes, captured_at);
+                }
+            }
+            Frame::Json(payload) => {
+                let request: Request = match serde_json::from_slice(&payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = reply(&mut writer, Response::err("bad_request", e.to_string()));
+                        continue;
+                    }
+                };
+
+                match request {
+                    Request::StartRun { stamp } => match daemon.start_run(&stamp) {
+                        Ok((handle, live)) => {
+                            let run_id = live.run_id;
+                            ingest = Some((handle, live));
+                            if reply(&mut writer, Response::ok(run_id)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = reply(&mut writer, Response::err("start_run", e.to_string()));
+                        }
+                    },
+
+                    Request::FinishRun {
+                        exit_code, signal, ..
+                    } => {
+                        if let Some((handle, live)) = ingest.take() {
+                            let _ =
+                                daemon.finish_run(&handle, &live, exit_code, signal.as_deref());
+                        }
+                        let _ = reply(&mut writer, Response::ok(()));
+                        break;
+                    }
+
+                    Request::Subscribe { project } => {
+                        let project_id = project
+                            .as_ref()
+                            .and_then(|p| daemon.resolve(p).ok())
+                            .map(|h| h.project.id);
+                        if reply(&mut writer, Response::ok(())).is_err() {
+                            break;
+                        }
+                        stream_events(&daemon, &mut writer, project_id);
+                        break;
+                    }
+
+                    Request::RawStream {
+                        project,
+                        run_id,
+                        start_line,
+                        end_line,
+                    } => {
+                        let outcome =
+                            stream_raw(&daemon, &mut writer, &project, run_id, start_line, end_line);
+                        let response = match outcome {
+                            Ok(()) => Response::ok(()),
+                            Err(e) => Response::err("raw_stream", e.to_string()),
+                        };
+                        if reply(&mut writer, response).is_err() {
+                            break;
+                        }
+                    }
+
+                    Request::Shutdown => {
+                        let _ = reply(&mut writer, Response::ok(()));
+                        daemon
+                            .shutdown
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+
+                    other => {
+                        let response = match handle(&daemon, other) {
+                            Ok(v) => Response::Ok { data: v },
+                            Err(e) => Response::err(kind_of(&e), e.to_string()),
+                        };
+                        if reply(&mut writer, response).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The shim died without saying goodbye — a crash, a kill -9, a closed laptop. Close
+    // the run with no exit code so it reads as an unexpected death rather than hanging
+    // around forever as "still running".
+    if let Some((handle, live)) = ingest {
+        let _ = daemon.finish_run(&handle, &live, None, None);
+    }
+}
+
+fn kind_of(e: &Error) -> &'static str {
+    match e {
+        Error::NoSuchRun(_) => "no_such_run",
+        Error::NoSuchProject(_) => "no_such_project",
+        Error::QueryRejected(_) => "query_rejected",
+        Error::QueryTimeout(_) => "query_timeout",
+        _ => "error",
+    }
+}
+
+fn reply(w: &mut BufWriter<UnixStream>, response: Response) -> Result<()> {
+    Frame::json(&response)?.write_to(w)?;
+    w.flush()?;
+    Ok(())
+}
+
+fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
+    use serde_json::to_value;
+
+    Ok(match request {
+        Request::Ping => to_value("pong")?,
+
+        Request::Status => {
+            let projects = daemon.index.list()?;
+            let total: i64 = daemon.open_projects().iter().map(|p| p.db.size_bytes()).sum();
+            to_value(DaemonStatus {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                pid: std::process::id(),
+                started_at: daemon.started_at,
+                socket: runlog_core::paths::socket().to_string_lossy().into_owned(),
+                projects: projects.len(),
+                active_runs: daemon.active_run_count(),
+                total_db_bytes: total,
+                spool_pending: count_spool(),
+            })?
+        }
+
+        Request::ListProjects => to_value(daemon.index.list()?)?,
+
+        Request::ProjectStatus { project } => {
+            let h = daemon.resolve(&project)?;
+            let hour_ago = runlog_core::now_micros() - 3_600_000_000;
+            to_value(ProjectStatus {
+                active_runs: read::active_runs(&h.db)?,
+                last_run: read::list_runs(&h.db, 1, 0)?.into_iter().next(),
+                db_bytes: h.db.size_bytes(),
+                errors_last_hour: read::errors_since(&h.db, hour_ago)?,
+                unacked_errors: read::errors_since(&h.db, hour_ago)?,
+                project: h.project.clone(),
+            })?
+        }
+
+        Request::ListRuns {
+            project,
+            limit,
+            offset,
+        } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::list_runs(&h.db, limit, offset)?)?
+        }
+
+        Request::GetRun { project, run_id } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::get_run(&h.db, run_id)?)?
+        }
+
+        Request::Entries { project, filter } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::entries(&h.db, &filter)?)?
+        }
+
+        Request::Fingerprints {
+            project,
+            limit,
+            errors_only,
+        } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::fingerprints(&h.db, limit, errors_only)?)?
+        }
+
+        Request::Query {
+            project,
+            sql,
+            params,
+            max_rows,
+        } => {
+            let h = daemon.resolve(&project)?;
+            // Runs against the file, on its own read-only connection, so an agent's SQL
+            // cannot touch the daemon's write handle or any other project.
+            to_value(sandbox::query(h.db.path(), &sql, &params, max_rows)?)?
+        }
+
+        Request::Schema { project } => {
+            let h = daemon.resolve(&project)?;
+            let cap = daemon.retention_cap(&h.project);
+            let state = retention::state(&h.db, cap)?;
+            let mode = read::list_runs(&h.db, 1, 0)?
+                .first()
+                .map(|r| r.delimiter_mode)
+                .unwrap_or(DelimiterMode::Fallback);
+            to_value(format!(
+                "{}\n{}\n{}\n\n## This project right now\n\n\
+                 Delimiter mode: {} (entry boundaries are {})\n\
+                 Storage: {} of {} used, {} runs recorded, {} with their raw log evicted.\n",
+                schema::PROJECT_SCHEMA,
+                schema::PROJECT_VIEWS,
+                schema::AGENT_NOTES,
+                mode.as_str(),
+                mode.boundaries().as_str(),
+                human_bytes(state.bytes_used),
+                human_bytes(state.bytes_cap),
+                state.runs_total,
+                state.runs_evicted,
+            ))?
+        }
+
+        Request::Diff { project, a, b } => {
+            let h = daemon.resolve(&project)?;
+            to_value(diff::diff(&h.db, a, b)?)?
+        }
+
+        Request::Wait {
+            project,
+            timeout_ms,
+            level,
+            after_entry,
+        } => {
+            let h = daemon.resolve(&project)?;
+            // Anything that landed while the caller was deciding to wait counts, or a
+            // fast-failing server would be missed by every wait that just started.
+            let already = read::entries(
+                &h.db,
+                &EntryFilter {
+                    level,
+                    after_entry,
+                    errors_only: level.is_none(),
+                    ascending: true,
+                    limit: 50,
+                    ..Default::default()
+                },
+            )?;
+            if !already.is_empty() && after_entry.is_some() {
+                to_value(already)?
+            } else {
+                to_value(daemon.wait(h.project.id, timeout_ms.min(600_000), level, after_entry))?
+            }
+        }
+
+        Request::Unread {
+            project,
+            session_id,
+            harness,
+        } => {
+            let h = daemon.resolve(&project)?;
+            let budget = daemon.settings().block_budget;
+            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
+            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            to_value(state)?
+        }
+
+        Request::Ack {
+            project,
+            session_id,
+            harness,
+            entry_id,
+            record_block,
+        } => {
+            let h = daemon.resolve(&project)?;
+            let budget = daemon.settings().block_budget;
+            if record_block {
+                // Record which signatures were reported before advancing, so a repeat of
+                // the same one can never block this session twice.
+                let reported = read::unread(&h.db, &session_id, &harness, budget, 50)?;
+                let fps: Vec<FingerprintId> = reported
+                    .entries
+                    .iter()
+                    .filter_map(|e| e.entry.fingerprint_id)
+                    .collect();
+                read::record_block(&h.db, &session_id, &fps)?;
+            }
+            read::ack(&h.db, &session_id, &harness, entry_id, record_block)?;
+            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
+            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            to_value(state)?
+        }
+
+        Request::GetSettings => to_value(daemon.settings())?,
+
+        Request::UpdateSettings { settings } => {
+            daemon.set_settings(settings)?;
+            to_value(())?
+        }
+
+        Request::UpdateProject {
+            project,
+            retention_bytes,
+            push_enabled,
+            notify_enabled,
+        } => {
+            let h = daemon.resolve(&project)?;
+            daemon.index.update_config(
+                h.project.id,
+                retention_bytes,
+                push_enabled,
+                notify_enabled,
+            )?;
+            daemon.refresh_project(h.project.id)?;
+            daemon.broadcast(Event::ProjectsChanged);
+            to_value(())?
+        }
+
+        Request::Vacuum { project } => {
+            let h = daemon.resolve(&project)?;
+            let cap = daemon.retention_cap(&h.project);
+            let evicted = retention::enforce(&h.db, cap)?;
+            retention::reclaim(&h.db)?;
+            to_value(evicted)?
+        }
+
+        Request::Reparse { project, run_id } => {
+            let h = daemon.resolve(&project)?;
+            let n = match run_id {
+                Some(id) => retention::reparse_run(&h.db, id)?,
+                None => retention::reparse_all(&h.db)?,
+            };
+            to_value(n)?
+        }
+
+        Request::DeleteRun { project, run_id } => {
+            let h = daemon.resolve(&project)?;
+            retention::delete_run(&h.db, run_id)?;
+            daemon.index.forget_run(h.project.id, run_id)?;
+            to_value(())?
+        }
+
+        Request::IngestSpool { path } => to_value(crate::spool::ingest(daemon, Path::new(&path))?)?,
+
+        // Handled by the caller before dispatch.
+        Request::StartRun { .. }
+        | Request::FinishRun { .. }
+        | Request::Resize { .. }
+        | Request::RawStream { .. }
+        | Request::Subscribe { .. }
+        | Request::Shutdown => to_value(())?,
+    })
+}
+
+fn stream_raw(
+    daemon: &Arc<Daemon>,
+    writer: &mut BufWriter<UnixStream>,
+    project: &ProjectRef,
+    run_id: RunId,
+    start_line: Option<i64>,
+    end_line: Option<i64>,
+) -> Result<()> {
+    let h = daemon.resolve(project)?;
+    let run = read::get_run(&h.db, run_id)?;
+    if run.chunks_evicted {
+        return Err(Error::other(
+            "the raw log for this run was evicted by the retention cap; its summary and error signatures are still available",
+        ));
+    }
+    let start = start_line.unwrap_or(0);
+    let end = end_line.unwrap_or(i64::MAX);
+
+    // Paged rather than one enormous frame: a long dev-server run is hundreds of
+    // megabytes, and the reader wants to start painting before it has all of it.
+    const PAGE: i64 = 2000;
+    let mut at = start;
+    loop {
+        let stop = at.saturating_add(PAGE).min(end);
+        let bytes = h.db.with(|c| runlog_core::store::raw_range(c, run_id, at, stop))?;
+        if bytes.is_empty() {
+            break;
+        }
+        Frame::Data {
+            captured_at: 0,
+            bytes,
+        }
+        .write_to(writer)?;
+        if stop >= end {
+            break;
+        }
+        at = stop + 1;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn stream_events(
+    daemon: &Arc<Daemon>,
+    writer: &mut BufWriter<UnixStream>,
+    project_id: Option<ProjectId>,
+) {
+    let (id, rx) = daemon.subscribe(project_id);
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(event) => {
+                if Frame::json(&event)
+                    .and_then(|f| {
+                        f.write_to(writer)?;
+                        writer.flush()?;
+                        Ok(())
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                // Nothing to say. Writing zero bytes still detects a peer that has gone
+                // away, which is how a closed app window is noticed.
+                if writer.flush().is_err() {
+                    break;
+                }
+                if daemon.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    daemon.unsubscribe(id);
+}
+
+fn count_spool() -> usize {
+    std::fs::read_dir(runlog_core::paths::spool_dir())
+        .map(|d| d.filter_map(|e| e.ok()).count())
+        .unwrap_or(0)
+}
+
+fn human_bytes(n: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_sizes_read_like_a_person_wrote_them() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+}

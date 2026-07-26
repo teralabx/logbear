@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import Toggle from '$lib/components/Toggle.svelte';
 	import Meter from '$lib/components/Meter.svelte';
@@ -48,6 +49,11 @@
 		settings !== null && saved !== null && JSON.stringify(settings) !== JSON.stringify(saved)
 	);
 
+	/**
+	 * Global settings are read exactly once. The app store re-polls the daemon
+	 * every ten seconds; if that poll re-read settings it would silently throw
+	 * away whatever the reader was halfway through typing.
+	 */
 	async function loadAll() {
 		loadError = null;
 		try {
@@ -55,20 +61,32 @@
 			settings = s;
 			saved = structuredClone(s);
 			install = i;
-			const rs = await Promise.all(
-				app.projects.map(async (p) => [p.id, await retention(projectRef(p.id))] as const)
-			);
-			retentions = Object.fromEntries(rs);
 		} catch (err) {
 			loadError = apiError(err);
 		}
 	}
 
-	$effect(() => {
-		// Re-read once the project list is known so the per-project meters have
-		// something to measure.
-		void app.projects.length;
+	onMount(() => {
 		void loadAll();
+	});
+
+	/** Retention meters do follow the project list — they are read-only. */
+	$effect(() => {
+		const ids = app.projects.map((p) => p.id);
+		let cancelled = false;
+		(async () => {
+			try {
+				const rs = await Promise.all(
+					ids.map(async (id) => [id, await retention(projectRef(id))] as const)
+				);
+				if (!cancelled) retentions = Object.fromEntries(rs);
+			} catch (err) {
+				if (!cancelled) loadError = apiError(err);
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	async function save() {

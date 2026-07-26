@@ -48,7 +48,7 @@ pub fn query(
     // Functions must be registered before the authorizer, since registration itself is a
     // privileged act the authorizer would otherwise have to permit.
     register_functions(&conn, db_path)?;
-    install_authorizer(&conn);
+    install_authorizer(&conn)?;
 
     // Cancel from another thread rather than trusting a query to finish. A recursive CTE
     // bomb or a cartesian join will otherwise run until the heat death of the daemon.
@@ -132,7 +132,7 @@ fn run_statement(
     })
 }
 
-fn install_authorizer(conn: &Connection) {
+fn install_authorizer(conn: &Connection) -> Result<()> {
     conn.authorizer(Some(|ctx: AuthContext<'_>| match ctx.action {
         AuthAction::Select => Authorization::Allow,
         AuthAction::Read { .. } => Authorization::Allow,
@@ -150,7 +150,8 @@ fn install_authorizer(conn: &Connection) {
         // exists to answer, and the interrupt timer already bounds a runaway one.
         AuthAction::Recursive => Authorization::Allow,
         _ => Authorization::Deny,
-    }));
+    }))?;
+    Ok(())
 }
 
 /// A cheap textual pass before SQLite ever sees the string.

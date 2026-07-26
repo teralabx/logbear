@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { page } from '$app/state';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import TerminalPane from '$lib/components/TerminalPane.svelte';
@@ -101,10 +102,14 @@
 				]);
 				if (cancelled) return;
 				list = es;
+				// The terminal only exists once `loading` is false, so the pane has
+				// to be mounted before the stored bytes can be written into it.
+				loading = false;
+				await tick();
+				if (cancelled) return;
 				termRef?.replace(raw);
 				termRef?.scrollToBottom();
-				loading = false;
-				queueMicrotask(() => scrollListToBottom());
+				scrollListToBottom();
 			} catch (err) {
 				if (!cancelled) {
 					loadError = apiError(err);

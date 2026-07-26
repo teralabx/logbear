@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import PageHeader from '$lib/components/PageHeader.svelte';
@@ -67,8 +68,11 @@
 				if (cancelled) return;
 				run = r;
 				list = es;
-				termRef?.replace(raw);
+				// The terminal is only in the DOM once `loading` is false.
 				loading = false;
+				await tick();
+				if (cancelled) return;
+				termRef?.replace(raw);
 			} catch (err) {
 				if (!cancelled) {
 					loadError = apiError(err);

@@ -209,10 +209,6 @@
 		z-index: 1;
 		pointer-events: none;
 	}
-	.foot :global(.links),
-	.links a {
-		pointer-events: auto;
-	}
 	.top {
 		display: flex;
 		align-items: flex-start;

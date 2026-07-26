@@ -159,6 +159,13 @@ interface FpSeed {
 	/** Renders a concrete instance of this signature, as stored output. */
 	render: () => string;
 	weight: number;
+	/**
+	 * Held back from the general history and injected only into the most recent
+	 * runs, so there is always exactly one genuine regression to look at —
+	 * "7 errors (1 new)" is the number this whole product exists to produce, and
+	 * a storybook that never shows it is not a storybook.
+	 */
+	reserved?: boolean;
 }
 
 const fpSeeds: FpSeed[] = [
@@ -273,6 +280,25 @@ const fpSeeds: FpSeed[] = [
 			].join('\n')
 	},
 	{
+		project_id: 1,
+		level: 'error',
+		reserved: true,
+		weight: 1,
+		template:
+			'** (Postgrex.Error) ERROR 42P01 (undefined_table) relation "<*>" does not exist',
+		render: () =>
+			[
+				'** (Postgrex.Error) ERROR 42P01 (undefined_table) relation "payment_intents" does not exist',
+				'',
+				'    query: SELECT p0."id", p0."amount_cents", p0."state" FROM "payment_intents" AS p0 WHERE (p0."state" = $1)',
+				'',
+				'    (ecto_sql 3.11.3) lib/ecto/adapters/sql.ex:1054: Ecto.Adapters.SQL.raise_sql_call_error/1',
+				'    (ecto 3.11.2) lib/ecto/repo/queryable.ex:229: Ecto.Repo.Queryable.execute/4',
+				'    (checkout 0.4.1) lib/checkout/payments.ex:31: Checkout.Payments.list_pending/0',
+				'    (checkout 0.4.1) lib/checkout/reconcile/worker.ex:29: Checkout.Reconcile.Worker.handle_info/2'
+			].join('\n')
+	},
+	{
 		project_id: 2,
 		level: 'error',
 		template: "TypeError: Cannot read properties of undefined (reading '<*>')",
@@ -347,6 +373,22 @@ const fpSeeds: FpSeed[] = [
 				'    at Module._resolveFilename (node:internal/modules/cjs/loader:1145:15)',
 				'    at Module._load (node:internal/modules/cjs/loader:986:27)',
 				'    at Module.require (node:internal/modules/cjs/loader:1233:19)'
+			].join('\n')
+	},
+	{
+		project_id: 2,
+		level: 'error',
+		reserved: true,
+		weight: 1,
+		template:
+			'Error: Invalid src prop (<*>) on `next/image`, hostname "<*>" is not configured under images in your `next.config.js`',
+		render: () =>
+			[
+				'Error: Invalid src prop (https://cdn.pearl.dev/products/8841.webp) on `next/image`, hostname "cdn.pearl.dev" is not configured under images in your `next.config.js`',
+				'See more info: https://nextjs.org/docs/messages/next-image-unconfigured-host',
+				'    at defaultLoader (/Users/dev/code/pearl-web/node_modules/next/dist/shared/lib/image-loader.js:37:19)',
+				'    at Object.getImgProps (/Users/dev/code/pearl-web/node_modules/next/dist/shared/lib/get-img-props.js:296:33)',
+				'    at ProductCard (/Users/dev/code/pearl-web/src/components/ProductCard.tsx:28:11)'
 			].join('\n')
 	},
 	{
@@ -577,7 +619,7 @@ function buildRun(project: Project, startedAt: number, opts: { active?: boolean 
 	const chatter = CHATTER[pid];
 	const seeds = fpSeeds
 		.map((s, i) => ({ s, id: i + 1 }))
-		.filter((x) => x.s.project_id === pid);
+		.filter((x) => x.s.project_id === pid && !x.s.reserved);
 
 	const nChatter = intBetween(6, 22);
 	const nErrors = failed ? intBetween(1, 6) : rand() < 0.4 ? intBetween(1, 3) : 0;
@@ -667,6 +709,58 @@ live.run.command = ['mix', 'phx.server'];
 live.run.git_branch = 'fix/idempotency-keys';
 live.run.git_dirty_hash = hexHash(16);
 runData.push(live);
+
+// The regression. Each project's newest completed run is pulled into the last
+// half hour and given the reserved signature, and the Phoenix project's live
+// run keeps producing it. That is what makes "errors last hour", the unacked
+// count, the flare "1 new" chip and the diff verdict all non-empty on a cold
+// open — the states worth reviewing, rather than the quiet ones.
+for (const project of projects) {
+	const reserved = fpSeeds
+		.map((s, i) => ({ s, id: i + 1 }))
+		.find((x) => x.s.project_id === project.id && x.s.reserved);
+	if (!reserved) continue;
+
+	const newest = runData
+		.filter((r) => r.run.project_id === project.id && r.run.ended_at !== null)
+		.sort((a, b) => b.run.started_at - a.run.started_at)[0];
+	if (!newest) continue;
+
+	// Pull it forward so it lands inside the "last hour" window.
+	const length = (newest.run.ended_at ?? newest.run.started_at) - newest.run.started_at;
+	newest.run.started_at = NOW - 31 * 60;
+	newest.run.ended_at = newest.run.started_at + Math.max(4, length);
+	newest.run.exit_code = newest.run.exit_code === 0 ? 1 : newest.run.exit_code;
+	for (const e of newest.entries) {
+		e.captured_at = newest.run.started_at + Math.round(rand() * Math.max(4, length));
+	}
+
+	const lastLine = newest.entries[newest.entries.length - 1]?.end_line ?? 1;
+	const injected = makeEntry(
+		newest.run,
+		'error',
+		reserved.s.render(),
+		reserved.id,
+		newest.run.ended_at - 2,
+		lastLine + 2
+	);
+	newest.entries.push(injected);
+	bump(newest.run.counters, 'error');
+
+	// And again, live, for the project that is currently running something.
+	const active = runData.find(
+		(r) => r.run.project_id === project.id && r.run.ended_at === null
+	);
+	if (active) {
+		for (const at of [NOW - 11 * 60, NOW - 3 * 60]) {
+			const e = makeEntry(active.run, 'error', reserved.s.render(), reserved.id, at, 1);
+			active.entries.push(e);
+			bump(active.run.counters, 'error');
+		}
+	}
+}
+
+runData.sort((a, b) => a.run.started_at - b.run.started_at);
 
 // run_count per fingerprint
 for (const fp of fingerprints) {
@@ -1127,12 +1221,86 @@ function emit(e: RunlogEvent) {
 	for (const h of handlers) h(e);
 }
 
+/**
+ * Signatures the store has never seen, introduced while you watch. Roughly one
+ * every 30 seconds, so the "new" tag, the flare stripe and the notice stack all
+ * demonstrate themselves without anyone having to break something on purpose.
+ */
+const lateArrivals: { template: string; render: () => string }[] = [
+	{
+		template: '** (Jason.DecodeError) unexpected byte at position <*>',
+		render: () =>
+			[
+				`** (Jason.DecodeError) unexpected byte at position ${intBetween(3, 900)}: 0x3C ("<")`,
+				'    (jason 1.4.4) lib/jason.ex:96: Jason.decode!/2',
+				'    (checkout 0.4.1) lib/checkout/gateway/stripe.ex:88: Checkout.Gateway.Stripe.parse_body/1',
+				'    (checkout 0.4.1) lib/checkout/gateway/stripe.ex:52: Checkout.Gateway.Stripe.charge/2'
+			].join('\n')
+	},
+	{
+		template: '[error] Task #PID<*> started from <*> terminating',
+		render: () =>
+			[
+				`[error] Task #PID<0.${intBetween(700, 999)}.0> started from Checkout.Reconcile.Supervisor terminating`,
+				'** (ArithmeticError) bad argument in arithmetic expression',
+				'    (checkout 0.4.1) lib/checkout/payments/ledger.ex:64: Checkout.Payments.Ledger.balance/1',
+				'Function: &Checkout.Reconcile.Worker.sweep/0',
+				'    Args: []'
+			].join('\n')
+	},
+	{
+		template: '** (File.Error) could not read file "<*>": no such file or directory',
+		render: () =>
+			[
+				'** (File.Error) could not read file "priv/certs/stripe_ca.pem": no such file or directory',
+				'    (elixir 1.16.2) lib/file.ex:358: File.read!/1',
+				'    (checkout 0.4.1) lib/checkout/gateway/stripe.ex:19: Checkout.Gateway.Stripe.ssl_opts/0'
+			].join('\n')
+	}
+];
+let lateIndex = 0;
+
 function step() {
 	tick++;
 	const target = runData.find((r) => r.run.ended_at === null);
 	if (!target) return;
 	const project = projects.find((p) => p.id === target.run.project_id)!;
 	const at = Math.floor(Date.now() / 1000);
+
+	// A signature nobody has seen before, every ~30 seconds.
+	if (tick % 37 === 0 && lateIndex < lateArrivals.length) {
+		const late = lateArrivals[lateIndex++];
+		const fp: Fingerprint = {
+			id: fingerprints.length + 1,
+			template: late.template,
+			hash: hexHash(16),
+			level: 'error',
+			first_seen: at,
+			last_seen: at,
+			total_count: 0,
+			run_count: 1
+		};
+		fingerprints.push(fp);
+		const fresh = makeEntry(target.run, 'error', late.render(), fp.id, at, 1);
+		target.entries.push(fresh);
+		bump(target.run.counters, 'error');
+		emit({ event: 'entries', run_id: target.run.id, entries: [fresh] });
+		emit({ event: 'counters', run_id: target.run.id, counters: { ...target.run.counters } });
+		emit({
+			event: 'notice',
+			notice: {
+				project_id: project.id,
+				project_name: project.name,
+				title: `New error signature in ${project.name}`,
+				body: late.template,
+				level: 'error',
+				at,
+				replaces_key: `fp:${fp.id}`,
+				count: 1
+			}
+		});
+		return;
+	}
 
 	// One in eight ticks produces a signal; the rest is ordinary chatter.
 	let e: EntryView;
