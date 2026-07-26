@@ -54,9 +54,6 @@ pub fn clear(t: &str) -> String {
 pub fn ash(t: &str) -> String {
     paint(ASH, t)
 }
-pub fn ember(t: &str) -> String {
-    paint(EMBER, t)
-}
 pub fn bold(t: &str) -> String {
     paint(BOLD, t)
 }
@@ -111,16 +108,6 @@ pub fn duration(micros: i64) -> String {
 pub fn local_hms(micros: i64) -> String {
     with_tm(micros, |tm| {
         format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
-    })
-}
-
-pub fn local_stamp(micros: i64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    with_tm(micros, |tm| {
-        let mon = MONTHS.get(tm.tm_mon.clamp(0, 11) as usize).copied().unwrap_or("???");
-        format!("{mon} {:2} {:02}:{:02}", tm.tm_mday, tm.tm_hour, tm.tm_min)
     })
 }
 
@@ -210,6 +197,14 @@ impl Cell {
 
     fn width(&self) -> usize {
         self.text.chars().count()
+    }
+
+    /// Colour without padding, for a label/value layout rather than a table.
+    pub fn render_alone(&self) -> String {
+        match self.colour {
+            Some(c) if colour_enabled() => format!("{c}{}{RESET}", self.text),
+            _ => self.text.clone(),
+        }
     }
 
     fn render(&self, width: usize, last: bool) -> String {

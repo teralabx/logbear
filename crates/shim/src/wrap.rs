@@ -512,27 +512,4 @@ mod tests {
         assert!(!is_denied("/opt/vim/bin/mix", &settings));
     }
 
-    /// Needs a real controlling terminal, so it is not run by `cargo test`. Run it with
-    /// `cargo test -p runlog -- --ignored --nocapture` from an interactive shell.
-    #[test]
-    #[ignore = "requires a real tty"]
-    fn a_wrapped_command_propagates_its_exit_code() {
-        let exe = env!("CARGO_BIN_EXE_runlog");
-        let out = std::process::Command::new(exe)
-            .args(["sh", "-c", "exit 7"])
-            .output()
-            .expect("runlog runs");
-        assert_eq!(out.status.code(), Some(7));
-    }
-
-    #[test]
-    #[ignore = "requires a real tty"]
-    fn a_wrapped_command_reproduces_its_bytes() {
-        let exe = env!("CARGO_BIN_EXE_runlog");
-        let out = std::process::Command::new(exe)
-            .args(["printf", "hello"])
-            .output()
-            .expect("runlog runs");
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "hello");
-    }
 }

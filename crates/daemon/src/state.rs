@@ -493,8 +493,12 @@ fn load_settings() -> Settings {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// `RUNLOG_HOME` is process-global, so tests that point it at their own directory
+    /// must not overlap. Without this they pass or fail depending on scheduling.
+    pub(crate) static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn daemon(tmp: &tempfile::TempDir) -> Arc<Daemon> {
         std::env::set_var("RUNLOG_HOME", tmp.path());
@@ -503,6 +507,7 @@ mod tests {
 
     #[test]
     fn a_first_run_registers_its_project() {
+        let _guard = HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         let d = daemon(&tmp);
         let work = tmp.path().join("work");
@@ -528,6 +533,7 @@ mod tests {
 
     #[test]
     fn a_subscriber_sees_the_run_it_asked_for() {
+        let _guard = HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         let d = daemon(&tmp);
         let work = tmp.path().join("w2");
@@ -561,6 +567,7 @@ mod tests {
 
     #[test]
     fn resolving_an_unknown_directory_says_what_to_do_about_it() {
+        let _guard = HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         let d = daemon(&tmp);
         let err = match d.resolve(&ProjectRef::Path("/nowhere/at/all".into())) {
@@ -572,6 +579,7 @@ mod tests {
 
     #[test]
     fn settings_survive_a_restart() {
+        let _guard = HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         let d = daemon(&tmp);
         let mut s = d.settings();

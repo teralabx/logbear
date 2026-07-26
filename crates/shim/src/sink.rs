@@ -125,10 +125,6 @@ impl Sink {
         }
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
-        let _ = self.tx.try_send(Msg::Resize { cols, rows });
-    }
-
     /// Report the outcome and wait, briefly, for the sender to land it. Both halves are
     /// time-boxed: the child has already exited and the user is owed their prompt back,
     /// so a wedged daemon costs them the grace period and not a second more.
@@ -316,7 +312,6 @@ pub struct SpoolWriter {
     file: BufWriter<std::fs::File>,
     header: SpoolHeader,
     reserve: usize,
-    path: PathBuf,
 }
 
 impl SpoolWriter {
@@ -343,7 +338,6 @@ impl SpoolWriter {
             file,
             header,
             reserve,
-            path: path.to_path_buf(),
         })
     }
 
@@ -376,10 +370,6 @@ impl SpoolWriter {
             file.seek(SeekFrom::End(0))?;
         }
         self.file.flush()
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 

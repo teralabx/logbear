@@ -81,6 +81,7 @@ mod tests {
 
     #[test]
     fn a_spooled_run_becomes_a_real_run() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("RUNLOG_HOME", tmp.path());
         let daemon = Daemon::open().unwrap();
@@ -131,6 +132,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_spool_is_set_aside_not_deleted() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("RUNLOG_HOME", tmp.path());
         let daemon = Daemon::open().unwrap();
