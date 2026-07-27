@@ -164,6 +164,9 @@ impl Notifier {
 
     /// Decides what to do about a finished run. Crashes and non-zero exits bypass the
     /// rate limiter, since there is at most one per run.
+    // Each argument is an independent input to the decision, read from a different place at
+    // the call site. Bundling them into a struct would only move the argument list.
+    #[allow(clippy::too_many_arguments)]
     pub fn run_ended(
         &mut self,
         project_id: ProjectId,

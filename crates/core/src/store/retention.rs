@@ -16,7 +16,7 @@ use crate::store::{read, split_chunk, Db};
 const VACUUM_PAGES: i64 = 512;
 
 pub fn state(db: &Db, cap: i64) -> Result<RetentionState> {
-    let (runs_total, runs_evicted) = db.with(|c| read::count_runs(c))?;
+    let (runs_total, runs_evicted) = db.with(read::count_runs)?;
     let oldest = db.with(|c| {
         Ok(c.query_row("SELECT min(started_at) FROM runs", [], |r| {
             r.get::<_, Option<i64>>(0)

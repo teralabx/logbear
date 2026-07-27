@@ -253,6 +253,9 @@ pub struct Subscription {
 impl Subscription {
     /// Blocks for the next event. `Ok(None)` means the daemon went away, which is a
     /// disconnection rather than an error.
+    // Not `Iterator`: the item is `Result<Option<Event>>`, so the trait would have to
+    // collapse a dead socket and a decode failure into the same `None`.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Event>> {
         loop {
             match self.client.recv()? {
