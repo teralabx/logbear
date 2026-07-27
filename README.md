@@ -43,8 +43,8 @@ context that produced it are visible together, for free, at the same instant.
 broke since it last looked. If so, the agent is interrupted and handed the actual
 exception, its history, and which run it came from. If not, nothing happens at all.
 
-**A queryable history.** Every run is stamped with its git SHA, branch, a hash of the dirty
-working tree, and the hash of every lockfile. `runlog diff` answers "what changed" with
+**A queryable history.** Every run is stamped with its git SHA, branch, a hash of the
+uncommitted changes, and the hash of every lockfile. `runlog diff` answers "what changed" with
 the commits in between, the lockfiles that moved, and the error signatures that appeared.
 
 **A read-only SQL endpoint for agents**, rather than a fixed menu of tools. An agent can

@@ -128,7 +128,7 @@
 							<div class="meta tnum mt-[3px] truncate text-[11px]">
 								{fmtAgo(last.started_at, now)} · {fmtDuration(runDuration(last))} ·
 								{last.git_branch ?? 'no branch'}@{shortSha(last.git_sha)}{last.git_dirty_hash
-									? ' +dirty'
+									? ' +uncommitted'
 									: ''}
 							</div>
 						</div>

@@ -81,8 +81,8 @@ pub fn stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp
     }
 }
 
-/// Hash of the uncommitted working tree, distinguishing two runs at the same SHA with
-/// different local edits. `None` when the tree is clean.
+/// Hash of the uncommitted changes, distinguishing two runs at the same SHA with
+/// different local edits. `None` when nothing is uncommitted.
 pub fn dirty_hash(cwd: &Path) -> Option<String> {
     let diff = git(cwd, &["diff", "HEAD"])?;
     let untracked = git(cwd, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();

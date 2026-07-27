@@ -118,8 +118,8 @@ pub struct RunStamp {
     pub project_name: String,
     pub git_sha: Option<String>,
     pub git_branch: Option<String>,
-    /// Hash of the dirty working tree, so two runs at the same SHA with different
-    /// uncommitted edits are distinguishable.
+    /// Hash of the uncommitted changes, so two runs at the same SHA with different
+    /// local edits are distinguishable.
     pub git_dirty_hash: Option<String>,
     /// `{"mix.lock": "<blake3>", ...}` for every lockfile present at the root.
     pub lockfile_hashes: std::collections::BTreeMap<String, String>,

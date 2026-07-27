@@ -111,7 +111,7 @@
 			causes.push(`${pluralise(diff.env_added.length, 'environment variable')} appeared`);
 		if (diff.env_removed.length)
 			causes.push(`${pluralise(diff.env_removed.length, 'environment variable')} went missing`);
-		if (diff.git.dirty_changed) causes.push('the working tree dirty state changed');
+		if (diff.git.dirty_changed) causes.push('the uncommitted changes differed');
 
 		const because = causes.length
 			? `Between them, ${causes.slice(0, 3).join(', ')}.`
@@ -247,7 +247,8 @@
 							<span>{fmtDuration(runDuration(col.run))}</span>
 							<span>{shortSha(col.run.git_sha)} {col.run.git_branch ?? ''}</span>
 							{#if col.run.git_dirty_hash}<span
-									class="text-[9px] tracking-[0.16em] text-warning uppercase">dirty</span
+									class="text-[9px] tracking-[0.16em] text-warning uppercase"
+										title="This run started with uncommitted changes">uncommitted</span
 								>{/if}
 							<ExitBadge run={col.run} />
 						</div>
@@ -400,7 +401,7 @@
 					{:else}
 						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
 							Same commit{diff.git.dirty_changed
-								? ', but the working tree dirty state changed'
+								? ', but the uncommitted changes differed'
 								: ''}.
 						</p>
 					{/if}

@@ -198,7 +198,8 @@
 					<span class="text-meta">{run.git_branch ?? '—'}</span>
 					{#if run.git_dirty_hash}<span
 							class="ml-[6px] text-[10px] tracking-[0.16em] text-warning uppercase"
-							>dirty {shortHash(run.git_dirty_hash)}</span
+							title="Hash of the uncommitted changes present when this run started"
+							>uncommitted {shortHash(run.git_dirty_hash)}</span
 						>{/if}</span
 				>
 			</div>

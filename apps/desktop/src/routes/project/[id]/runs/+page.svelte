@@ -269,7 +269,8 @@
 							<span class="meta ml-[7px] text-[11px]">{r.git_branch ?? '—'}</span>
 							{#if r.git_dirty_hash}<span
 									class="ml-[6px] text-[9px] tracking-[0.16em] text-warning uppercase"
-									title="Working tree was dirty at run time">dirty</span
+									title="This run started with uncommitted changes, so the commit above does not fully describe it"
+									>uncommitted</span
 								>{/if}
 						</td>
 						<td

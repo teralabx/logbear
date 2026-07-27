@@ -300,8 +300,10 @@
 		<span class="meta tnum rule-l pl-[10px]"
 			>{run.git_branch ?? 'no branch'}@{shortSha(run.git_sha)}</span
 		>
-		{#if run.git_dirty_hash}<span class="text-[10px] tracking-[0.16em] text-warning uppercase"
-				>dirty</span
+		{#if run.git_dirty_hash}<span
+				class="text-[10px] tracking-[0.16em] text-warning uppercase"
+				title="This run started with uncommitted changes, so the commit above does not fully describe it"
+				>uncommitted</span
 			>{/if}
 		<span class="meta tnum rule-l pl-[10px]">started {fmtStamp(run.started_at)}</span>
 		<span class="meta rule-l pl-[10px]" title="How the daemon split this stream into entries"
