@@ -1,12 +1,9 @@
 //! The five tools, and their dispatch.
 //!
-//! Five, not fifteen. Every tool's JSON Schema is standing context in *every* session for
-//! as long as the server is connected, and a fixed menu of canned queries still cannot
-//! answer the questions that matter — "which signatures appear in every failed run but no
-//! clean one" is not a tool, it is a join. So runlog exposes the database instead: one
-//! schema tool whose output can grow arbitrarily rich without costing a byte of standing
-//! context, one read-only SQL endpoint, and three things SQL genuinely cannot express —
-//! blocking on new output, diffing two runs against git, and advancing a watermark.
+//! Every tool's JSON Schema is standing context for as long as the server is connected, so
+//! the surface stays small: one schema tool whose output can grow without costing standing
+//! context, one read-only SQL endpoint, and three things SQL cannot express — blocking on
+//! new output, diffing two runs against git, and advancing a watermark.
 
 use crate::backend::Backend;
 use runlog_core::model::{EntryView, Level};
@@ -37,9 +34,8 @@ impl Outcome {
 
     /// An error a model can act on.
     ///
-    /// Never a bare Rust error string: the model needs the failing input echoed back and a
-    /// route to repair, or it abandons the tool and reports "I couldn't check the logs",
-    /// which is exactly the failure runlog exists to prevent.
+    /// Never a bare Rust error string: `hint` must give a route to repair, and `detail`
+    /// should echo the failing input.
     fn err(what: &str, detail: impl std::fmt::Display, hint: &str) -> Outcome {
         Outcome {
             text: format!("{what} failed: {detail}\n\n{hint}"),
@@ -215,7 +211,7 @@ pub fn dispatch<B: Backend>(
 
 fn schema<B: Backend>(backend: &mut B, project: ProjectRef) -> Outcome {
     match backend.schema(project) {
-        // The daemon composes this as prose. Unwrap a JSON string so the model reads the
+        // The daemon composes this as prose; unwrap the JSON string so the model reads the
         // schema rather than an escaped blob.
         Ok(Value::String(s)) => Outcome::ok(s),
         Ok(other) => Outcome::ok(
@@ -290,8 +286,8 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
     let level = match args.get("level") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => match Level::parse(s) {
-            // `Level::parse` maps anything it does not know to Unknown, which would
-            // silently filter for entries runlog classified as unclassifiable.
+            // `Level::parse` maps anything it does not know to Unknown, so only an explicit
+            // "unknown" may resolve to that level.
             Level::Unknown if s != "unknown" => {
                 return Outcome::err(
                     "runlog_wait",
@@ -339,8 +335,8 @@ fn diff<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
         Ok(v) => v,
         Err(e) => return Outcome::err("runlog_diff", e, RUN_REF_HINT),
     };
-    // Defaults live here rather than in the daemon so the tool's documented contract —
-    // "last known good vs latest" — is true even if another caller wants other defaults.
+    // Defaults live here rather than in the daemon so this tool's documented contract holds
+    // regardless of what other callers of `diff` default to.
     let a = Some(a.unwrap_or(RunRef::LastGood));
     let b = Some(b.unwrap_or(RunRef::Latest));
 
@@ -394,8 +390,8 @@ fn entry_json(e: &EntryView) -> Value {
     })
 }
 
-/// A `RunDiff` carries two whole `Run` structs. Trim them: the model wants the identity of
-/// each side and the signatures that moved, not every lockfile hash twice.
+/// Trim a `RunDiff` down to the identity of each side and the signatures that moved; the
+/// full `Run` structs carry far more than the model needs.
 fn diff_json(d: &RunDiff) -> Value {
     let side = |r: &Option<runlog_core::model::Run>| match r {
         None => Value::Null,

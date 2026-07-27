@@ -1,25 +1,21 @@
 //! Entry grouping: which physical lines belong to one logical log entry.
 //!
-//! Two invariants the rest of the system depends on, both enforced here and asserted in
-//! the tests:
+//! Two invariants the rest of the system depends on, enforced here and asserted in the
+//! tests:
 //!
-//! 1. **Every non-blank line belongs to exactly one group.** No orphans, no double counts.
-//! 2. **Fetches return whole groups.** Asking for five entries can never hand back the
-//!    bottom half of a stack trace with the header missing — which is the failure that
-//!    makes a log tool useless to an agent.
+//! 1. Every non-blank line belongs to exactly one group: no orphans, no double counts.
+//! 2. No group starts on a continuation line, so a fetch can never return the bottom half
+//!    of a stack trace without its header.
 //!
-//! When the rules are unsure, the tie is broken toward **starting a new entry**.
-//! Over-splitting is cosmetic: the agent gets eight rows instead of one and reads them
-//! fine. Over-merging destroys the boundary that fingerprinting keys on, and silently
-//! makes two different bugs look like one.
+//! Ties are broken toward starting a new entry. Over-splitting only costs extra rows,
+//! whereas over-merging destroys the boundary fingerprinting keys on and makes two
+//! different failures share one identity.
 
 use crate::model::DelimiterMode;
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// Continuation markers, per runtime. Stack traces are the most rigidly structured thing
-/// in a log stream, not the least, which is why this table is exact in practice rather
-/// than heuristic.
+/// Continuation markers, per runtime.
 pub static CONTINUATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?x)
@@ -74,16 +70,16 @@ pub struct Line<'a> {
     pub captured_at: i64,
 }
 
-/// Incremental grouper. Feed lines in order; take closed groups as they are decided.
+/// Incremental grouper: lines are fed in order and closed groups come back as they are
+/// decided.
 ///
-/// A group can only be closed once something after it proves it ended, so the last group
-/// stays open until [`Grouper::flush`] — called at end of run, and by the daemon after a
-/// short idle gap so the live view does not wait on a server that has gone quiet.
+/// A group is only closed once a later line proves it ended, so the last group stays open
+/// until [`Grouper::flush`].
 pub struct Grouper {
     mode: DelimiterMode,
     open: Option<Group>,
-    /// Blank lines seen since the last content line. They join the current group only if
-    /// the group turns out to continue; otherwise they belong to nothing.
+    /// Blank lines seen since the last content line. They join the open group only if it
+    /// turns out to continue; otherwise they belong to no group.
     pending_blanks: i64,
     /// Inside a Python-style block whose terminator has not arrived yet.
     in_python_block: bool,
@@ -111,11 +107,11 @@ impl Grouper {
         self.open.is_some()
     }
 
-    /// Feed one line. Returns the group that this line closed, if any.
+    /// Feeds one line, returning the group that this line closed, if any.
     pub fn push(&mut self, line: &Line<'_>) -> Option<Group> {
         if line.text.trim().is_empty() {
-            // Blank lines are held, not attributed. A blank inside a stack trace belongs
-            // to it; a blank between two entries belongs to neither.
+            // Held, not attributed: a blank inside a stack trace belongs to it, a blank
+            // between two entries belongs to neither.
             if self.open.is_some() {
                 self.pending_blanks += 1;
             }
@@ -137,7 +133,7 @@ impl Grouper {
         } else {
             match self.open.as_mut() {
                 Some(g) => {
-                    // The held blanks are now interior, so they join.
+                    // Held blanks are now interior, so they join the group.
                     g.end_line = line.index;
                     self.pending_blanks = 0;
                     if self.in_python_block && PY_TERMINATOR.is_match(line.text) {
@@ -146,9 +142,9 @@ impl Grouper {
                     None
                 }
                 None => {
-                    // A continuation with nothing to continue — the run began mid-trace,
-                    // or the previous group was already flushed on an idle gap. Invariant
-                    // 1 says it still has to land somewhere, so it opens its own group.
+                    // A continuation with nothing to continue: the run began mid-trace, or
+                    // the previous group was flushed on an idle gap. Invariant 1 requires
+                    // it to land somewhere, so it opens its own group.
                     self.open = Some(Group {
                         start_line: line.index,
                         end_line: line.index,
@@ -160,7 +156,7 @@ impl Grouper {
         }
     }
 
-    /// Close whatever is open. Called at end of run and after an idle gap.
+    /// Closes whatever group is open. Called at end of run and after an idle gap.
     pub fn flush(&mut self) -> Option<Group> {
         self.pending_blanks = 0;
         self.in_python_block = false;
@@ -168,17 +164,16 @@ impl Grouper {
     }
 
     fn starts_entry(&self, line: &Line<'_>) -> bool {
-        // A Python traceback runs until its column-zero terminator, whatever the mode
-        // says. This is the case that produced a real fingerprint collision in the
-        // prototype, so it is handled structurally rather than left to the mode rules.
+        // A Python traceback runs until its column-zero terminator regardless of mode;
+        // splitting it would give the exception type its own fingerprint.
         if self.in_python_block {
             return false;
         }
         if is_continuation(line.text) {
             return false;
         }
-        // A traceback opener matches no mode's start rule, so without this it merges into
-        // whatever info line happened to precede it.
+        // A traceback opener matches no mode's start rule, so it would otherwise merge
+        // into the preceding entry.
         if BLOCK_OPENER.is_match(line.text) {
             return true;
         }
@@ -190,7 +185,7 @@ impl Grouper {
             }
             DelimiterMode::ColourBracket => super::mode::starts_with_sgr(line.raw),
             DelimiterMode::Prefix => super::mode::LINE_START.is_match(line.text),
-            // Nothing matched, so the safe default applies: start a new entry.
+            // No delimiter to go on, so break toward a new entry.
             DelimiterMode::Fallback => true,
         }
     }
@@ -201,7 +196,7 @@ mod tests {
     use super::*;
     use crate::parse::vt;
 
-    /// Group a whole stream and return groups plus the mode used.
+    /// Groups a whole stream in one pass.
     fn group_all(mode: DelimiterMode, raw: &[&[u8]]) -> Vec<Group> {
         let mut g = Grouper::new(mode);
         let mut out = Vec::new();
@@ -268,7 +263,7 @@ mod tests {
 
     #[test]
     fn node_groups_on_stack_frames_alone() {
-        // The hard case: no colour, no timestamp, no level. Only `^\s+at\s` to go on.
+        // No colour, no timestamp, no level: only `^\s+at\s` to go on.
         let groups = group_all(DelimiterMode::Fallback, NODE);
         assert_eq!(groups.len(), 4, "{groups:#?}");
         assert_partition(NODE, &groups);
@@ -292,8 +287,7 @@ mod tests {
 
     #[test]
     fn python_tracebacks_stay_whole_through_their_terminator() {
-        // The terminator sits at column zero and looks exactly like a new entry. Getting
-        // this wrong splits the exception type off its own traceback.
+        // The terminator sits at column zero and looks like a new entry.
         let groups = group_all(DelimiterMode::Prefix, PYTHON);
         assert_eq!(groups.len(), 4, "{groups:#?}");
         assert_partition(PYTHON, &groups);
@@ -329,8 +323,7 @@ mod tests {
 
     #[test]
     fn ruby_unindented_backtrace_lines_stay_attached() {
-        // `-e:5:in '<main>'` sits at column zero. Without a rule for it the frame detaches
-        // into its own entry — harmless but untidy, and the prototype caught it.
+        // `-e:5:in '<main>'` sits at column zero and needs its own continuation rule.
         let groups = group_all(DelimiterMode::Prefix, RUBY);
         assert_eq!(groups.len(), 3, "{groups:#?}");
         assert_partition(RUBY, &groups);

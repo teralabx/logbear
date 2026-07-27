@@ -1,8 +1,7 @@
 //! Backfill of spool files.
 //!
-//! When the daemon is down, upgrading, or wedged, the shim writes captured bytes to a
-//! spool file and carries on — the wrapped process must never notice (C2). This is the
-//! other half of that: on next contact, the spool becomes a real run, in order, with its
+//! When the daemon is down, upgrading or wedged, the shim writes captured bytes to a spool
+//! file and carries on. On next contact the spool becomes a real run, in order, with its
 //! original timestamps.
 
 use crate::state::Daemon;
@@ -12,7 +11,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Ingest one spool file and delete it. Returns the number of bytes replayed.
+/// Ingests one spool file and deletes it, returning the number of bytes replayed.
 pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
     let file = std::fs::File::open(path).map_err(|e| runlog_core::Error::io(path, e))?;
     let mut reader = BufReader::new(file);
@@ -27,8 +26,7 @@ pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
     while let Some(frame) = Frame::read_from(&mut reader)? {
         if let Frame::Data { captured_at, bytes } = frame {
             replayed += bytes.len();
-            // A single corrupt frame should not cost the whole run; keep going and let
-            // the rest land.
+            // A single corrupt frame should not cost the whole run.
             let _ = daemon.ingest(&handle, &live, &bytes, captured_at);
         }
     }
@@ -45,7 +43,7 @@ pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
     Ok(replayed)
 }
 
-/// Drain every spool file present at startup, oldest first.
+/// Drains every spool file present at startup, oldest first.
 pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
     let dir = runlog_core::paths::spool_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -63,8 +61,8 @@ pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
         match ingest(daemon, &path) {
             Ok(_) => done += 1,
             Err(e) => {
-                // A spool we cannot parse is moved aside rather than retried forever,
-                // and rather than deleted — it is the only copy of that output.
+                // A spool that will not parse is moved aside rather than retried forever
+                // or deleted: it is the only copy of that output.
                 eprintln!("runlogd: could not ingest {}: {e}", path.display());
                 let _ = std::fs::rename(&path, path.with_extension("spool.bad"));
             }

@@ -1,26 +1,17 @@
-//! runlog's harness hook — the thing that makes the product work.
+//! Harness hook for Claude Code and Codex.
 //!
-//! Everything else in runlog is a log tool. This binary is the part that *interrupts an
-//! agent* the moment it claims to be done while the dev server is throwing exceptions.
+//! One binary serves both harnesses:
 //!
-//! One binary serves both harnesses. Verified against current vendor documentation during
-//! implementation, not assumed from the design spec:
+//! * Claude Code — `Stop` and `PostToolUse`, configured in `~/.claude/settings.json`.
+//! * Codex — `Stop`, `SubagentStop` and `PostToolUse`, configured in `~/.codex/hooks.json`
+//!   or `[hooks]` in `config.toml`.
 //!
-//! * **Claude Code** — `Stop` and `PostToolUse`, configured in `~/.claude/settings.json`.
-//!   Blocks with `{"decision":"block","reason":…}`; injects with
-//!   `hookSpecificOutput.additionalContext`. Payload carries `session_id`, `cwd`,
-//!   `hook_event_name`, `stop_hook_active`.
-//! * **Codex** — hooks are stable (`v0.124.0`) and on by default, configured in
-//!   `~/.codex/hooks.json` or `[hooks]` in `config.toml`. `Stop`, `SubagentStop` and
-//!   `PostToolUse` all exist with the same flat snake_case payload. Same block shape.
-//!   `hookSpecificOutput` exists on `PostToolUse` but **not** on `Stop`.
+//! Both deliver a flat snake_case payload carrying `session_id`, `cwd`, `hook_event_name`
+//! and `stop_hook_active`, and both block with `{"decision":"block","reason":…}`.
+//! `hookSpecificOutput` exists on Codex `PostToolUse` but not on Codex `Stop`.
 //!
-//! So this is one adapter with two config writers, exactly as §10.1 predicted.
-//!
-//! **Fail open, always.** Daemon down, malformed payload, timeout, unreadable field — every
-//! one of them exits 0 with an allow response. A hook that breaks the user's agent because
-//! our daemon is down is far worse than a hook that misses a notification, and this is the
-//! only place in runlog where our code sits in the critical path of someone else's tool.
+//! Every failure path fails open: daemon down, malformed payload, timeout or unreadable
+//! field all exit 0 with an allow response.
 
 pub mod config;
 pub mod decide;
@@ -35,9 +26,10 @@ use runlog_core::Result;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// The daemon calls the hook needs, behind a trait so the loop-safety rules can be tested
-/// without a running daemon — which matters here, because the interesting cases (budget
-/// exhausted, ack refused) are ones a live daemon will not produce on demand.
+/// The daemon calls the hook needs.
+///
+/// A trait so the loop-safety rules can be tested without a running daemon: the interesting
+/// cases (budget exhausted, ack refused) are ones a live daemon will not produce on demand.
 pub trait Daemon {
     fn unread(&mut self, project: ProjectRef, session_id: &str, harness: &str)
         -> Result<UnreadState>;
@@ -74,21 +66,19 @@ impl Daemon for Client {
     }
 }
 
-/// The allow response: an empty object. Valid, minimal, and invisible.
+/// The allow response: an empty JSON object.
 ///
-/// It has to be exactly this. Codex treats non-empty unparseable stdout on `Stop` as a hard
-/// hook failure, so "print nothing interesting" is not good enough — it must be JSON.
+/// It must be JSON: Codex treats non-empty unparseable stdout on `Stop` as a hard hook
+/// failure.
 pub fn allow() -> Value {
     json!({})
 }
 
 /// Decide, act, and produce the JSON for stdout.
 ///
-/// The ordering here is guard 3 of §10.3 and it is not cosmetic: **the cursor advances when
-/// the block is issued**, not when the agent acknowledges. If the ack fails we downgrade to
-/// advisory context rather than blocking, because a block whose watermark did not move
-/// would re-fire on the same errors forever — the precise failure mode the guard exists to
-/// prevent.
+/// The cursor advances when the block is issued, not when the agent acknowledges. A failed
+/// ack downgrades the block to advisory context, because a block whose watermark did not
+/// move would re-fire on the same errors forever.
 pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
     let project = ProjectRef::Path(payload.cwd.clone());
     let harness = payload.harness.as_str();
@@ -127,9 +117,8 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
 
 /// Connect for a single hook invocation.
 ///
-/// `connect`, never `connect_or_start`: a hook must not spawn a daemon and must not spend
-/// seconds polling for one to come up while the user's agent waits. If runlogd is not
-/// already running there is nothing to report anyway.
+/// `connect`, never `connect_or_start`: a hook must not spawn a daemon or poll for one to
+/// come up while the agent waits.
 pub fn connect() -> Option<Client> {
     let mut client = Client::connect().ok()?;
     // A wedged daemon must not become a wedged agent.

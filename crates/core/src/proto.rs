@@ -1,13 +1,11 @@
 //! The daemon wire protocol.
 //!
-//! One unix socket at `~/.runlog/runlogd.sock` serves three kinds of client — the shim
+//! One unix socket at `~/.runlog/runlogd.sock` serves three kinds of client: the shim
 //! streaming capture, request/response callers (CLI, MCP, hook, Tauri), and long-lived
-//! subscribers (the app's live view). They are distinguished by what they send first, not
-//! by separate sockets, so there is one thing to start and one thing to check.
+//! subscribers. They are distinguished by what they send first, not by separate sockets.
 //!
-//! Framing is deliberately not "JSON all the way down": capture is raw bytes and
-//! base64-ing every chunk of a dev server's output would cost more than the rest of the
-//! system combined. So a frame is a one-byte kind, a length, and a payload.
+//! Frames are a one-byte kind, a length, and a payload rather than JSON throughout, since
+//! base64-ing every chunk of captured output would dominate the system's cost.
 //!
 //! ```text
 //! [u8 kind][u32 len LE][payload len bytes]
@@ -24,15 +22,15 @@ use std::io::{Read, Write};
 pub const FRAME_JSON: u8 = 1;
 pub const FRAME_DATA: u8 = 2;
 
-/// Refuse to allocate for an absurd length claim from a peer we do not fully trust.
+/// Upper bound on a frame payload, so a bad length claim cannot force a huge allocation.
 pub const MAX_FRAME: usize = 32 * 1024 * 1024;
 
-/// How a project is named by a caller. Everything resolves to a canonical git root.
+/// How a caller names a project. Every variant resolves to a canonical git root.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "by", content = "value")]
 pub enum ProjectRef {
-    /// A directory. Resolved up to its git root, then matched by containment so a server
-    /// started in `apps/api` is found by an agent working at the repo root.
+    /// A directory, resolved up to its git root and then matched by containment so a
+    /// server started in `apps/api` is found from the repo root.
     Path(String),
     Id(ProjectId),
 }
@@ -47,15 +45,14 @@ impl ProjectRef {
     }
 }
 
-/// Which run to compare against in a diff. `LastGood` is the default and the one people
-/// actually mean when they say "it worked yesterday".
+/// Which run to compare against in a diff. `LastGood` is the default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum RunRef {
     Id(RunId),
     /// Most recent run in the project, whatever its outcome.
     Latest,
-    /// Most recent run that exited 0 **and** logged no errors.
+    /// Most recent run that exited 0 and logged no errors.
     LastGood,
     /// Most recent run that did not meet that bar.
     LastBad,
@@ -68,13 +65,13 @@ pub struct EntryFilter {
     #[serde(default)]
     pub errors_only: bool,
     /// Only entries whose signature is being seen for the first time in this project, at
-    /// any severity. This is the filter that finds freshly added `print` / `IO.inspect`
-    /// debugging, which by construction declares no level and so cannot be found by one.
+    /// any severity. Finds ad-hoc `print` / `IO.inspect` debugging, which declares no
+    /// level and so cannot be selected by one.
     #[serde(default)]
     pub novel_only: bool,
     /// Unix micros; entries strictly newer than this.
     pub since: Option<i64>,
-    /// Entries with an id strictly greater than this. How the live view tails.
+    /// Entries with an id strictly greater than this; how the live view tails.
     pub after_entry: Option<EntryId>,
     /// FTS5 match expression.
     pub search: Option<String>,
@@ -92,8 +89,8 @@ fn default_limit() -> usize {
 }
 
 impl Default for EntryFilter {
-    /// Written out rather than derived: a derived `limit: 0` silently truncates every
-    /// query that uses `..Default::default()`, which is most of them.
+    /// Written out rather than derived, because a derived `limit: 0` would silently
+    /// truncate every query built with `..Default::default()`.
     fn default() -> Self {
         EntryFilter {
             run_id: None,
@@ -131,7 +128,7 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
-    /// Hand the daemon a spool file written while it was unreachable (C2).
+    /// Hands the daemon a spool file written while it was unreachable (C2).
     IngestSpool {
         path: String,
     },
@@ -158,7 +155,7 @@ pub enum Request {
         #[serde(default)]
         filter: EntryFilter,
     },
-    /// Verbatim bytes for a line range — what `runlog cat` and the xterm replay use.
+    /// Verbatim bytes for a line range, used by `runlog cat` and the xterm replay.
     /// Returns [`FRAME_DATA`] frames followed by a `Response::Ok(null)`.
     RawStream {
         project: ProjectRef,
@@ -181,7 +178,7 @@ pub enum Request {
         params: Vec<serde_json::Value>,
         max_rows: Option<usize>,
     },
-    /// The DDL, views, functions and worked examples an agent needs before writing SQL.
+    /// DDL, views, functions and worked examples, for an agent about to write SQL.
     Schema {
         project: ProjectRef,
     },
@@ -190,8 +187,7 @@ pub enum Request {
         a: Option<RunRef>,
         b: Option<RunRef>,
     },
-    /// Block until a matching entry lands or the timeout expires. The one thing that is
-    /// genuinely not expressible as a query.
+    /// Blocks until a matching entry lands or the timeout expires.
     Wait {
         project: ProjectRef,
         timeout_ms: u64,
@@ -206,13 +202,13 @@ pub enum Request {
         session_id: String,
         harness: String,
     },
-    /// Advance the session watermark. The only request that writes on the agent's behalf.
+    /// Advances the session watermark.
     Ack {
         project: ProjectRef,
         session_id: String,
         harness: String,
         entry_id: Option<EntryId>,
-        /// Set by the hook when it issues a block, so the budget is spent honestly.
+        /// Set by the hook when it issues a block, so the block budget is charged.
         #[serde(default)]
         record_block: bool,
     },
@@ -228,12 +224,12 @@ pub enum Request {
         push_enabled: Option<bool>,
         notify_enabled: Option<bool>,
     },
-    /// Force a retention sweep now instead of waiting for the timer.
+    /// Forces a retention sweep now instead of waiting for the timer.
     Vacuum {
         project: ProjectRef,
     },
-    /// Drop and rebuild `entries`, fingerprints and the FTS index from `chunks`. Safe by
-    /// construction (C3) and the reason a parser bug is never data loss.
+    /// Drops and rebuilds `entries`, fingerprints and the FTS index from `chunks`.
+    /// Non-destructive by C3, so a parser bug is never data loss.
     Reparse {
         project: ProjectRef,
         run_id: Option<RunId>,
@@ -244,7 +240,7 @@ pub enum Request {
     },
 
     // ---- live ----
-    /// Converts this connection into an event stream. No further requests are read.
+    /// Converts this connection into an event stream; no further requests are read.
     Subscribe {
         project: Option<ProjectRef>,
     },
@@ -292,8 +288,8 @@ pub enum Event {
     RunFinished { run: Run },
     Entries { run_id: RunId, entries: Vec<EntryView> },
     Counters { run_id: RunId, counters: Counters },
-    /// A notification the daemon decided to post, mirrored to the app so the in-window
-    /// state matches the OS banner.
+    /// A notification the daemon posted, mirrored to the app so in-window state matches
+    /// the OS banner.
     Notice { notice: Notice },
     ProjectsChanged,
 }
@@ -307,7 +303,7 @@ pub struct Notice {
     pub level: Level,
     pub at: i64,
     /// Set when this notice replaces an earlier one for the same signature, so the OS
-    /// banner updates a count instead of stacking.
+    /// banner updates its count instead of stacking.
     pub replaces_key: Option<String>,
     pub count: i64,
 }
@@ -334,8 +330,8 @@ pub struct QueryResult {
     pub elapsed_ms: u64,
 }
 
-/// What a given agent session has not been shown yet. Rendered as the universal banner on
-/// every MCP response and as the hook's block reason.
+/// What an agent session has not been shown yet. Rendered as the banner on every MCP
+/// response and as the hook's block reason.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnreadState {
     pub new_errors: i64,
@@ -354,7 +350,7 @@ impl UnreadState {
         self.new_errors == 0
     }
 
-    /// The one-line banner prefixed to every MCP tool response.
+    /// One-line banner prefixed to every MCP tool response.
     pub fn banner(&self) -> Option<String> {
         if self.is_empty() {
             return None;
@@ -400,7 +396,7 @@ pub struct Settings {
     /// Blocks issued per agent session before push degrades to advisory context.
     pub block_budget: i64,
     pub push_enabled: bool,
-    /// Commands never captured — sessions rather than runs.
+    /// Commands never captured, being interactive sessions rather than runs.
     pub denylist: Vec<String>,
     pub redaction_enabled: bool,
     pub extra_redaction_patterns: Vec<String>,
@@ -439,9 +435,9 @@ pub struct QuietHours {
 pub struct RunDiff {
     pub a: Option<Run>,
     pub b: Option<Run>,
-    /// Signatures in B that are absent from A. The answer to "what changed".
+    /// Signatures in B that are absent from A.
     pub new_signatures: Vec<DiffSignature>,
-    /// Present in A, gone in B — fixed, or simply not exercised.
+    /// Signatures present in A and gone in B: fixed, or simply not exercised.
     pub resolved_signatures: Vec<DiffSignature>,
     pub changed_counts: Vec<DiffSignature>,
     pub git: GitDiff,
@@ -468,7 +464,7 @@ pub struct GitDiff {
     pub branch_a: Option<String>,
     pub branch_b: Option<String>,
     pub dirty_changed: bool,
-    /// `git log --oneline a..b`, best effort — empty when the repo is gone or shallow.
+    /// `git log --oneline a..b`, best effort; empty when the repo is gone or shallow.
     pub commits: Vec<GitCommit>,
     pub files_changed: Vec<String>,
 }
@@ -572,7 +568,7 @@ impl Frame {
     }
 }
 
-/// Metadata line written at the head of a spool file so a backfill knows what it holds.
+/// Metadata line at the head of a spool file, describing the run it holds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpoolHeader {
     pub version: u32,

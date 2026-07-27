@@ -1,22 +1,15 @@
 //! The daemon channel, and the spool it degrades to.
 //!
-//! This module exists to satisfy C2: **the shim can never degrade the user's process.**
-//! The read→stdout path in [`crate::wrap`] hands bytes to [`Sink::offer`], which is a
-//! `try_send` into a bounded queue and nothing else. It cannot block, cannot fail upward,
-//! and cannot make the wrapped command slower, whatever state the daemon is in.
+//! [`Sink::offer`] is a `try_send` into a bounded queue and nothing else: it cannot block
+//! or fail upward, so the wrapped command is never slowed by the daemon's state. Everything
+//! that can block — socket writes, file creation, waiting for a reply — happens on the
+//! sender thread behind the queue, which has one failure response: stop talking to the
+//! daemon and write a spool file instead.
 //!
-//! Everything that can block — socket writes, file creation, waiting for a reply — happens
-//! on the sender thread behind that queue. The thread has exactly one failure response:
-//! stop talking to the daemon and start writing a spool file. It never retries into a wall
-//! and never reports a problem to the user, because a dev server that keeps running while
-//! runlog quietly loses a minute of history is the correct trade, and the reverse is not.
-//!
-//! **Why the queue can drop.** If the daemon accepts a connection and then wedges, the
-//! socket buffer fills and the sender thread blocks inside a write. The queue fills behind
-//! it. At that point the reader either blocks — forbidden — or drops. It drops, counts
-//! what it dropped, and flips a flag that makes the sender abandon the socket for the
-//! spool as soon as it comes back. The loss is bounded by the queue depth and recorded in
-//! the spool header, so it is visible rather than silent.
+//! The queue drops rather than blocks when it fills, which is what happens when the daemon
+//! accepts a connection and then wedges. Drops are counted and set a flag that makes the
+//! sender abandon the socket for the spool, so the loss is bounded by the queue depth and
+//! recorded in the spool header rather than silent.
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 use runlog_core::client::Client;
@@ -30,20 +23,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Deep enough to ride out a scheduler hiccup or a batch commit, shallow enough that a
-/// wedged daemon costs a bounded amount of memory rather than an unbounded one.
+/// Deep enough to ride out a scheduler hiccup, shallow enough that a wedged daemon costs a
+/// bounded amount of memory.
 const QUEUE_DEPTH: usize = 1024;
 
-/// How long the sender waits for more bytes before flushing what it has. Capture is
-/// batched so a chatty stream costs one syscall per batch, but a quiet stream must not
-/// leave the last line sitting in a buffer where the live view cannot see it.
+/// How long the sender waits for more bytes before flushing, so a quiet stream does not
+/// leave its last line in a buffer where the live view cannot see it.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Frames queued before an unconditional flush, so a firehose does not grow the buffer.
 const FLUSH_EVERY: usize = 64;
 
-/// How long the exit path waits for the sender to finish. Bounded: the child has already
-/// exited and the user is waiting for their prompt back.
+/// How long the exit path waits for the sender: the child has already exited and the user
+/// is waiting for their prompt back.
 const FINISH_GRACE: Duration = Duration::from_millis(2000);
 
 pub const SPOOL_VERSION: u32 = 1;
@@ -103,15 +95,15 @@ impl Sink {
         }
     }
 
-    /// A cheap clone for the signal-watching thread, which has to report resizes but must
-    /// not own the sink or be able to finish it.
+    /// A clone for the signal-watching thread, which reports resizes but must not own the
+    /// sink or be able to finish it.
     pub fn handle(&self) -> SinkHandle {
         SinkHandle {
             tx: self.tx.clone(),
         }
     }
 
-    /// Never blocks. This is the whole point of the module.
+    /// Queues a chunk of captured output. Never blocks.
     pub fn offer(&self, captured_at: i64, bytes: &[u8]) {
         let msg = Msg::Data {
             captured_at,
@@ -119,15 +111,16 @@ impl Sink {
         };
         if let Err(TrySendError::Full(_)) = self.tx.try_send(msg) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
-            // The sender is stuck on a socket that is not draining. Tell it to give up on
-            // the daemon; the spool is a local file and cannot wedge the same way.
+            // The sender is stuck on a socket that is not draining; a local spool file
+            // cannot wedge the same way.
             self.degrade.store(true, Ordering::Relaxed);
         }
     }
 
-    /// Report the outcome and wait, briefly, for the sender to land it. Both halves are
-    /// time-boxed: the child has already exited and the user is owed their prompt back,
-    /// so a wedged daemon costs them the grace period and not a second more.
+    /// Reports the outcome and waits for the sender to land it.
+    ///
+    /// Both halves are time-boxed, so a wedged daemon costs the user [`FINISH_GRACE`] and
+    /// no more.
     pub fn finish(self, exit_code: Option<i32>, signal: Option<String>) {
         let msg = Msg::Finish { exit_code, signal };
         if self.tx.send_timeout(msg, FINISH_GRACE).is_err() {
@@ -166,7 +159,7 @@ struct SenderState {
 
 impl SenderState {
     fn run(mut self, rx: Receiver<Msg>) {
-        // No daemon at all: spool from the first byte rather than discovering it later.
+        // No daemon at all: spool from the first byte.
         if self.client.is_none() {
             self.fall_back();
         }
@@ -185,7 +178,7 @@ impl SenderState {
                 }
                 Err(RecvTimeoutError::Timeout) => self.flush(),
                 // The wrap path exited without a Finish — a panic, or a hard kill. Land
-                // what we have rather than dropping the tail.
+                // what is there rather than dropping the tail.
                 Err(RecvTimeoutError::Disconnected) => {
                     self.write_finish(None, None);
                     return;
@@ -264,9 +257,10 @@ impl SenderState {
         }
     }
 
-    /// Abandon the daemon for the rest of this run. Deliberately one-way: a socket that
-    /// has failed once under load will fail again, and flapping between the two would
-    /// interleave the run's bytes across two sinks.
+    /// Abandons the daemon for the rest of this run.
+    ///
+    /// One-way: flapping between socket and spool would interleave the run's bytes across
+    /// two sinks.
     fn fall_back(&mut self) {
         let continues = self.client.take().map(|(_, id)| id);
         self.degrade.store(false, Ordering::Relaxed);
@@ -302,12 +296,10 @@ impl SenderState {
 /// [frame][frame][frame]...
 /// ```
 ///
-/// The header has to be the first line, but two of its fields — exit code and signal —
-/// are only known once the run is over. Rather than rewriting the file or buffering it in
-/// memory, the header line is written padded to a reserved length and rewritten in place
-/// at the end. The file length never changes, the frames never move, and a reader that
-/// does `read_line` then `serde_json::from_str` is unaffected by the padding, because JSON
-/// permits trailing whitespace.
+/// The header is the first line, but its exit code and signal are only known once the run
+/// is over, so it is written padded to a reserved length and rewritten in place at the end.
+/// The file length never changes and the frames never move; a reader that does `read_line`
+/// then `serde_json::from_str` is unaffected, because JSON permits trailing whitespace.
 pub struct SpoolWriter {
     file: BufWriter<std::fs::File>,
     header: SpoolHeader,
@@ -329,8 +321,7 @@ impl SpoolWriter {
         lock_exclusive(&file);
 
         let encoded = serde_json::to_vec(&header)?;
-        // Slack for the exit code, the signal name and a drop count: everything that gets
-        // filled in later is small and bounded.
+        // Slack for the exit code, signal name and drop count filled in by `finish`.
         let reserve = encoded.len() + 512;
         let mut file = BufWriter::new(file);
         write_padded_header(&mut file, &encoded, reserve)?;
@@ -360,9 +351,8 @@ impl SpoolWriter {
         }
         self.file.flush()?;
         let encoded = serde_json::to_vec(&self.header)?;
-        // If the finished header somehow outgrew its reserve the started-state header
-        // already on disk is still valid; a missing exit code is better than a corrupt
-        // file, so leave it alone.
+        // If the finished header outgrew its reserve, leave the started-state header on
+        // disk: a missing exit code beats a corrupt file.
         if encoded.len() < self.reserve {
             let file = self.file.get_mut();
             file.seek(SeekFrom::Start(0))?;
@@ -387,12 +377,11 @@ fn lock_exclusive(file: &std::fs::File) -> bool {
     unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
-/// Hand every spool file the daemon has not seen back to it.
+/// Hands every spool file the daemon has not seen back to it.
 ///
-/// Run at startup on its own connection and its own thread, before the child is spawned,
-/// so a backlog from a weekend of daemon downtime drains without the user ever noticing
-/// and without delaying the command they just typed. Files locked by a live shim are
-/// skipped — they are still being written.
+/// Runs on its own connection and thread before the child is spawned, so a backlog drains
+/// without delaying the command the user just typed. Files locked by a live shim are
+/// skipped, since they are still being written.
 pub fn drain(skip_token: &str) {
     let dir = paths::spool_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -424,8 +413,8 @@ pub fn drain(skip_token: &str) {
             path: path.to_string_lossy().into_owned(),
         };
         match client.call::<serde_json::Value>(&req) {
-            // Removing ours rather than trusting the daemon to: a spool file that is
-            // ingested and left behind would be re-sent on every subsequent run.
+            // Removed here rather than by the daemon: an ingested file left behind would
+            // be re-sent on every subsequent run.
             Ok(_) => {
                 let _ = std::fs::remove_file(&path);
             }
@@ -447,9 +436,8 @@ fn is_unlocked(path: &Path) -> bool {
     true
 }
 
-/// A run identifier that does not need the daemon: 128 bits of time plus process plus
-/// address-space entropy, which is enough for a filename that only has to be unique among
-/// the spool files on one machine.
+/// A run identifier that does not need the daemon: time, pid and address-space entropy,
+/// enough to be unique among the spool files on one machine.
 pub fn local_token() -> String {
     let now = runlog_core::now_micros() as u128;
     let pid = std::process::id() as u128;

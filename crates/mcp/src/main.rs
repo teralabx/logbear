@@ -1,9 +1,7 @@
 //! `runlog-mcp` — stdio MCP server.
 //!
-//! Read a line, answer it, flush. The only rule worth restating at the top of the binary:
-//! **stdout is the protocol**. Every diagnostic goes to stderr, because a single stray byte
-//! on stdout desynchronises the client's parser and the failure surfaces to the user as
-//! "the runlog MCP server doesn't work", with nothing to go on.
+//! Read a line, answer it, flush. stdout carries protocol frames and nothing else: a stray
+//! byte desynchronises the client's parser, so every diagnostic goes to stderr.
 
 use runlog_mcp::{derive_session_id, DaemonBackend, Server};
 use std::io::{BufRead, Write};
@@ -49,7 +47,7 @@ fn main() {
             continue;
         }
         for message in server.handle_line(&line) {
-            // A write failure means the client is gone; there is nothing useful left to do.
+            // A write failure means the client is gone.
             if serde_json::to_writer(&mut stdout, &message)
                 .map_err(|e| e.to_string())
                 .and_then(|_| stdout.write_all(b"\n").map_err(|e| e.to_string()))

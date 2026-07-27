@@ -1,19 +1,15 @@
-//! Secret redaction, applied **on the way in**.
+//! Secret redaction, applied before the write.
 //!
-//! Capturing everything a developer runs means capturing their secrets. The only version
-//! of this that actually holds is redaction before the write: data that never lands cannot
-//! leak through an export, a sync, a bug in a query, or an agent reading a log.
+//! Redacting on ingest rather than on read is load-bearing: a secret that never lands
+//! cannot leak through an export, a sync, a query bug, or an agent reading a log.
 //!
-//! Redaction is length-preserving where it can be. Rewriting a token to a shorter marker
-//! would shift every byte after it, and `chunks` is supposed to replay byte-exact into a
-//! terminal. So a matched secret becomes the same number of `•` characters, and the stream
-//! stays aligned.
+//! Masking preserves byte length, because `chunks` must replay byte-exact into a terminal
+//! and a shorter marker would shift everything after it.
 
 use regex::bytes::{Regex, RegexSet};
 use std::sync::OnceLock;
 
-/// Patterns matched against raw bytes. Ordered roughly by confidence: shapes that cannot
-/// plausibly be anything else come first.
+/// Patterns matched against raw bytes, ordered roughly by confidence.
 const PATTERNS: &[&str] = &[
     // AWS access key id / secret pairs
     r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b",
@@ -37,8 +33,8 @@ const PATTERNS: &[&str] = &[
     r"(?i)\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|PRIVATE_KEY|CREDENTIAL|ACCESS_KEY|AUTH)[A-Z0-9_]*\s*[=:]\s*(?:\x22[^\x22]*\x22|'[^']*'|[^\s;,]+)",
 ];
 
-/// The replacement glyph. U+2022 is three bytes in UTF-8, so length preservation is done
-/// on a byte budget rather than a character count.
+/// Replacement glyph. U+2022 is three bytes in UTF-8, so masks are sized by byte budget
+/// rather than character count.
 const DOT: &[u8] = "•".as_bytes();
 
 pub struct Redactor {
@@ -51,7 +47,7 @@ impl Redactor {
     pub fn new(enabled: bool, extra: &[String]) -> Redactor {
         let mut sources: Vec<String> = PATTERNS.iter().map(|s| s.to_string()).collect();
         for p in extra {
-            // A bad user pattern must not take down capture. Drop it and carry on.
+            // An invalid user pattern is dropped rather than failing capture.
             if Regex::new(p).is_ok() {
                 sources.push(p.clone());
             }
@@ -74,11 +70,10 @@ impl Redactor {
         }
     }
 
-    /// Redact in place. Returns the number of secrets masked.
+    /// Redacts in place, returning the number of secrets masked.
     ///
-    /// The `RegexSet` prefilter is the reason this is affordable on the ingest hot path:
-    /// the overwhelmingly common case is a line containing no secret at all, and that case
-    /// costs one pass with no capture-group bookkeeping.
+    /// The `RegexSet` prefilter keeps this affordable on the ingest hot path: the common
+    /// case of a line with no secret costs a single pass and no per-regex work.
     pub fn redact(&self, buf: &mut Vec<u8>) -> usize {
         if !self.enabled || buf.is_empty() {
             return 0;
@@ -112,7 +107,7 @@ impl Redactor {
         merged.len()
     }
 
-    /// Convenience for text paths (settings echoes, notification bodies).
+    /// Convenience wrapper for text paths such as settings echoes and notification bodies.
     pub fn redact_str(&self, s: &str) -> String {
         let mut buf = s.as_bytes().to_vec();
         self.redact(&mut buf);
@@ -125,14 +120,14 @@ fn mask_of(len: usize) -> Vec<u8> {
     while out.len() + DOT.len() <= len {
         out.extend_from_slice(DOT);
     }
-    // Pad the remainder so the byte length is preserved exactly.
+    // Pad the remainder so the byte length matches exactly.
     while out.len() < len {
         out.push(b'.');
     }
     out
 }
 
-/// A process-wide default for callers that have no settings handy.
+/// Process-wide default redactor, for callers with no settings at hand.
 pub fn default_redactor() -> &'static Redactor {
     static R: OnceLock<Redactor> = OnceLock::new();
     R.get_or_init(|| Redactor::new(true, &[]))

@@ -1,14 +1,11 @@
 //! Delimiter-mode detection.
 //!
-//! Grouping is the one genuinely inferential step in the pipeline, so the strategy is to
-//! spend effort finding an *exact* delimiter before falling back to inference. Modes are
-//! tried in order of how certain they are, and the winner is recorded on the run so an
-//! agent reading the data knows whether boundaries are exact or guessed rather than
-//! assuming they are right.
+//! Modes are tried in order of certainty so that an exact delimiter is preferred over
+//! inference, and the winner is recorded on the run so consumers know whether entry
+//! boundaries are exact or guessed.
 //!
-//! Detection samples the opening lines of a run. It is deliberately conservative: a mode
-//! must earn a clear majority of the sample, otherwise we drop to `Fallback`, where
-//! over-splitting is the failure mode and nothing is lost.
+//! Detection samples the opening lines of a run. A mode must earn a clear majority of the
+//! sample; otherwise the mode is `Fallback`, whose failure mode is over-splitting.
 
 use crate::model::DelimiterMode;
 use regex::Regex;
@@ -21,9 +18,9 @@ pub const MIN_SAMPLE: usize = 4;
 
 /// A line that opens a new entry in a timestamp/level-prefixed format.
 ///
-/// These are the rigid shapes: an ISO or clock timestamp at column zero, a bracketed or
-/// bare level token near the start, a `key=value` logfmt level, or a Ruby/Erlang style
-/// single-letter severity. Anything that has to guess belongs in `Fallback`, not here.
+/// Matches only rigid shapes: an ISO or clock timestamp at column zero, a bracketed or
+/// bare level token near the start, a logfmt `key=value` level, or a Ruby/Erlang-style
+/// single-letter severity. Shapes that require guessing belong in `Fallback`.
 pub static LINE_START: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?x)
@@ -51,13 +48,12 @@ pub static LINE_START: LazyLock<Regex> = LazyLock::new(|| {
     .expect("LINE_START regex")
 });
 
-/// Elixir's Logger wraps a whole entry in one SGR pair: `ESC[31m … ESC[0m`. When that
-/// holds, entry boundaries are byte-exact and no inference is needed at all.
+/// Scores how well the sample matches per-entry colour bracketing, where a whole entry is
+/// wrapped in one SGR pair (`ESC[31m … ESC[0m`) and boundaries are byte-exact.
 ///
-/// The trap is Node's `util.inspect`, which colours individual stack *frames* with
-/// `ESC[39m`. Splitting on any reset there would shred one error into eight entries. So
-/// the test insists on the bare `ESC[0m` reset specifically, and on the colour opening the
-/// line rather than appearing mid-line.
+/// Node's `util.inspect` colours individual stack frames with `ESC[39m`, so splitting on
+/// any reset would shred one error into many. The score therefore requires the bare
+/// `ESC[0m` reset and a colour opening the line, and rejects samples with mid-line resets.
 fn colour_bracket_score(raw: &[Vec<u8>]) -> f32 {
     if raw.is_empty() {
         return 0.0;
@@ -71,8 +67,8 @@ fn colour_bracket_score(raw: &[Vec<u8>]) -> f32 {
         }
         if let Some(pos) = find(line, b"\x1b[0m") {
             full_resets += 1;
-            // A reset that is not at the end of the line, with more colour after it, is
-            // the util.inspect shape: per-token colouring, not per-entry bracketing.
+            // A reset followed by more colour is the util.inspect shape: per-token
+            // colouring, not per-entry bracketing.
             if pos + 4 < line.len() && find(&line[pos + 4..], b"\x1b[").is_some() {
                 mid_line_resets += 1;
             }
@@ -111,8 +107,8 @@ fn prefix_score(text: &[String]) -> f32 {
     if text.is_empty() {
         return 0.0;
     }
-    // Continuation lines legitimately fail LINE_START, so they must not count against the
-    // mode — otherwise one stack-trace-heavy run would demote a perfectly rigid format.
+    // Continuation lines legitimately fail LINE_START, so excluding them stops a
+    // stack-trace-heavy run from demoting an otherwise rigid format.
     let candidates: Vec<&String> = text
         .iter()
         .filter(|l| !super::group::is_continuation(l))
@@ -142,7 +138,7 @@ impl Default for Detector {
 }
 
 impl Detector {
-    /// Feed a line. Returns the mode once it is settled.
+    /// Feeds a line, returning the mode once it is settled.
     pub fn observe(&mut self, raw: &[u8], text: &str) -> Option<DelimiterMode> {
         if self.decided.is_some() {
             return self.decided;
@@ -157,8 +153,10 @@ impl Detector {
         self.decided
     }
 
-    /// Commit to a mode with whatever sample exists. Called at end of run, and by the
-    /// grouper once enough lines have arrived that waiting longer stops helping.
+    /// Commits to a mode using whatever sample exists.
+    ///
+    /// Called at end of run, and once enough lines have arrived that waiting longer stops
+    /// helping.
     pub fn settle(&mut self) -> DelimiterMode {
         if self.decided.is_none() {
             self.decided = Some(self.decide());
@@ -174,7 +172,7 @@ impl Detector {
         self.raw.len()
     }
 
-    /// Ready to commit? Either the sample is full, or it is at least usable.
+    /// Whether the sample has reached [`MIN_SAMPLE`] lines.
     pub fn has_minimum(&self) -> bool {
         self.raw.len() >= MIN_SAMPLE
     }
@@ -237,8 +235,7 @@ mod tests {
 
     #[test]
     fn node_util_inspect_colouring_is_not_mistaken_for_bracketing() {
-        // Per-frame colour with mid-line resets. Splitting on reset here would shred one
-        // error into many, so this must NOT come back as ColourBracket.
+        // Per-frame colour with mid-line resets.
         let lines: Vec<&[u8]> = vec![
             b"\x1b[31mError\x1b[39m: \x1b[33mboom\x1b[39m",
             b"    at \x1b[36mObject.<anonymous>\x1b[39m (\x1b[32m/app/s.js:1:1\x1b[39m)",
@@ -283,7 +280,7 @@ mod tests {
 
     #[test]
     fn bare_node_output_falls_back() {
-        // No timestamp, no level, no colour. This is the hard case and it must admit it.
+        // No timestamp, no level, no colour.
         let lines: Vec<&[u8]> = vec![
             b"GET /users",
             b"Error: boom one",

@@ -5,11 +5,11 @@
 //!            deterministic  deterministic   sampled      inferential   read     normalised
 //! ```
 //!
-//! Exactly one stage is inferential, and it says so in what it stores. Note that severity
-//! is **not** that stage: it reads what the producer declared and reports `unknown` when
-//! nothing was declared, rather than inferring a level from the shape of the text.
-//! Everything else is reproducible from the bytes, which is what lets the whole derived
-//! index be dropped and rebuilt whenever a rule improves.
+//! Grouping is the only inferential stage, and entries record that in their `Boundaries`.
+//! Severity reads what the producer declared and reports `unknown` when nothing was
+//! declared; it never infers a level from the shape of the text. Every other stage is
+//! reproducible from the stored bytes, so the derived index can be dropped and rebuilt
+//! whenever a rule changes.
 
 pub mod classify;
 pub mod fingerprint;
@@ -24,10 +24,10 @@ use crate::parse::severity::Evidence;
 /// One physical line of the captured stream, verbatim.
 #[derive(Debug, Clone)]
 pub struct RawLine {
-    /// Index within the run, from zero. Stable forever: this is what entries point at.
+    /// Index within the run, from zero. Stable for the life of the run; entries point at it.
     pub index: i64,
     pub captured_at: i64,
-    /// Bytes with the trailing newline removed but everything else intact, ANSI included.
+    /// Bytes with the trailing newline removed, everything else intact, ANSI included.
     pub bytes: Vec<u8>,
 }
 
@@ -39,7 +39,7 @@ pub struct ParsedEntry {
     pub captured_at: i64,
     pub text: String,
     pub level: Level,
-    /// Which rung of the severity ladder answered. `Unknown` is a real answer.
+    /// Which rung of the severity ladder answered; `Unknown` is a valid answer.
     pub evidence: Evidence,
     pub is_error: bool,
     pub error_reason: Option<String>,
@@ -50,15 +50,14 @@ pub struct ParsedEntry {
 
 /// Splits a byte stream into lines on LF.
 ///
-/// `ONLCR` on a pty turns every `\n` into `\r\n`, so the trailing `\r` is dropped here —
-/// it is an artifact of the transport, deterministic, and keeping it would put a stray
-/// carriage return at the end of every stored line.
+/// `ONLCR` on a pty turns every `\n` into `\r\n`, so a trailing `\r` is dropped as a
+/// transport artifact.
 #[derive(Default)]
 pub struct LineSplitter {
     buf: Vec<u8>,
     next_index: i64,
-    /// Arrival time of the first byte of the line being assembled. Using the first byte
-    /// rather than the last is what makes "errors in the last 40 seconds" mean something.
+    /// Arrival time of the first byte of the line being assembled, so a line's timestamp
+    /// is when it started rather than when it completed.
     line_started_at: Option<i64>,
 }
 
@@ -84,8 +83,8 @@ impl LineSplitter {
                 self.emit(out, captured_at);
             } else {
                 self.buf.push(b);
-                // A progress bar can emit megabytes of `\r` and never an LF. Force a break
-                // rather than growing without bound; vt emulation still collapses it.
+                // A progress bar can emit megabytes of `\r` and never an LF, so cap the
+                // buffer; vt emulation still collapses the result.
                 if self.buf.len() >= MAX_RAW_LINE {
                     self.emit(out, captured_at);
                 }
@@ -93,8 +92,10 @@ impl LineSplitter {
         }
     }
 
-    /// Emit whatever partial line is buffered. Called at end of run and on an idle gap,
-    /// so a prompt that never prints a newline still becomes visible.
+    /// Emits whatever partial line is buffered.
+    ///
+    /// Called at end of run and on an idle gap, so a prompt that never prints a newline
+    /// still becomes visible.
     pub fn flush(&mut self, captured_at: i64) -> Option<RawLine> {
         if self.buf.is_empty() {
             return None;
@@ -126,35 +127,33 @@ pub struct ParseOutput {
     pub lines: Vec<RawLine>,
     /// Entries whose boundaries are now settled.
     pub entries: Vec<ParsedEntry>,
-    /// Set on the first feed that settles the mode, so the run row can be updated once.
+    /// Set on the first feed that settles the mode, so the run row is updated once.
     pub mode_settled: Option<DelimiterMode>,
 }
 
-/// Per-run parser. Owns the line splitter, the mode detector and the grouper, and keeps
-/// enough rendered text around to close a group when its end is finally proven.
+/// Per-run parser over the full pipeline.
 pub struct Parser {
     splitter: LineSplitter,
     detector: mode::Detector,
     grouper: group::Grouper,
     /// Rendered text of lines not yet claimed by a closed group, keyed by line index, so
-    /// closing a group does not require going back to storage. Drained as groups close, so
-    /// it only ever holds the entry currently open.
+    /// closing a group does not require reading back from storage. Drained as groups
+    /// close, so it only ever holds the entry currently open.
     pending: std::collections::VecDeque<(i64, String)>,
     mode: DelimiterMode,
     mode_locked: bool,
     /// Rendered text of lines seen before the mode settled — regrouped once it does.
     warmup: Vec<(RawLine, String)>,
     last_activity: i64,
-    /// Applied to each line the instant it is split out, before it is rendered, grouped,
-    /// classified or fingerprinted. Redacting later would leave the secret in the entry
-    /// text handed to the UI and in the fingerprint template, which is most of the ways it
-    /// could leak.
+    /// Applied to each line as soon as it is split out, before rendering, grouping,
+    /// classification or fingerprinting. Redacting any later would leak the secret into
+    /// the entry text and the fingerprint template.
     redactor: Option<std::sync::Arc<crate::redact::Redactor>>,
 }
 
-/// A group is closed after this much silence, so the live view is not held hostage by a
-/// server that has gone quiet mid-entry. Stack traces arrive within milliseconds, so this
-/// never splits one.
+/// Silence after which an open group is closed, so the live view is not blocked by a
+/// producer that goes quiet mid-entry. Well above the sub-millisecond gaps within a stack
+/// trace, so it never splits one.
 pub const IDLE_CLOSE_MICROS: i64 = 400_000;
 
 impl Default for Parser {
@@ -197,21 +196,19 @@ impl Parser {
         out
     }
 
-    /// Close an entry that has gone quiet. Returns nothing if there is nothing to close or
-    /// not enough silence has passed.
+    /// Closes an entry that has gone quiet, returning nothing until [`IDLE_CLOSE_MICROS`]
+    /// has elapsed since the last activity.
     pub fn tick(&mut self, now: i64) -> ParseOutput {
         let mut out = ParseOutput::default();
         if now - self.last_activity < IDLE_CLOSE_MICROS {
             return out;
         }
-        // A partial line with no newline behind it — a prompt, a spinner — becomes visible
-        // rather than sitting invisible in the buffer.
+        // Surface a newline-less partial line (a prompt, a spinner).
         if let Some(line) = self.splitter.flush(now) {
             self.consume(vec![line], &mut out);
         }
-        // A pause is the end of the opening, so settle on whatever sample exists rather
-        // than holding entries back forever. The mode is a derived fact and a reparse can
-        // revise it, so committing early costs nothing permanent.
+        // Settle on whatever sample exists rather than holding entries back indefinitely;
+        // the mode is derived, so a reparse can revise it.
         if !self.mode_locked {
             self.lock_mode(&mut out);
         }
@@ -221,7 +218,7 @@ impl Parser {
         out
     }
 
-    /// End of run: settle the mode, flush every buffer, close the last group.
+    /// Ends the run: settles the mode, flushes every buffer and closes the last group.
     pub fn finish(&mut self, now: i64) -> ParseOutput {
         let mut out = ParseOutput::default();
         if let Some(line) = self.splitter.flush(now) {
@@ -258,9 +255,10 @@ impl Parser {
         }
     }
 
-    /// Commit to a mode and replay the warmup lines through the grouper. Replaying rather
-    /// than grouping-as-we-go is what stops the first few entries of every run from being
-    /// grouped under the wrong rules.
+    /// Commits to a mode and replays the warmup lines through the grouper.
+    ///
+    /// Warmup lines are buffered rather than grouped on arrival so that the opening lines
+    /// of a run are not grouped under the wrong rules.
     fn lock_mode(&mut self, out: &mut ParseOutput) {
         let mode = self.detector.settle();
         self.mode = mode;
@@ -275,8 +273,8 @@ impl Parser {
     }
 
     fn feed_grouper(&mut self, line: &RawLine, text: &str, out: &mut ParseOutput) {
-        // Held before grouping, because the line that *closes* the previous group is the
-        // line that *opens* the next one, and both need their text available.
+        // Buffered before grouping: the line that closes the previous group is the line
+        // that opens the next one, and both need their text available.
         self.pending.push_back((line.index, text.to_string()));
 
         let closed = self.grouper.push(&group::Line {
@@ -313,8 +311,8 @@ impl Parser {
         });
     }
 
-    /// Slice the closed group's lines out of the pending buffer and discard anything
-    /// older, which is the blank-line padding that belonged to neither neighbour.
+    /// Slices the closed group's lines out of the pending buffer, discarding anything
+    /// older — blank-line padding belonging to neither neighbour.
     fn take_group_text(&mut self, g: &group::Group) -> String {
         let mut kept: Vec<String> = Vec::new();
         while let Some((index, _)) = self.pending.front() {
@@ -331,8 +329,8 @@ impl Parser {
     }
 }
 
-/// Rebuild entries from stored lines. This is the whole of "a parser bug is a rebuild,
-/// never data loss": hand it the chunks and it produces the index again.
+/// Rebuilds entries from stored lines, so a parser change can be applied to existing runs
+/// without recapturing them.
 pub fn reparse(lines: &[RawLine]) -> (DelimiterMode, Vec<ParsedEntry>) {
     let mut p = Parser::new();
     let mut entries = Vec::new();
@@ -357,7 +355,7 @@ mod tests {
         let mut p = Parser::new();
         let mut lines = Vec::new();
         let mut entries = Vec::new();
-        // One byte at a time, to prove nothing depends on how reads happen to land.
+        // One byte at a time: the result must not depend on read boundaries.
         for (i, b) in stream.iter().enumerate() {
             let out = p.push(&[*b], i as i64);
             lines.extend(out.lines);
@@ -378,7 +376,7 @@ mod tests {
         assert_eq!(lines.len(), 7);
         assert_eq!(entries.len(), 4, "{entries:#?}");
         assert_eq!(entries.iter().filter(|e| e.is_error).count(), 2);
-        // The stack trace arrived as one entry, not four.
+        // The stack trace is one entry, not four.
         assert_eq!(entries[1].start_line, 1);
         assert_eq!(entries[1].end_line, 3);
         assert!(entries[1].text.contains("at Module._compile"));
@@ -435,7 +433,6 @@ mod tests {
     fn an_idle_gap_closes_an_open_entry_for_the_live_view() {
         let mut p = Parser::new();
         p.push(b"Error: boom\n", 0);
-        // Nothing more arrives. The entry must still become visible.
         let out = p.tick(IDLE_CLOSE_MICROS + 1);
         assert_eq!(out.entries.len(), 1);
         assert!(out.entries[0].is_error);

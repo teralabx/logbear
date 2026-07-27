@@ -1,19 +1,16 @@
 //! End-to-end passthrough checks against the real binary.
 //!
-//! Ignored by default. They spawn `runlog`, which opens a pty and spawns a child, so they
-//! are opt-in:
+//! Ignored by default, since they spawn `runlog`, which opens a pty and spawns a child:
 //!
 //! ```text
 //! cargo test -p runlog -- --ignored
 //! ```
 //!
-//! Every case runs the **daemon-absent** path deliberately, because that is the one that
-//! has to work regardless: `RUNLOG_HOME` and `RUNLOG_SOCKET` are redirected into a
+//! Every case runs the daemon-absent path: `RUNLOG_HOME` and `RUNLOG_SOCKET` point into a
 //! temporary directory, and the binary is copied somewhere with no `runlogd` beside it and
 //! a `PATH` containing only that directory, so the shim's auto-start finds nothing to
-//! start. Without that last part these tests would silently spawn a real daemon and stop
-//! testing what they claim to. For the same reason every wrapped command is named by
-//! absolute path or is a `/bin/sh` builtin.
+//! start. Otherwise these tests would silently spawn a real daemon. For the same reason
+//! every wrapped command is an absolute path or a `/bin/sh` builtin.
 
 use std::path::Path;
 use std::process::Command;
@@ -56,8 +53,8 @@ fn a_wrapped_command_reproduces_its_output_and_nothing_else() {
         .args(["/bin/sh", "-c", "printf hello"])
         .output()
         .expect("runlog runs");
-    // Exactly the child's bytes. Anything extra here means the shim injected something
-    // into the pty — the historical failure is a stray newline plus EOT on stdin EOF.
+    // Exactly the child's bytes: anything extra means the shim injected something into the
+    // pty, such as a stray newline plus EOT on stdin EOF.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
 }
 
@@ -139,8 +136,8 @@ fn the_no_pty_path_still_propagates_the_exit_code() {
 #[ignore = "spawns the real binary"]
 fn a_denylisted_command_is_exec_ed_with_no_capture() {
     let dir = tempfile::tempdir().unwrap();
-    // A stand-in for the real thing: what matters is that the basename is on the default
-    // denylist, which is what applies when there is no daemon to ask for settings.
+    // A stand-in whose basename is on the default denylist, which is what applies with no
+    // daemon to ask for settings.
     let fake = dir.path().join("vim");
     std::fs::write(&fake, "#!/bin/sh\nprintf editing\n").unwrap();
     #[cfg(unix)]

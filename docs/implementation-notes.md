@@ -110,7 +110,52 @@ Two other Codex details that changed the implementation:
 - Codex refuses to run non-managed command hooks until they are trusted via `/hooks`, and
   the failure mode is silence. `--emit-config` and `runlog doctor` both say so.
 
-## 11. Windows is not built or tested
+## 11. Severity is read, never inferred
+
+The spec described error detection as a union of independent signals, biased to over-catch,
+on the reasoning that a false positive is cheaper than a miss. Measured against a real
+Phoenix server, that bias produced **25 false errors out of 27**. Every false one was a
+`[debug]` request log whose indented `Parameters:` / `Pipelines:` lines were counted as
+stack frames. The two real errors were the only two the process had *declared*.
+
+Over-catching did not trade precision for recall. It drowned the recall it bought, and the
+notifications built on top of it were worthless.
+
+Severity now comes from one ladder, stopping at the first rung that answers:
+
+| rung | source |
+|---|---|
+| `declared` | a severity token — JSON field, logfmt field, or a keyword in the line's prefix region |
+| `structural` | no token, but a runtime printed an exception banner anchored at column zero |
+| `unknown` | the producer said nothing |
+
+A declared level wins outright: `[debug]` stays debug whatever follows it. `unknown` is a
+value, not a missing one, and is never an error and never notified on.
+
+This matches where the industry landed. OpenTelemetry's log data model makes
+`SEVERITY_NUMBER_UNSPECIFIED` first-class and its spec community
+[rejected defaulting it to INFO](https://github.com/open-telemetry/opentelemetry-specification/issues/4478).
+Grafana Loki, which ingests stdout from every language there is, detects levels with a
+nine-word keyword scan and returns `unknown` when none match — no stack-trace rule, no
+exception-shape rule, no indentation heuristic anywhere in the path. Sentry and AppSignal
+get exact errors by running *inside* the process, hooking each language's own uncaught
+exception mechanism; that is ruled out here by the opacity constraint.
+
+Two deliberate deviations from Loki's detector:
+
+- **A prefix window.** A level token is a prefix field, so the scan stops after 80 bytes.
+- **Declaration, not just word boundary.** Loki's open issue #18060 is `productinformation­service` reading as info; word boundaries fix that but not `loaded 12 error handlers`, which is bounded on both sides and still prose. A match counts only if it is at position zero, opened by `[ ( { =`, closed by `:`, or capitalised. Quotes are boundaries but not declarations, which keeps `%{status: "error"}` — an `IO.inspect` of a map — out of the error list.
+
+Output that declares nothing is still captured, indexed and searchable. It surfaces as
+**novelty** instead: a signature's first appearance in a project is a fact, which is what
+makes freshly added `print` / `IO.inspect` debugging findable when it has no level to
+filter on. `v_novel`, `EntryFilter::novel_only` and `runlog logs --new` expose it.
+Novelty never raises a notification on its own.
+
+Drain-style template mining (see §3) would improve the *identity* half of this and remains
+deferred; it is not a substitute for the severity ladder.
+
+## 12. Windows is not built or tested
 
 Spec §18 left this open. `portable-pty` supports ConPTY and the code compiles for it in
 principle, but the socket layer is `std::os::unix`, the service installer writes launchd

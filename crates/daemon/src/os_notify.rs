@@ -1,14 +1,11 @@
 //! Posting a notification to the operating system.
 //!
-//! The daemon *decides* (see `runlog_core::notify`) so the behaviour is identical whether
-//! or not the app is open. It only *posts* here when no app is subscribed — when the app
-//! is running it posts them itself through `tauri-plugin-notification`, which is the path
-//! that gets a real application identity, an icon, and click-through to the right screen.
+//! The decision is made in `runlog_core::notify`, so it is the same whether or not the app
+//! is open; this posts only when no app is subscribed, since the app posts them itself
+//! through `tauri-plugin-notification` with a real application identity and click-through.
 //!
-//! This fallback is deliberately shell-based. Linking a notification framework into a
-//! headless daemon buys a dependency, a bundle-identity requirement on macOS, and a dbus
-//! connection on Linux, in exchange for a banner the user usually sees from the app
-//! anyway.
+//! Shell-based on purpose: linking a notification framework into a headless daemon costs a
+//! bundle-identity requirement on macOS and a dbus connection on Linux.
 
 use runlog_core::proto::Notice;
 use std::process::{Command, Stdio};
@@ -24,9 +21,8 @@ pub fn post(notice: &Notice) {
 
 #[cfg(target_os = "macos")]
 fn post_macos(notice: &Notice) {
-    // `terminal-notifier` supports replacing a banner in place by group id, which is what
-    // makes a recurring error tick a counter instead of stacking. osascript cannot do
-    // that, so it is only the fallback.
+    // `terminal-notifier` can replace a banner in place by group id, so a recurring error
+    // ticks a counter instead of stacking. osascript cannot, so it is only the fallback.
     let group = notice.replaces_key.clone().unwrap_or_default();
     let ran = Command::new("terminal-notifier")
         .args([
@@ -88,8 +84,7 @@ fn body(notice: &Notice) -> String {
     }
 }
 
-/// Quote a string for AppleScript. Log lines contain quotes and backslashes constantly,
-/// and an unescaped one turns a notification into a syntax error at best.
+/// Quotes a string for AppleScript; log lines contain quotes and backslashes constantly.
 #[cfg(target_os = "macos")]
 fn applescript_string(s: &str) -> String {
     let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");

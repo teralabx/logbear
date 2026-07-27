@@ -13,8 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Root of everything runlog owns. Honours `RUNLOG_HOME`, which is how the test suite
-/// keeps a run from touching the developer's real history.
+/// Root of everything runlog owns. `RUNLOG_HOME` overrides it, which is how tests avoid
+/// touching real history.
 pub fn home() -> PathBuf {
     if let Some(dir) = std::env::var_os("RUNLOG_HOME") {
         return PathBuf::from(dir);
@@ -59,8 +59,8 @@ pub fn settings_file() -> PathBuf {
     home().join("settings.json")
 }
 
-/// Stable per-project database path. Keyed on the canonical project root so a repo that
-/// moves gets a new database rather than silently merging with whatever was there.
+/// Per-project database path, keyed on the canonical project root so a moved repo gets a
+/// new database instead of merging into an existing one.
 pub fn project_db(root: &Path) -> PathBuf {
     home()
         .join("projects")
@@ -73,7 +73,7 @@ pub fn project_hash(root: &Path) -> String {
     h.to_hex()[..16].to_string()
 }
 
-/// Where the shim spools bytes when the daemon cannot take them. Never blocks the child.
+/// Spool file the shim writes to when the daemon cannot take bytes.
 pub fn spool_file(token: &str) -> PathBuf {
     spool_dir().join(format!("{token}.spool"))
 }

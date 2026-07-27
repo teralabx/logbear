@@ -1,9 +1,8 @@
 //! One connection handler.
 //!
-//! The socket serves three kinds of client and tells them apart by what they send first,
-//! rather than by having three sockets: there is one thing to start and one thing to
-//! check. A connection that sends `StartRun` becomes an ingest stream, one that sends
-//! `Subscribe` becomes an event feed, and everything else is request/response.
+//! The three kinds of client share one socket and are told apart by what they send first: a
+//! connection that sends `StartRun` becomes an ingest stream, one that sends `Subscribe`
+//! becomes an event feed, and everything else is request/response.
 
 use crate::state::{Daemon, LiveRun, ProjectHandle};
 use runlog_core::model::*;
@@ -34,7 +33,7 @@ pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
             Frame::Data { captured_at, bytes } => {
                 if let Some((handle, live)) = &ingest {
                     // A storage failure must not stop the stream: the user's process is
-                    // still running and its output is still arriving.
+                    // still running and still emitting output.
                     let _ = daemon.ingest(handle, live, &bytes, captured_at);
                 }
             }
@@ -124,8 +123,8 @@ pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
     }
 
     // The shim died without saying goodbye — a crash, a kill -9, a closed laptop. Close
-    // the run with no exit code so it reads as an unexpected death rather than hanging
-    // around forever as "still running".
+    // the run with no exit code so it reads as an unexpected death rather than staying
+    // "still running" forever.
     if let Some((handle, live)) = ingest {
         let _ = daemon.finish_run(&handle, &live, None, None);
     }
@@ -218,8 +217,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             max_rows,
         } => {
             let h = daemon.resolve(&project)?;
-            // Runs against the file, on its own read-only connection, so an agent's SQL
-            // cannot touch the daemon's write handle or any other project.
+            // Runs on its own read-only connection, so an agent's SQL cannot touch the
+            // daemon's write handle or any other project.
             to_value(sandbox::query(h.db.path(), &sql, &params, max_rows)?)?
         }
 
@@ -259,8 +258,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             after_entry,
         } => {
             let h = daemon.resolve(&project)?;
-            // Anything that landed while the caller was deciding to wait counts, or a
-            // fast-failing server would be missed by every wait that just started.
+            // Anything that landed while the caller was deciding to wait still counts, or
+            // a fast-failing server would be missed by every wait that just started.
             let already = read::entries(
                 &h.db,
                 &EntryFilter {
@@ -301,8 +300,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             let h = daemon.resolve(&project)?;
             let budget = daemon.settings().block_budget;
             if record_block {
-                // Record which signatures were reported before advancing, so a repeat of
-                // the same one can never block this session twice.
+                // Record the reported signatures before advancing, so a repeat of the same
+                // one can never block this session twice.
                 let reported = read::unread(&h.db, &session_id, &harness, budget, 50)?;
                 let fps: Vec<FingerprintId> = reported
                     .entries
@@ -396,8 +395,8 @@ fn stream_raw(
     let start = start_line.unwrap_or(0);
     let end = end_line.unwrap_or(i64::MAX);
 
-    // Paged rather than one enormous frame: a long dev-server run is hundreds of
-    // megabytes, and the reader wants to start painting before it has all of it.
+    // Paged rather than one enormous frame: a long dev-server run is hundreds of megabytes
+    // and the reader wants to start painting before it has all of it.
     const PAGE: i64 = 2000;
     let mut at = start;
     loop {
@@ -441,8 +440,8 @@ fn stream_events(
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                // Nothing to say. Writing zero bytes still detects a peer that has gone
-                // away, which is how a closed app window is noticed.
+                // Writing zero bytes still detects a peer that has gone away, which is how
+                // a closed app window is noticed.
                 if writer.flush().is_err() {
                     break;
                 }

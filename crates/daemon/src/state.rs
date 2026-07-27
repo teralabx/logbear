@@ -1,8 +1,7 @@
 //! Daemon state: the project handles, the live runs, and the fanout.
 //!
-//! Threads, not an async runtime. The work is a local unix socket in front of a local
-//! SQLite database — there is no IO concurrency problem here worth a runtime, and a
-//! thread per connection keeps every code path readable top to bottom.
+//! Threads rather than an async runtime: the work is a local unix socket in front of a
+//! local SQLite database, so a thread per connection is enough.
 
 use crossbeam_channel::{Receiver, Sender};
 use runlog_core::model::*;
@@ -32,9 +31,10 @@ pub struct LiveRun {
     pub writer: Mutex<Writer>,
 }
 
-/// One connected subscriber. The channel is bounded so a stalled UI cannot make the
-/// daemon buffer without limit; when it fills we drop the subscriber rather than the
-/// capture path, because losing a live view is recoverable and losing a run is not.
+/// One connected subscriber.
+///
+/// The channel is bounded and a subscriber that fills it is dropped, because losing a live
+/// view is recoverable and losing a run is not.
 pub struct Subscriber {
     pub id: u64,
     pub project: Option<ProjectId>,
@@ -116,7 +116,7 @@ impl Daemon {
 
     // ---- projects ----
 
-    /// Resolve a reference to an already-registered project.
+    /// Resolves a reference to an already-registered project.
     pub fn resolve(&self, r: &ProjectRef) -> Result<Arc<ProjectHandle>> {
         let project = match r {
             ProjectRef::Id(id) => self.index.get(*id)?,
@@ -134,7 +134,7 @@ impl Daemon {
         self.handle_for(project)
     }
 
-    /// Resolve, registering the project if this is the first run there.
+    /// Resolves a directory, registering the project if this is the first run there.
     pub fn resolve_or_register(&self, cwd: &Path, name: &str) -> Result<Arc<ProjectHandle>> {
         if let Some(p) = self.index.resolve_path(cwd)? {
             return self.handle_for(p);
@@ -165,7 +165,7 @@ impl Daemon {
         Ok(handle)
     }
 
-    /// Re-read a project row after its config changed, so cached handles do not serve
+    /// Re-reads a project row after its config changed, so cached handles do not serve
     /// stale mute or retention settings.
     pub fn refresh_project(&self, id: ProjectId) -> Result<()> {
         if let Ok(mut open) = self.projects.lock() {
@@ -191,8 +191,8 @@ impl Daemon {
         let writer = Writer::start(&handle.db, &self.index, stamp, self.redactor())?;
         let run_id = writer.run_id();
 
-        // A restarted server should be able to notify about the same error again, rather
-        // than staying silent because the previous run already reported it.
+        // A restarted server should be able to notify about the same error again rather
+        // than stay silent because the previous run reported it.
         if let Ok(mut n) = handle.notifier.lock() {
             n.reset_for_new_run();
         }
@@ -253,14 +253,14 @@ impl Daemon {
             self.deliver(decision);
         }
 
-        // Enforce the cap after the run rather than during it: evicting bytes while the
-        // user is still watching them arrive is the wrong moment.
+        // The cap is enforced after the run rather than during it: evicting bytes while
+        // the user is still watching them arrive is the wrong moment.
         let cap = self.retention_cap(&handle.project);
         let _ = retention::enforce(&handle.db, cap);
         Ok(())
     }
 
-    /// Push captured bytes into a run, fanning out whatever the flush produced.
+    /// Pushes captured bytes into a run, fanning out whatever the flush produced.
     pub fn ingest(
         &self,
         handle: &ProjectHandle,
@@ -281,7 +281,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// Close entries that have gone quiet, so a server that stopped mid-stack-trace still
+    /// Closes entries that have gone quiet, so a server that stopped mid-stack-trace still
     /// shows what it printed.
     pub fn tick_runs(&self) {
         let live: Vec<Arc<LiveRun>> = match self.runs.lock() {
@@ -303,7 +303,7 @@ impl Daemon {
         }
     }
 
-    /// Fan a flush out to subscribers, waiters and the notification policy.
+    /// Fans a flush out to subscribers, waiters and the notification policy.
     fn publish(&self, handle: &ProjectHandle, live: &LiveRun, flushed: runlog_core::store::write::Flushed) {
         if flushed.entries.is_empty() {
             return;
@@ -354,8 +354,8 @@ impl Daemon {
         }
     }
 
-    /// A notice goes to every subscriber so the app's in-window state matches the OS
-    /// banner, and to the OS only when no app is listening to post it itself.
+    /// Sends a notice to every subscriber, and to the OS only when no app is listening to
+    /// post it itself.
     fn deliver(&self, decision: Decision) {
         let notice = match decision {
             Decision::Post(n) | Decision::Update(n) => n,
@@ -412,9 +412,8 @@ impl Daemon {
             if !wants {
                 return true;
             }
-            // A subscriber that cannot keep up is dropped. The alternative is buffering
-            // without limit on the capture path, which would trade a stale UI for lost
-            // output — the wrong way round.
+            // A subscriber that cannot keep up is dropped; buffering without limit on the
+            // capture path would trade a stale UI for lost output.
             s.tx.try_send(event.clone()).is_ok()
         });
     }
@@ -442,8 +441,8 @@ impl Daemon {
         let out = rx
             .recv_timeout(std::time::Duration::from_millis(timeout_ms))
             .unwrap_or_default();
-        // Remove by id whether we were woken or timed out. A waiter left behind would be
-        // walked by every future flush for the lifetime of the daemon.
+        // Removed by id whether woken or timed out: a waiter left behind would be walked
+        // by every future flush for the lifetime of the daemon.
         if let Ok(mut w) = self.waiters.lock() {
             w.retain(|x| x.id != id);
         }
@@ -467,18 +466,16 @@ impl Daemon {
             if matched.is_empty() {
                 return true;
             }
-            // Sent, so this waiter is done. A send failure means the caller already
-            // timed out and went away.
+            // A send failure means the caller already timed out and went away.
             let _ = w.tx.try_send(matched);
             false
         });
     }
 
-    /// Close runs left open by a daemon that stopped without finishing them.
+    /// Closes runs left open by a daemon that stopped without finishing them.
     ///
-    /// Runs at startup, before the socket accepts anything, because until it has run the
-    /// home screen would claim a dead run is live. Every registered project is opened for
-    /// this — it happens once and costs a file open each.
+    /// Must run at startup before the socket accepts anything, or the home screen would
+    /// claim a dead run is live. Opens every registered project, which happens once.
     pub fn reconcile_orphaned_runs(&self) -> usize {
         let mut closed = 0;
         for project in self.index.list().unwrap_or_default() {
@@ -493,8 +490,8 @@ impl Daemon {
         closed
     }
 
-    /// Finish everything still streaming, so a deliberate shutdown does not leave behind
-    /// exactly the orphans the startup pass has to clean up.
+    /// Finishes everything still streaming on shutdown, so a clean stop does not leave
+    /// behind the orphans the startup pass has to clean up.
     pub fn close_active_runs(&self) {
         let live: Vec<Arc<LiveRun>> = match self.runs.lock() {
             Ok(m) => m.values().cloned().collect(),
@@ -504,9 +501,8 @@ impl Daemon {
             let Ok(handle) = self.resolve(&ProjectRef::Id(run.project_id)) else {
                 continue;
             };
-            // No exit code: the process may well still be alive, and claiming to know how
-            // it ended would be a lie. This reads as an unexpected death, which is true
-            // from runlog's point of view — it stopped watching.
+            // No exit code: the process may still be alive, so claiming to know how it
+            // ended would be wrong.
             let _ = self.finish_run(&handle, &run, None, None);
         }
     }
@@ -534,8 +530,8 @@ fn load_settings() -> Settings {
 pub(crate) mod tests {
     use super::*;
 
-    /// `RUNLOG_HOME` is process-global, so tests that point it at their own directory
-    /// must not overlap. Without this they pass or fail depending on scheduling.
+    /// `RUNLOG_HOME` is process-global, so tests that point it at their own directory must
+    /// not overlap.
     pub(crate) static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn daemon(tmp: &tempfile::TempDir) -> Arc<Daemon> {

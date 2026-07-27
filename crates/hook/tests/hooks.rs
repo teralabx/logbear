@@ -1,9 +1,7 @@
 //! Golden-payload tests for both harnesses.
 //!
-//! The payloads in `tests/payloads/` are the real shapes, transcribed from each vendor's
-//! current documentation and generated schemas. They exist so that when a harness changes
-//! its wire format, a test fails here rather than a user's agent quietly stopping being
-//! interrupted — which is a failure with no error message anywhere.
+//! The payloads in `tests/payloads/` are transcribed from each vendor's documented and
+//! generated schemas, so a wire-format change fails here rather than silently.
 
 use runlog_core::model::{Boundaries, Entry, EntryId, EntryView, Level};
 use runlog_core::proto::{ProjectRef, UnreadState};
@@ -135,7 +133,6 @@ fn both_harnesses_expose_the_two_fields_routing_needs() {
         assert_eq!(p.cwd, "/home/dev/demo", "{name}");
         assert!(!p.session_id.is_empty(), "{name}");
         assert_eq!(p.event, event, "{name}");
-        // Detection without --harness, keyed on each vendor's own extension field.
         assert_eq!(p.harness, harness, "{name} auto-detection");
     }
 }
@@ -206,17 +203,13 @@ fn stop_with_new_errors_blocks_and_says_what_and_where() {
     let reason = out["reason"].as_str().expect("a reason");
     assert!(reason.contains("2 new errors"), "{reason}");
     assert!(reason.contains("1 distinct signature"), "{reason}");
-    // The entries themselves.
     assert!(reason.contains("Ecto.NoResultsError"), "{reason}");
     assert!(reason.contains("GenServer Demo.Worker terminating"), "{reason}");
-    // Their fingerprint templates.
     assert!(reason.contains("signature: [error] GenServer <*> terminating"), "{reason}");
-    // New vs previously seen.
     assert!(reason.contains("NEW SIGNATURE"), "{reason}");
     assert!(reason.contains("recurring"), "{reason}");
-    // The run they came from.
     assert!(reason.contains("run 42"), "{reason}");
-    // Nothing else leaks into the response: Codex denies unknown properties on Stop.
+    // Codex denies unknown properties on Stop, so nothing else may leak in.
     let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
     assert_eq!(keys, vec!["decision", "reason"]);
 }
@@ -238,9 +231,8 @@ fn subagent_stop_blocks_too() {
     assert_eq!(run("codex_subagent_stop", None, &mut d)["decision"], "block");
 }
 
-/// §10.3 guard 3, and the hook's half of guard 1: the cursor advances *when the block is
-/// issued*, and `record_block` is what lets the daemon record the fingerprints so the same
-/// signature never blocks this session twice.
+/// The cursor advances when the block is issued, and `record_block` lets the daemon record
+/// the fingerprints so the same signature never blocks this session twice.
 #[test]
 fn issuing_a_block_spends_the_budget_and_advances_the_cursor() {
     let mut d = FakeDaemon::with(unread());
@@ -325,10 +317,9 @@ fn post_tool_use_never_blocks_and_never_moves_the_cursor() {
         let ctx = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: {out}"));
-        // Compact: this fires after every edit, so it is a line, not a stack trace.
+        // Fires after every edit, so it must stay a line rather than a stack trace.
         assert!(ctx.len() < 400, "{name}: {} chars", ctx.len());
         assert!(ctx.contains("2 new errors"), "{name}: {ctx}");
-        // Acknowledging here would rob the Stop hook of the errors it exists to surface.
         assert!(d.acks.is_empty(), "{name} must not advance the cursor");
     }
 }
@@ -348,8 +339,7 @@ fn a_daemon_error_allows() {
 
 // --------------------------------------------------------------------------- the binary
 
-/// End to end through the real binary, with no daemon anywhere. This is the failure the
-/// user will actually hit — runlogd not running — and it must cost them nothing.
+/// End to end through the real binary with no daemon running, the most likely failure.
 #[test]
 fn the_binary_fails_open_with_no_daemon() {
     for input in [

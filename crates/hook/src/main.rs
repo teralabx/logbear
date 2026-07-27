@@ -1,9 +1,8 @@
 //! `runlog-hook` — read the harness's JSON on stdin, write JSON on stdout, exit 0.
 //!
-//! Always exit 0. Both harnesses give non-zero exit codes their own meaning (Claude Code
-//! reads exit 2 as a block with stderr as the reason; Codex the same), so a crash that
-//! happened to exit 2 would inject a Rust panic message into the user's agent as if it were
-//! a considered decision. Exit 0 with `{}` is the only safe failure.
+//! Always exit 0. Both harnesses read exit 2 as a block with stderr as the reason, so a
+//! crash that happened to exit 2 would inject a panic message into the agent as if it were
+//! a considered decision.
 
 use runlog_hook::config;
 use runlog_hook::payload::{self, Harness};
@@ -25,7 +24,7 @@ fn main() {
                     Some(h) => forced = Some(h),
                     None => {
                         eprintln!("runlog-hook: --harness takes `claude` or `codex`");
-                        // Still exit 0: a misconfigured hook must not break the agent.
+                        // Still allow: a misconfigured hook must not break the agent.
                         return emit(&runlog_hook::allow());
                     }
                 }
@@ -44,7 +43,7 @@ fn main() {
     emit(&run(forced));
 }
 
-/// Everything that can go wrong here resolves to the same answer, so it is one funnel.
+/// Read the payload, ask the daemon, and return the response. Every failure allows.
 fn run(forced: Option<Harness>) -> Value {
     let mut input = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut input) {
@@ -72,8 +71,8 @@ fn run(forced: Option<Harness>) -> Value {
 }
 
 fn emit(value: &Value) {
-    // Nothing but this ever reaches stdout. Codex treats unparseable stdout on `Stop` as a
-    // hard hook failure, so a stray diagnostic here would break the user's agent.
+    // The only write to stdout: Codex treats unparseable stdout on `Stop` as a hard hook
+    // failure, so a stray diagnostic here would break the agent.
     println!("{value}");
 }
 
@@ -91,8 +90,8 @@ fn emit_config(which: &str) {
         serde_json::to_string_pretty(&block).expect("a literal json value serialises")
     );
     if harness == Harness::Codex {
-        // stdout stays pure JSON so this can be piped straight into a merge; the caveat
-        // that costs users the most time goes to stderr for the installer and `doctor`.
+        // stdout stays pure JSON so it can be piped into a merge; the trust caveat goes to
+        // stderr for the installer and `doctor`.
         eprintln!("note: {}", config::CODEX_TRUST_NOTE);
     }
 }

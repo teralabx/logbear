@@ -1,10 +1,7 @@
 //! Normalising the two harnesses' stdin payloads into one shape.
 //!
-//! Verified against current documentation during implementation (see the crate docs). The
-//! happy discovery is that Codex modelled its hooks engine on Claude Code's deliberately:
-//! both deliver a flat, snake_case JSON object carrying `session_id`, `cwd`,
-//! `hook_event_name` and `stop_hook_active`. Those are exactly the fields runlog needs, so
-//! this is one parser with a harness tag, not two integrations.
+//! Both deliver a flat, snake_case JSON object carrying `session_id`, `cwd`,
+//! `hook_event_name` and `stop_hook_active`, so this is one parser with a harness tag.
 
 use serde_json::Value;
 
@@ -37,8 +34,7 @@ pub enum Event {
     Stop,
     SubagentStop,
     PostToolUse,
-    /// Some other lifecycle event. Always allowed — runlog registers for three, and a
-    /// payload for anything else means someone wired us up more broadly than we planned.
+    /// A lifecycle event runlog does not register for. Always allowed.
     Other(String),
 }
 
@@ -52,8 +48,8 @@ impl Event {
         }
     }
 
-    /// The value echoed back in `hookSpecificOutput.hookEventName`, which both harnesses
-    /// require to match the event that fired.
+    /// The value echoed back in `hookSpecificOutput.hookEventName`; both harnesses require
+    /// it to match the event that fired.
     pub fn name(&self) -> &str {
         match self {
             Event::Stop => "Stop",
@@ -75,17 +71,14 @@ pub struct Payload {
     pub session_id: String,
     pub cwd: String,
     /// True when a hook already blocked the preceding stop. Both harnesses cap consecutive
-    /// blocks themselves (Claude Code at eight), which is a second net under runlog's own
-    /// block budget rather than a replacement for it.
+    /// blocks themselves (Claude Code at eight), underneath runlog's own block budget.
     pub stop_hook_active: bool,
     pub tool_name: Option<String>,
 }
 
 /// Parse a harness payload. `forced` comes from `--harness` and always wins.
 ///
-/// `None` means the payload was unusable, and the only correct response to that is to allow
-/// (§10.3): a hook that breaks the user's agent because we could not read a field is far
-/// worse than a hook that misses one notification.
+/// `None` means the payload was unusable; the caller must then allow.
 pub fn parse(input: &str, forced: Option<Harness>) -> Option<Payload> {
     let value: Value = serde_json::from_str(input).ok()?;
     let obj = value.as_object()?;
@@ -94,9 +87,8 @@ pub fn parse(input: &str, forced: Option<Harness>) -> Option<Payload> {
     if session_id.is_empty() {
         return None;
     }
-    // cwd is documented as required by both harnesses, but falling back to the process cwd
-    // is strictly better than dropping the notification: the hook is spawned with the
-    // session's working directory anyway.
+    // Both harnesses document `cwd` as required, but the hook is spawned with the session's
+    // working directory anyway, so the process cwd is a safe fallback.
     let cwd = obj
         .get("cwd")
         .and_then(|v| v.as_str())
@@ -123,9 +115,9 @@ pub fn parse(input: &str, forced: Option<Harness>) -> Option<Payload> {
     })
 }
 
-/// A fallback only. Every config runlog emits passes `--harness` explicitly, so this
-/// matters for hand-written configs, and it keys on each vendor's own extension field:
-/// `turn_id` is Codex-only, `prompt_id` is Claude-Code-only.
+/// Guess the harness from a vendor-specific extension field: `turn_id` is Codex-only.
+///
+/// A fallback for hand-written configs; every config runlog emits passes `--harness`.
 fn detect_harness(obj: &serde_json::Map<String, Value>) -> Harness {
     if obj.contains_key("turn_id") {
         Harness::Codex

@@ -1,30 +1,26 @@
 //! The config blocks that register this binary with each harness.
 //!
-//! One source of truth, shared by the installer and `runlog doctor`. Config that lives in
-//! two places drifts, and the symptom of drift here is "runlog stopped noticing my errors"
-//! with no error message anywhere — the worst class of bug this product can have.
-//!
-//! Both fragments are top-level objects containing only a `hooks` key, so they merge into
-//! an existing config without touching anything the user already has (§13, C4).
+//! One source of truth, shared by the installer and `runlog doctor`. Both fragments are
+//! top-level objects containing only a `hooks` key, so they merge into an existing config
+//! without disturbing it.
 
 use crate::payload::Harness;
 use serde_json::{json, Value};
 
-/// The Claude Code tools worth firing `PostToolUse` on.
+/// The Claude Code tools worth firing `PostToolUse` on: those that change code or run
+/// commands.
 ///
-/// Not every tool: the hook is a process spawn plus a socket round trip, and reading a file
-/// cannot have made the dev server throw. Errors appear after code changes and after
-/// commands, so that is what we watch. Claude Code compiles matchers as regexes, so this
-/// alternation behaves as written.
+/// Claude Code compiles matchers as regexes, so this alternation behaves as written.
 const CLAUDE_POST_TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";
 
-/// Seconds. Generous next to a local socket round trip, and far below either harness's
-/// default, so a wedged daemon shows up as a slow hook rather than a stalled agent.
+/// Hook timeout, in seconds. Well below either harness's default, so a wedged daemon shows
+/// up as a slow hook rather than a stalled agent.
 const TIMEOUT_SECS: u64 = 10;
 
-/// A note the installer and `runlog doctor` should show alongside the Codex block. Codex
-/// will not run a non-managed command hook until the user trusts it, and an untrusted hook
-/// fails by silently never firing — which users reliably misdiagnose as a broken config.
+/// A note the installer and `runlog doctor` show alongside the Codex block.
+///
+/// Codex will not run a non-managed command hook until the user trusts it, and an untrusted
+/// hook fails by silently never firing.
 pub const CODEX_TRUST_NOTE: &str =
     "Codex will not run a non-managed command hook until you trust it. \
      Run `/hooks` inside Codex to review and trust the runlog hook, or start Codex with \
@@ -52,8 +48,7 @@ fn claude(command: &str) -> Value {
     let h = handler(command, Harness::ClaudeCode);
     json!({
         "hooks": {
-            // An empty matcher is Claude Code's "every invocation"; Stop has nothing to
-            // match against in any case.
+            // An empty matcher is Claude Code's "every invocation".
             "Stop": [{ "matcher": "", "hooks": [h] }],
             "PostToolUse": [{ "matcher": CLAUDE_POST_TOOL_MATCHER, "hooks": [h] }],
         }
@@ -64,14 +59,13 @@ fn codex(command: &str) -> Value {
     let h = handler(command, Harness::Codex);
     json!({
         "hooks": {
-            // Codex ignores `matcher` on Stop entirely, so it is omitted rather than set
-            // to a value that reads as meaningful and is not.
+            // Codex ignores `matcher` on Stop entirely.
             "Stop": [{ "hooks": [h] }],
             "SubagentStop": [{ "hooks": [h] }],
-            // Omitted deliberately on PostToolUse: a Codex matcher made only of
-            // [A-Za-z0-9_|] is exact alternation rather than a regex, so guessing tool
-            // names would produce a hook that never fires and never says why. No matcher
-            // means every tool, which is correct if slightly eager.
+            // No matcher on PostToolUse either: a Codex matcher made only of [A-Za-z0-9_|]
+            // is exact alternation rather than a regex, so a guessed tool name would
+            // produce a hook that never fires and never says why. Omitting it matches
+            // every tool.
             "PostToolUse": [{ "hooks": [h] }],
         }
     })
@@ -80,8 +74,7 @@ fn codex(command: &str) -> Value {
 /// Path to this binary, quoted for the shell.
 ///
 /// Both harnesses run command hooks through a shell (`sh -c` / `$SHELL -lc`), so a path
-/// containing a space — `~/Library/Application Support/...`, which is where a macOS app
-/// bundle puts it — has to survive word splitting.
+/// containing a space has to survive word splitting.
 pub fn self_command() -> String {
     let path = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())

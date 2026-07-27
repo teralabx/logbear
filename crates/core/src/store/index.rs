@@ -1,9 +1,9 @@
 //! The central registry at `~/.runlog/index.db`.
 //!
-//! Deliberately tiny. It answers "which projects exist" and "what goes on the home
-//! screen", so the app opens instantly without touching every project file. It is also the
-//! only place a cross-project question can be asked, which is why an agent's SQL never
-//! reaches it: agent queries are bound to one project database with `ATTACH` denied.
+//! Holds only which projects exist and a per-run summary, so the app can open without
+//! touching every project database. It is the only place a cross-project question can be
+//! answered, and agent SQL never reaches it: those queries are bound to a single project
+//! database with `ATTACH` denied.
 
 use crate::error::Result;
 use crate::model::{Project, ProjectId};
@@ -47,7 +47,7 @@ impl IndexDb {
         f(&conn)
     }
 
-    /// Register a project, or return the existing row for that root.
+    /// Registers a project, or returns the existing row for that root.
     pub fn register(&self, root: &Path, name: &str, db_path: &Path) -> Result<Project> {
         let now = crate::now_micros();
         let root_s = root.to_string_lossy().into_owned();
@@ -64,21 +64,21 @@ impl IndexDb {
         })
     }
 
-    /// Resolve a directory to a project.
+    /// Resolves a directory to a project.
     ///
-    /// Containment, not equality: a run started in `apps/api` must resolve for a caller
-    /// sitting at the repo root, and a caller inside `apps/api` must find the project
-    /// registered at the root. Longest matching root wins so nested repos stay distinct.
+    /// Matches by containment in either direction, so a caller at the repo root finds a
+    /// project registered in `apps/api` and vice versa. The longest matching root wins,
+    /// which keeps nested repos distinct.
     pub fn resolve_path(&self, dir: &Path) -> Result<Option<Project>> {
         let git_root = crate::project::project_root(dir);
         let candidates = self.list()?;
 
-        // Exact root first — the overwhelmingly common case.
+        // Exact root first, the common case.
         if let Some(p) = candidates.iter().find(|p| Path::new(&p.root) == git_root) {
             return Ok(Some(p.clone()));
         }
         // Then the deepest registered root that contains this directory, or is contained
-        // by it (agent at repo root, server started in a subdirectory).
+        // by it.
         let mut matches: Vec<&Project> = candidates
             .iter()
             .filter(|p| {

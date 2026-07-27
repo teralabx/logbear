@@ -1,8 +1,7 @@
 //! `runlogd` — the long-lived process that owns the databases.
 //!
-//! It survives the desktop app being closed, because "keeps monitoring" is otherwise
-//! false, and it auto-starts on the first `runlog` invocation so nobody has to think
-//! about it. Everything it does happens behind one unix socket.
+//! It outlives the desktop app and auto-starts on the first `runlog` invocation.
+//! Everything it does happens behind one unix socket.
 
 mod conn;
 mod os_notify;
@@ -57,7 +56,7 @@ fn serve() -> i32 {
         return 1;
     }
 
-    // A stale socket file outlives an unclean shutdown. Probing it first is what
+    // A stale socket file outlives an unclean shutdown, so probe it: that is what
     // distinguishes "another daemon is running" from "the last one was killed".
     let socket = paths::socket();
     if socket.exists() {
@@ -75,7 +74,7 @@ fn serve() -> i32 {
             return 1;
         }
     };
-    // The socket is a private channel to this user's entire log history. 0600, always.
+    // The socket is a private channel to this user's entire log history.
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
@@ -97,8 +96,8 @@ fn serve() -> i32 {
         socket.display()
     ));
 
-    // Before anything can read: a run whose daemon died is not running, whatever the
-    // database still says.
+    // Before the socket accepts anything: a run whose daemon died is not running, whatever
+    // the database still says.
     let orphans = daemon.reconcile_orphaned_runs();
     if orphans > 0 {
         log(&format!(
@@ -113,9 +112,8 @@ fn serve() -> i32 {
 
     spawn_maintenance(daemon.clone());
 
-    // A blocking accept would leave the process wedged after a shutdown request, since
-    // nothing else would connect to wake it. Non-blocking plus a short sleep keeps the
-    // loop responsive without a self-connect trick.
+    // A blocking accept would wedge the process after a shutdown request, since nothing
+    // else would connect to wake it.
     let _ = listener.set_nonblocking(true);
     accept_loop(&listener, &daemon);
 
@@ -198,8 +196,7 @@ fn status() -> i32 {
     }
 }
 
-/// Timestamped stderr. Whatever starts the daemon redirects stdout and stderr to
-/// `~/.runlog/runlogd.log`, so this is the log.
+/// Timestamped stderr; whatever starts the daemon redirects it to `~/.runlog/runlogd.log`.
 fn log(msg: &str) {
     let now = time::OffsetDateTime::now_utc();
     eprintln!(

@@ -1,5 +1,7 @@
-//! Typed reads. Every query shape the product needs lives here so they can be reviewed in
-//! one place, rather than being spread across four binaries and a UI.
+//! Typed reads.
+//!
+//! Every query shape the rest of the workspace needs lives here, so they can be reviewed
+//! in one place instead of being spread across the binaries and the UI.
 
 use crate::error::{Error, Result};
 use crate::model::*;
@@ -80,11 +82,10 @@ pub fn active_runs(db: &Db) -> Result<Vec<Run>> {
     })
 }
 
-/// Resolve a symbolic run reference.
+/// Resolves a symbolic run reference.
 ///
-/// `LastGood` is the one that matters: the most recent run that exited cleanly **and**
-/// logged no errors. That is what people mean by "it worked yesterday" — not "the previous
-/// run", which is usually the one that just failed the same way.
+/// `LastGood` requires both a zero exit code and no logged errors, so a run that exited
+/// cleanly while reporting failures does not qualify.
 pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
     let sql = match r {
         RunRef::Id(id) => {
@@ -108,11 +109,10 @@ pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
     db.with(|conn| Ok(conn.query_row(&sql, [], map_run).optional()?))
 }
 
-/// Fetch entries with their rendered text.
+/// Fetches entries with their rendered text.
 ///
-/// Text is produced by re-rendering the line range, so a returned entry is always the
-/// whole group. A caller asking for five entries can never get the bottom half of a stack
-/// trace with the header missing.
+/// Text is produced by re-rendering the stored line range, so a returned entry is always a
+/// whole group rather than a slice of one.
 pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
     let mut sql = String::from(
         "SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.evidence,
@@ -136,9 +136,8 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
         wheres.push("e.is_error = 1".into());
     }
     if f.novel_only {
-        // The signature's first sighting anywhere in this project is this very entry.
-        // Independent of severity on purpose: a `print` a developer added five minutes ago
-        // has no level to filter on, and being new is the only true thing about it.
+        // The signature's first sighting in this project is this entry. Independent of
+        // severity, since ad-hoc print output carries no level to filter on.
         wheres.push("fp.first_seen = e.captured_at".into());
     }
     if let Some(level) = f.level {
@@ -231,8 +230,9 @@ pub fn fingerprints(db: &Db, limit: usize, errors_only: bool) -> Result<Vec<Fing
     })
 }
 
-/// Occurrences of one signature across recent runs. Feeds the sparkline on the errors
-/// screen, which is what turns a list of templates into a story about a regression.
+/// Occurrences of one signature across recent runs, oldest first.
+///
+/// Runs where the signature did not occur are included with a count of zero.
 pub fn fingerprint_history(
     db: &Db,
     fingerprint_id: FingerprintId,
@@ -283,7 +283,7 @@ pub fn signatures_for_run(db: &Db, run_id: RunId) -> Result<Vec<(FingerprintId, 
     })
 }
 
-/// A representative rendered entry for a signature, for the diff view's sample line.
+/// A representative rendered entry for a signature.
 pub fn sample_for_fingerprint(db: &Db, fp: FingerprintId, run_id: Option<RunId>) -> Result<Option<String>> {
     db.with(|conn| {
         let row: Option<(RunId, i64, i64)> = match run_id {
@@ -317,8 +317,8 @@ pub fn sample_for_fingerprint(db: &Db, fp: FingerprintId, run_id: Option<RunId>)
 
 /// What this session has not been told about yet.
 ///
-/// Per session, never global: two Claude Code windows on the same project must not steal
-/// each other's notifications, and a fresh session must not be handed yesterday's errors.
+/// State is per session, never global, so concurrent agent sessions on one project do not
+/// consume each other's notifications.
 pub fn unread(
     db: &Db,
     session_id: &str,
@@ -371,9 +371,8 @@ pub fn unread(
 
 /// Returns `(last_entry_id, blocks_issued)`, creating the cursor if this session is new.
 ///
-/// A new session starts at the current high-water mark, not at zero. Otherwise the first
-/// thing every fresh agent session would see is the entire error history of the project,
-/// which is noise, not signal.
+/// A new cursor starts at the current high-water mark rather than zero, so a fresh session
+/// is not handed the project's entire error history.
 pub fn ensure_cursor(db: &Db, session_id: &str, harness: &str) -> Result<(EntryId, i64)> {
     db.with(|conn| {
         let existing: Option<(i64, i64)> = conn
@@ -398,10 +397,10 @@ pub fn ensure_cursor(db: &Db, session_id: &str, harness: &str) -> Result<(EntryI
     })
 }
 
-/// Advance the watermark, optionally spending a block from the budget.
+/// Advances the watermark, optionally spending a block from the budget.
 ///
-/// The cursor advances **when a block is issued**, not when the agent acknowledges. That
-/// is what stops the same errors blocking twice even if the agent ignores them entirely.
+/// The cursor advances when a block is issued rather than when the agent acknowledges it,
+/// so the same errors cannot block twice even if the agent ignores them.
 pub fn ack(
     db: &Db,
     session_id: &str,
@@ -434,9 +433,10 @@ pub fn ack(
     })
 }
 
-/// Has this signature already blocked this session? A fingerprint blocks at most once,
-/// however many times it recurs — otherwise a server throwing the same exception in a loop
-/// would trap the agent forever.
+/// Whether this signature has already blocked this session.
+///
+/// A fingerprint blocks at most once however often it recurs, so a process throwing the
+/// same exception in a loop cannot trap the agent.
 pub fn already_blocked(db: &Db, session_id: &str, fp: FingerprintId) -> Result<bool> {
     db.with(|conn| {
         Ok(conn
@@ -557,7 +557,6 @@ mod tests {
     fn a_new_session_starts_at_the_high_water_mark_not_at_zero() {
         let h = h();
         run(&h, b"Error: old news\n", 1);
-        // A session created now must not be handed the project's back catalogue.
         let state = unread(&h.db, "session-a", "mcp", 3, 10).unwrap();
         assert_eq!(state.new_errors, 0, "a fresh session inherited history");
 
@@ -614,7 +613,7 @@ mod tests {
         assert!(!already_blocked(&h.db, "s", fp).unwrap());
         record_block(&h.db, "s", &[fp]).unwrap();
         assert!(already_blocked(&h.db, "s", fp).unwrap());
-        // Idempotent — recording twice must not error or double count.
+        // Recording twice must not error or double count.
         record_block(&h.db, "s", &[fp]).unwrap();
     }
 

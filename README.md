@@ -78,6 +78,7 @@ overwrites, and each step can be reverted individually. Nothing is done without 
 runlog mix phx.server          # or npm run dev, cargo watch, pytest, anything
 runlog runs                    # history for this project
 runlog logs --errors -n 20     # recent errors, whole entries
+runlog logs --new              # output never seen in this project before
 runlog diff                    # last known good vs now
 runlog cat 42                  # replay a run byte for byte, ANSI intact
 runlog query "SELECT template, count(*) FROM v_errors GROUP BY 1"
@@ -88,6 +89,20 @@ runlog doctor                  # check every integration
 `runlog diff` with no arguments compares the **last known good** run — the most recent one
 that exited cleanly *and* logged no errors — against the latest. That is what people mean
 by "it worked yesterday", and it is almost never the previous run.
+
+### What counts as an error
+
+Severity is read from the output, never guessed at from its shape. An entry is an error
+only when the process **declared** one — `[error]`, `level=error`, `{"level":"error"}` —
+or when a runtime printed an exception banner it only prints when something threw:
+`** (`, `Traceback (most recent call last):`, `panic:`. Anything else is `unknown`, which
+is an answer rather than a missing value. `unknown` is never an error and never raises a
+notification, however alarming the text reads.
+
+That leaves a gap, and `--new` fills it. A bare `print` / `IO.inspect` / `console.log` has
+no severity by construction — no language attaches one. But a line whose signature has
+never appeared in this project before is a *fact*, so debug output you added five minutes
+ago is findable without anything having to guess whether it looked bad.
 
 ---
 

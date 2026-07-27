@@ -26,8 +26,8 @@ pub enum Error {
     #[error("no project registered for {0}")]
     NoSuchProject(String),
 
-    /// A `runlog_query` call that the sandbox refused. The message is written for an
-    /// agent to read and repair its own SQL, so it names the offending construct.
+    /// A `runlog_query` call the sandbox refused. The message names the offending
+    /// construct so an agent can repair its own SQL.
     #[error("query rejected: {0}")]
     QueryRejected(String),
 

@@ -1,12 +1,9 @@
 //! Retention, eviction and rebuild.
 //!
-//! History degrades gracefully rather than vanishing. Bytes go first, because that is
-//! where essentially all the disk is; the derived index for those runs goes next; the run
-//! rows, their signatures and their counts are kept effectively forever at a few KB each.
-//!
-//! So "it worked three weeks ago, what changed?" still answers correctly long after the
-//! raw log is gone: the run, its git SHA, its error signatures and their counts survive
-//! even when the output does not.
+//! History degrades in stages rather than vanishing. Chunk bytes are dropped first, since
+//! they hold nearly all the disk, then the derived index for those runs. Run rows, their
+//! signatures and their counts cost a few KB each and are kept indefinitely, so a run's
+//! git SHA and error signatures remain queryable after its output is gone.
 
 use crate::error::Result;
 use crate::model::RunId;
@@ -14,8 +11,8 @@ use crate::parse::RawLine;
 use crate::proto::RetentionState;
 use crate::store::{read, split_chunk, Db};
 
-/// Reclaim in bounded steps. A bulk `DELETE` plus a full `VACUUM` would stall the daemon
-/// and, until vacuumed, would not return the disk at all.
+/// Pages reclaimed per `incremental_vacuum` step. Bounded because a full `VACUUM` would
+/// stall the daemon.
 const VACUUM_PAGES: i64 = 512;
 
 pub fn state(db: &Db, cap: i64) -> Result<RetentionState> {
@@ -35,10 +32,9 @@ pub fn state(db: &Db, cap: i64) -> Result<RetentionState> {
     })
 }
 
-/// Bring a project back under its cap. Returns how many runs were evicted.
+/// Brings a project back under its cap, returning how many runs were evicted.
 ///
-/// Never touches a run that has not ended: evicting the bytes of a live dev server while
-/// its output is still arriving is exactly the moment the user needs them.
+/// Runs that have not ended are never evicted, however old.
 pub fn enforce(db: &Db, cap: i64) -> Result<usize> {
     if cap <= 0 || db.size_bytes() <= cap {
         return Ok(0);
@@ -72,11 +68,11 @@ pub fn enforce(db: &Db, cap: i64) -> Result<usize> {
     Ok(evicted)
 }
 
-/// Drop one run's bytes and its derived index, keeping the summary rows.
+/// Drops one run's bytes and its derived index, keeping the summary rows.
 pub fn evict_run(db: &Db, run_id: RunId) -> Result<()> {
     db.with_mut(|conn| {
         let tx = conn.transaction()?;
-        // FTS rows go with the entries they describe, or search would return hits whose
+        // FTS rows must go with the entries they describe, or search returns hits whose
         // text can no longer be produced.
         tx.execute(
             "DELETE FROM entries_fts WHERE rowid IN (SELECT id FROM entries WHERE run_id = ?1)",
@@ -93,7 +89,7 @@ pub fn evict_run(db: &Db, run_id: RunId) -> Result<()> {
     })
 }
 
-/// Remove a run entirely, including its contribution to signature counts.
+/// Removes a run entirely, including its contribution to signature counts.
 pub fn delete_run(db: &Db, run_id: RunId) -> Result<()> {
     db.with_mut(|conn| {
         let tx = conn.transaction()?;
@@ -117,7 +113,7 @@ pub fn delete_run(db: &Db, run_id: RunId) -> Result<()> {
         tx.execute("DELETE FROM run_fingerprints WHERE run_id = ?1", [run_id])?;
         tx.execute("DELETE FROM run_counters WHERE run_id = ?1", [run_id])?;
         tx.execute("DELETE FROM runs WHERE id = ?1", [run_id])?;
-        // A signature nothing references any more is not history, it is debris.
+        // Drop signatures no run references any more.
         tx.execute(
             "DELETE FROM fingerprints WHERE id NOT IN (SELECT fingerprint_id FROM run_fingerprints)",
             [],
@@ -135,12 +131,10 @@ pub fn reclaim(db: &Db) -> Result<()> {
     })
 }
 
-/// Rebuild the derived index for a run from its chunks.
+/// Rebuilds the derived index for a run from its chunks.
 ///
-/// This is the whole of "a parser bug is a rebuild, never data loss". Because entries hold
-/// no text and chunks are never rewritten, dropping and regenerating the index is always
-/// safe — which is what makes it reasonable to keep improving the grouping rules after
-/// data has been captured.
+/// Safe to run at any time: entries hold no text and chunks are never rewritten, so
+/// regenerating the index cannot lose captured output.
 pub fn reparse_run(db: &Db, run_id: RunId) -> Result<usize> {
     let lines = load_lines(db, run_id)?;
     if lines.is_empty() {
@@ -150,7 +144,7 @@ pub fn reparse_run(db: &Db, run_id: RunId) -> Result<usize> {
 
     db.with_mut(|conn| {
         let tx = conn.transaction()?;
-        // Roll back this run's contribution before rebuilding, or counts double.
+        // Roll back this run's contribution first, or the counts double.
         tx.execute(
             "UPDATE fingerprints SET
                 total_count = max(0, total_count - COALESCE(

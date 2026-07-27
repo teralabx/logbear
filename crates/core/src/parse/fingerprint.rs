@@ -1,20 +1,16 @@
 //! Fingerprinting: collapsing recurring failures into one identity.
 //!
-//! One error retried two hundred times is **one** error with a count of two hundred. That
-//! is what makes notification dedup, "new vs known", metrics, and run diffing possible at
-//! all — every one of them keys on the fingerprint rather than on the entry.
+//! Dedup, "new vs known", metrics and run diffing all key on the fingerprint rather than
+//! on the entry, so a failure retried two hundred times is one identity with a count.
 //!
 //! Two steps:
 //!
-//! 1. Pick the **identifying line**. This is not always the first line, and getting it
-//!    wrong is not cosmetic. Every Python traceback opens with
-//!    `Traceback (most recent call last):`, so fingerprinting the first line collapses
-//!    `RuntimeError` and `ValueError` into one signature — two distinct bugs that look
-//!    like one recurring bug. The prototype hit exactly this.
-//! 2. **Normalise** it: strip the parts that vary between occurrences of the same error —
-//!    numbers, hex, uuids, paths, durations, ids — leaving a template that stays readable
-//!    to a human. The template *is* the human summary; there is no second string to keep
-//!    in sync with it.
+//! 1. Pick the identifying line, which is not always the first: every Python traceback
+//!    opens with `Traceback (most recent call last):`, so a first-line fingerprint would
+//!    collapse `RuntimeError` and `ValueError` into one signature.
+//! 2. Normalise it, replacing the parts that vary between occurrences — numbers, hex,
+//!    uuids, paths, durations, ids — with placeholders. The resulting template doubles as
+//!    the human-readable summary, so there is no second string to keep in sync.
 
 use crate::model::Level;
 use regex::Regex;
@@ -23,8 +19,8 @@ use std::sync::LazyLock;
 pub struct Signature {
     /// Readable, placeholder-substituted line. Shown in the UI and to agents.
     pub template: String,
-    /// Stable identity. Changing normalisation changes this, which is fine: a reparse
-    /// rebuilds every fingerprint from the chunks.
+    /// Stable identity. Changing normalisation changes it; a reparse rebuilds every
+    /// fingerprint from the stored lines.
     pub hash: String,
 }
 
@@ -49,10 +45,10 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r(r"\bpid[= ]\d+\b"), "pid=<n>"),
         (r(r"#PID<\d+\.\d+\.\d+>"), "<pid>"),
         (r(r"#(?:Reference|Port)<[\d.]+>"), "<ref>"),
-        // Durations and sizes — the most common per-occurrence noise in a dev log.
+        // Durations and sizes.
         (r(r"\b\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s|m|h)\b"), "<dur>"),
         (r(r"\b\d+(?:\.\d+)?\s?(?:B|KB|MB|GB|KiB|MiB|GiB)\b"), "<size>"),
-        // Quoted payloads vary per occurrence; the shape does not.
+        // Quoted payloads vary per occurrence; their shape does not.
         (r("\x22[^\x22]{0,200}\x22"), "\x22<str>\x22"),
         (r(r"'[^']{0,200}'"), "'<str>'"),
         // Anything numeric that is left.
@@ -70,14 +66,14 @@ static PY_TERMINATOR: LazyLock<Regex> = LazyLock::new(|| {
 static RUST_PANIC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^thread '.*' panicked at ").expect("RUST_PANIC"));
 
-/// Choose the line that identifies this entry.
+/// Returns the line that identifies this entry.
 ///
-/// Per-format rules, because there is no general answer. The cases that matter:
+/// Defaults to the first non-blank line, with per-format exceptions:
 ///
-/// * Python — the opener is a constant; the identity is the column-zero terminator.
-/// * Rust — `thread 'main' panicked at src/x.rs:4:5:` is location, the message is next.
-/// * Java / anyhow — `Caused by:` chains put the real cause last, but the top-level
-///   exception is what people name the bug after, so the first line wins.
+/// * Python — the opener is a constant, so the identity is the column-zero terminator.
+/// * Rust — `thread 'main' panicked at src/x.rs:4:5:` is a location; the message follows.
+/// * Java / anyhow — `Caused by:` chains put the root cause last, but the top-level
+///   exception names the bug, so the first line still wins.
 pub fn identifying_line(text: &str) -> &str {
     let lines: Vec<&str> = text.lines().collect();
     let first = lines
@@ -87,8 +83,8 @@ pub fn identifying_line(text: &str) -> &str {
         .unwrap_or("");
 
     if first.trim_start().starts_with("Traceback (most recent call last):") {
-        // The last column-zero `SomeError: message` in the block. Last, not first, so a
-        // chained "during handling of the above exception" reports the outermost cause.
+        // The last column-zero `SomeError: message`, not the first, so a chained
+        // "during handling of the above exception" reports the outermost cause.
         if let Some(term) = lines
             .iter()
             .rev()
@@ -107,14 +103,14 @@ pub fn identifying_line(text: &str) -> &str {
     first
 }
 
-/// Normalise a line into a readable template.
+/// Normalises a line into a readable template.
 pub fn normalise(line: &str) -> String {
     let mut s = line.trim().to_string();
     for (re, repl) in RULES.iter() {
         s = re.replace_all(&s, *repl).into_owned();
     }
-    // Strip any leading level tag: the level is its own column, and keeping it here would
-    // make the same message at two levels look like two different errors.
+    // The level is carried separately, so leaving its tag here would make one message at
+    // two levels look like two templates.
     let s = strip_level_prefix(&s);
     s.trim().to_string()
 }
@@ -129,7 +125,7 @@ fn strip_level_prefix(s: &str) -> String {
     PREFIX.replace(s, "").into_owned()
 }
 
-/// The full fingerprint of an entry.
+/// Fingerprints an entry from its text and level.
 pub fn signature(text: &str, level: Level) -> Signature {
     let template = normalise(identifying_line(text));
     let mut hasher = blake3::Hasher::new();
@@ -155,8 +151,7 @@ mod tests {
 
     #[test]
     fn python_tracebacks_do_not_collide_on_their_shared_opener() {
-        // The defect the prototype found. Both blocks open with the identical line, so a
-        // first-line fingerprint makes two distinct bugs look like one recurring bug.
+        // Both blocks open with an identical line.
         assert_ne!(sig(PY_RUNTIME), sig(PY_VALUE));
         assert!(identifying_line(PY_RUNTIME).starts_with("RuntimeError"));
         assert!(identifying_line(PY_VALUE).starts_with("ValueError"));

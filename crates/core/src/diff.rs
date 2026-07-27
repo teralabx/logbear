@@ -1,9 +1,5 @@
-//! Run diffing — the demo, and the reason the git stamp exists.
-//!
-//! The question is "it worked two days ago, what changed?", so the answer is organised as
-//! an answer rather than as a dump: what is failing now that was not failing then, what
-//! stopped failing, and the three things that could plausibly have caused it — the commits
-//! in between, the lockfiles that moved, and the environment keys that appeared.
+//! Run diffing: which signatures appeared, which resolved, and which of the commits,
+//! lockfiles and environment keys between the two runs changed.
 
 use crate::error::Result;
 use crate::model::*;
@@ -12,14 +8,12 @@ use crate::store::{read, Db};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Diff two runs. `a` defaults to the last known good run and `b` to the latest, which is
-/// the comparison people actually want and almost never the one they would type out.
+/// Diffs two runs. `a` defaults to the last known good run and `b` to the latest.
 pub fn diff(db: &Db, a: Option<RunRef>, b: Option<RunRef>) -> Result<RunDiff> {
     let a_run = read::resolve_run(db, &a.unwrap_or(RunRef::LastGood))?;
     let b_run = read::resolve_run(db, &b.unwrap_or(RunRef::Latest))?;
 
-    // Only error and warn signatures participate. "What changed" means "what broke", and
-    // a project that logged a new info line this run has not broken.
+    // Only error and warn signatures participate; a new info line is not a regression.
     let sigs_a = signature_map(db, a_run.as_ref())?;
     let sigs_b = signature_map(db, b_run.as_ref())?;
 
@@ -62,7 +56,7 @@ pub fn diff(db: &Db, a: Option<RunRef>, b: Option<RunRef>) -> Result<RunDiff> {
         }
     }
 
-    // Errors first, then loudest — the top of this list should be the answer.
+    // Errors first, then by count descending.
     let rank = |s: &DiffSignature| (s.level != Level::Error, -s.count_b, -s.count_a);
     new_signatures.sort_by_key(rank);
     resolved_signatures.sort_by_key(rank);
@@ -112,8 +106,8 @@ fn git_diff(a: Option<&Run>, b: Option<&Run>) -> GitDiff {
         ..Default::default()
     };
 
-    // Walking history needs a working tree, and the run may have been captured in a
-    // directory that has since moved or been deleted. Best effort, never an error.
+    // Walking history needs a working tree, which may have moved or been deleted since
+    // the run was captured. Best effort, never an error.
     if let (Some(sha_a), Some(sha_b), Some(run_b)) = (&out.sha_a, &out.sha_b, b) {
         if sha_a != sha_b {
             let root = Path::new(&run_b.cwd);

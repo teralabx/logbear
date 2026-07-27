@@ -1,9 +1,8 @@
 //! Ingest. One [`Writer`] per live run.
 //!
-//! The writer is the only thing that mutates a project database. Everything it does is
-//! batched into transactions flushed every 100 entries or 100 ms, whichever comes first —
-//! a dev server that logs a hundred lines a second must not mean a hundred fsyncs, and a
-//! server that logs one line a minute must not mean that line is invisible for a minute.
+//! The writer is the only thing that mutates a project database. Work is batched into
+//! transactions flushed on whichever of the entry, byte and time thresholds trips first,
+//! bounding both the fsync rate and how long an entry stays invisible.
 
 use crate::error::Result;
 use crate::model::*;
@@ -14,7 +13,7 @@ use crate::store::{index::IndexDb, pack_chunk, Db};
 use rusqlite::Connection;
 use std::sync::Arc;
 
-/// Flush thresholds. Entry count first, then time, then size — whichever trips.
+/// Flush thresholds; a flush happens when any one of them trips.
 pub const FLUSH_ENTRIES: usize = 100;
 pub const FLUSH_MICROS: i64 = 100_000;
 pub const FLUSH_BYTES: usize = 64 * 1024;
@@ -37,8 +36,7 @@ pub struct Writer {
     mode_written: bool,
 }
 
-/// What a flush produced, so the daemon can fan it out to subscribers and decide on
-/// notifications without re-reading the database.
+/// What a flush produced, so subscribers can be updated without re-reading the database.
 #[derive(Debug, Default)]
 pub struct Flushed {
     pub entries: Vec<EntryView>,
@@ -46,7 +44,7 @@ pub struct Flushed {
 }
 
 impl Writer {
-    /// Register a run and open a writer for it.
+    /// Registers a run and opens a writer for it.
     pub fn start(
         db: &Db,
         index: &IndexDb,
@@ -81,8 +79,8 @@ impl Writer {
                 ],
             )?;
             let id = conn.last_insert_rowid();
-            // A session is a chain of identical commands, so the first run of a chain
-            // names it. Doing this after the insert avoids reserving ids up front.
+            // The first run of a chain names the session; done after the insert so no id
+            // has to be reserved up front.
             if session_group.is_none() {
                 conn.execute("UPDATE runs SET session_group = ?1 WHERE id = ?1", [id])?;
             }
@@ -120,7 +118,7 @@ impl Writer {
         self.mode
     }
 
-    /// Feed captured bytes. Returns anything a flush produced.
+    /// Feeds captured bytes, returning anything a flush produced.
     pub fn push(&mut self, bytes: &[u8], captured_at: i64) -> Result<Option<Flushed>> {
         let out = self.parser.push(bytes, captured_at);
         self.absorb(out);
@@ -130,8 +128,8 @@ impl Writer {
         Ok(None)
     }
 
-    /// Close an entry that has gone quiet, so the live view is not held hostage by a
-    /// server that stopped talking mid-stack-trace.
+    /// Closes an entry that has gone quiet, so a producer that stops mid-entry does not
+    /// stall the live view.
     pub fn tick(&mut self, now: i64) -> Result<Option<Flushed>> {
         let out = self.parser.tick(now);
         let had = !out.entries.is_empty() || !out.lines.is_empty();
@@ -142,8 +140,7 @@ impl Writer {
         Ok(None)
     }
 
-    /// End of run. Flushes everything, stamps the outcome, and folds run-level failure
-    /// signals into the record so a silent crash still reads as a failure.
+    /// Ends the run: flushes everything and stamps the outcome on the run row.
     pub fn finish(
         &mut self,
         index: &IndexDb,
@@ -183,9 +180,8 @@ impl Writer {
         if let Some(mode) = out.mode_settled {
             self.mode = mode;
         }
-        // Lines arrive already redacted: the parser masks them before rendering, so the
-        // secret is absent from the entry text and the fingerprint template as well as
-        // from the bytes about to be written.
+        // Lines arrive already redacted: the parser masks them before rendering, so
+        // secrets are absent from the entry text and template as well as from the bytes.
         for line in out.lines.iter() {
             self.buffered_bytes += line.bytes.len() + 1;
             self.total_bytes += line.bytes.len() as i64 + 1;
@@ -204,7 +200,7 @@ impl Writer {
             || now - self.last_flush >= FLUSH_MICROS
     }
 
-    /// Write everything buffered in a single transaction.
+    /// Writes everything buffered in a single transaction.
     pub fn flush(&mut self) -> Result<Flushed> {
         if self.buffered_lines.is_empty() && self.buffered_entries.is_empty() {
             return Ok(Flushed {
@@ -337,8 +333,8 @@ impl Writer {
     }
 }
 
-/// Insert or update a fingerprint. Returns its id and whether this is the first time the
-/// project has ever seen it — the "(1 new)" that is the most valuable number in the UI.
+/// Inserts or updates a fingerprint, returning its id and whether the project has seen it
+/// for the first time.
 fn upsert_fingerprint(conn: &Connection, e: &ParsedEntry) -> Result<(FingerprintId, bool)> {
     let existing: Option<i64> = conn
         .query_row(
@@ -387,7 +383,7 @@ fn bump_run_fingerprint(
              VALUES (?1, ?2, 1, ?3, ?3)",
             rusqlite::params![run_id, fp_id, at],
         )?;
-        // run_count tracks distinct runs, so it moves only when the pair is new.
+        // run_count counts distinct runs, so it moves only when the pair is new.
         conn.execute(
             "UPDATE fingerprints SET run_count = run_count + 1 WHERE id = ?1",
             [fp_id],
@@ -396,9 +392,8 @@ fn bump_run_fingerprint(
     Ok(())
 }
 
-/// A Phoenix server restarted forty times in a day is forty runs and one session. Without
-/// this, "recent errors" degenerates into "errors since the last Ctrl-C ninety seconds
-/// ago" and the run list drowns.
+/// Groups consecutive runs of the same command into one session, so that repeatedly
+/// restarting a server produces many runs but a single session.
 fn session_group_for(conn: &Connection, command: &str) -> Result<Option<i64>> {
     let last: Option<(String, Option<i64>)> = conn
         .query_row(
@@ -458,7 +453,6 @@ mod tests {
 
         let entries = read::entries(&h.db, &Default::default()).unwrap();
         assert_eq!(entries.len(), 2);
-        // Rendered text comes back through the chunks, so the stack frame is attached.
         let err = entries.iter().find(|e| e.entry.is_error).unwrap();
         assert!(err.text.contains("at a (/app/x.js:1:1)"), "{}", err.text);
     }
@@ -469,12 +463,12 @@ mod tests {
         let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
         w.push(b"Error: connection refused\n", 1).unwrap();
         // A single line has not settled the delimiter mode yet; the idle tick is what
-        // makes a quiet run's first entry visible, and it is what the daemon calls.
+        // makes a quiet run's first entry visible.
         w.tick(crate::now_micros()).unwrap();
         let all = read::entries(&h.db, &Default::default()).unwrap();
         assert!(all[0].is_new_signature);
 
-        // Same error again, in a second run: known, not new.
+        // The same error in a second run is known, not new.
         w.finish(&h.index, Some(1), None).unwrap();
         let mut w2 = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
         w2.push(b"Error: connection refused\n", 2).unwrap();
@@ -552,16 +546,14 @@ mod tests {
     }
 }
 
-/// Close runs that were live when the daemon last stopped.
+/// Closes runs that were still live when the daemon last stopped.
 ///
-/// If the daemon is starting up, nothing can still be running: it owns every writer in
-/// memory, so a run with no `ended_at` is a run whose daemon was killed, upgraded, or lost
-/// to a power cut. Left alone it shows as "running" on the home screen forever, which is
-/// worse than a wrong exit code because it is a claim about *now*.
+/// The daemon owns every writer in memory, so at startup a run with no `ended_at` belongs
+/// to a previous daemon that was killed or upgraded and would otherwise report as running
+/// forever.
 ///
-/// The end time is the last byte actually captured, not the current clock. A run that died
-/// at 20:28 and is reconciled at 23:34 lasted four minutes, not three hours, and recording
-/// the latter would poison every duration statistic that touches it.
+/// `ended_at` is set to the last byte captured rather than the current clock, so a run
+/// reconciled hours later does not report an inflated duration.
 pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
     let orphans: Vec<(RunId, i64)> = db.with(|conn| {
         let mut stmt = conn.prepare(
@@ -580,8 +572,8 @@ pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
     db.with_mut(|conn| {
         let tx = conn.transaction()?;
         for (run_id, ended_at) in &orphans {
-            // No exit code and no signal is exactly how an unexpected death is recorded
-            // elsewhere, so `run_failed` already classifies these correctly.
+            // Left with no exit code and no signal, which `run_failed` already classifies
+            // as an unexpected death.
             tx.execute(
                 "UPDATE runs SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
                 rusqlite::params![run_id, ended_at],
@@ -607,7 +599,7 @@ mod recovery_tests {
         let p = index.register(&root, "proj", &tmp.path().join("p.db")).unwrap();
         let db = Db::open(&tmp.path().join("p.db"), p.id).unwrap();
 
-        // A run that starts, produces output, and is never finished — the daemon died.
+        // A run that starts, produces output, and is never finished.
         let mut w = Writer::start(
             &db,
             &index,
@@ -634,7 +626,7 @@ mod recovery_tests {
         let run = read::get_run(&db, 1).unwrap();
         assert!(!run.is_clean(), "an abandoned run did not succeed");
         assert_eq!(run.exit_code, None);
-        // Ends when output stopped, not when we noticed.
+        // Ends when output stopped, not at reconciliation time.
         let ended = run.ended_at.unwrap();
         assert!(
             (ended - output_at).abs() < 1_000_000,

@@ -1,23 +1,16 @@
-//! Terminal presentation.
+//! Terminal presentation for the query subcommands.
 //!
-//! Human output is the default because a terminal-resident tool whose output you have to
-//! pipe through `jq` to read is a tool people stop using. `--json` exists for scripts, and
-//! everything here exists for eyes.
-//!
-//! Colour is emitted **only when stdout is a tty**. Piping `runlog runs` into `grep` or a
-//! file must produce clean text, and a tool that smears escape sequences into someone's
-//! log file has already lost the argument about being unobtrusive.
+//! Colour is emitted only when stdout is a tty, so piping into `grep` or a file produces
+//! clean text.
 
 use std::sync::OnceLock;
 
-/// The brand palette, as truecolor SGR. `flare` is the error red-orange, `clear` the
-/// success green, `ash` the metadata grey — the same three the app and the mark use, so a
-/// red row in the terminal and a red row in the window mean the same thing.
+/// The brand palette as truecolor SGR, matching the app: `flare` is the error red-orange,
+/// `clear` the success green, `ash` the metadata grey.
 pub const FLARE: &str = "\x1b[38;2;229;83;61m";
 pub const CLEAR: &str = "\x1b[38;2;79;157;119m";
 pub const ASH: &str = "\x1b[38;2;138;145;153m";
-/// Between flare and ash on the same hue arc: warnings are not errors and must not read
-/// as loudly as one.
+/// Warnings: between flare and ash on the same hue arc.
 pub const EMBER: &str = "\x1b[38;2;217;154;61m";
 pub const BOLD: &str = "\x1b[1m";
 pub const RESET: &str = "\x1b[0m";
@@ -72,9 +65,7 @@ pub fn level_colour(level: runlog_core::Level) -> &'static str {
 // Time
 // ---------------------------------------------------------------------------
 
-/// "4m ago". Absolute timestamps are precise and useless: nobody reading a run list is
-/// doing subtraction in their head to work out whether the server died before or after
-/// they saved the file.
+/// A relative time, like "4m ago".
 pub fn rel_time(micros: i64) -> String {
     rel_time_from(runlog_core::now_micros(), micros)
 }
@@ -92,8 +83,7 @@ pub fn rel_time_from(now: i64, then: i64) -> String {
     }
 }
 
-/// A wall-clock duration, sized to the magnitude: milliseconds matter for a test run and
-/// are noise for a server that has been up since Tuesday.
+/// A wall-clock duration, at a precision suited to its magnitude.
 pub fn duration(micros: i64) -> String {
     let ms = micros / 1000;
     match ms {
@@ -111,8 +101,8 @@ pub fn local_hms(micros: i64) -> String {
     })
 }
 
-/// `localtime_r` rather than a date crate: the only thing needed is the user's local wall
-/// clock, libc already knows it, and the alternative pulls in a timezone database.
+/// `localtime_r` rather than a date crate: only the user's local wall clock is needed, and
+/// libc already knows it.
 fn with_tm(micros: i64, f: impl FnOnce(&libc::tm) -> String) -> String {
     let secs = micros.div_euclid(1_000_000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -173,8 +163,10 @@ pub fn bytes(n: i64) -> String {
 // Tables
 // ---------------------------------------------------------------------------
 
-/// A cell keeps its plain text and its colour apart, because column widths have to be
-/// computed on what the eye sees and an SGR sequence is eleven invisible characters wide.
+/// A table cell.
+///
+/// Text and colour are kept apart because column widths are computed on what the eye sees,
+/// and an SGR sequence is eleven invisible characters wide.
 pub struct Cell {
     pub text: String,
     pub colour: Option<&'static str>,
@@ -262,7 +254,7 @@ pub fn table(headers: &[&str], rows: &[Vec<Cell>]) -> String {
     out
 }
 
-/// One clear line, not a Rust error dump. Every subcommand funnels its failures here.
+/// The message every subcommand prints when the daemon is not running.
 pub fn daemon_down(socket: &std::path::Path) -> String {
     format!(
         "runlog: the daemon is not running (no socket at {}).\n       start it with `runlogd serve`, or open the runlog app.",

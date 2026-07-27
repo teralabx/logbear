@@ -1,9 +1,8 @@
 //! The SQLite store. One database per project, plus a small central index.
 //!
-//! One database per project rather than one global file: projects stay isolated, retention
-//! applies per project, and the query that actually matters — "what changed in *this*
-//! project since yesterday" — is one ordinary query with no attaching and no fan-out. It
-//! also means an agent's SQL is structurally unable to reach another project's data.
+//! A database per project keeps retention per project and makes a single-project query an
+//! ordinary one, with no attaching or fan-out. It also means an agent's SQL cannot reach
+//! another project's data.
 
 pub mod index;
 pub mod read;
@@ -30,7 +29,7 @@ pub struct Db {
 }
 
 impl Db {
-    /// Open (creating if needed) a project database and bring it up to schema.
+    /// Opens a project database, creating it and applying the schema if needed.
     pub fn open(path: &Path, project_id: ProjectId) -> Result<Db> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| crate::Error::io(parent, e))?;
@@ -58,9 +57,10 @@ impl Db {
         self.project_id
     }
 
-    /// Run a closure with the connection. Kept private-ish on purpose: everything the rest
-    /// of the system needs is a named method in [`read`] or [`write`], so query shapes are
-    /// reviewable in one place rather than scattered.
+    /// Runs a closure with the connection.
+    ///
+    /// Prefer the named methods in [`read`] and [`write`](mod@write), which keep query
+    /// shapes in one reviewable place.
     pub fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let conn = self.conn.lock().map_err(|_| crate::Error::other("db mutex poisoned"))?;
         f(&conn)
@@ -71,7 +71,7 @@ impl Db {
         f(&mut conn)
     }
 
-    /// Size on disk, including the WAL, which is what a retention cap has to count.
+    /// Size on disk, including the WAL and shm files, as counted by retention.
     pub fn size_bytes(&self) -> i64 {
         let mut total = 0i64;
         for suffix in ["", "-wal", "-shm"] {
@@ -85,9 +85,8 @@ impl Db {
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
-    // WAL so a reader (the app, an agent's query) never blocks the writer (capture).
-    // NORMAL synchronous because losing the last few milliseconds of a dev log to a power
-    // cut is an acceptable trade for not fsyncing on every batch.
+    // WAL so readers never block the capture writer. NORMAL synchronous trades the last
+    // few milliseconds of a log on power loss for not fsyncing every batch.
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
@@ -96,8 +95,8 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;
          PRAGMA cache_size = -8000;",
     )?;
-    // Incremental rather than full: a bulk DELETE plus VACUUM would stall the daemon and,
-    // until vacuumed, would not return the disk at all.
+    // Incremental rather than full: a bulk DELETE plus VACUUM would stall the daemon, and
+    // until vacuumed would not return any disk space.
     let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap_or(0);
     if mode != 2 {
         conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
@@ -123,10 +122,9 @@ pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
 // Line access
 // ---------------------------------------------------------------------------
 
-/// Fetch the raw bytes of a line range, one `Vec<u8>` per line.
+/// Reads the raw bytes of a line range, one `Vec<u8>` per line.
 ///
-/// Chunks are line-aligned batches, so a range is served by scanning the few chunks that
-/// overlap it rather than the whole run.
+/// Chunks are line-aligned, so only the chunks overlapping the range are scanned.
 pub fn read_lines(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Result<Vec<Vec<u8>>> {
     if end < start {
         return Ok(Vec::new());
@@ -156,8 +154,10 @@ pub fn read_lines(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Res
     Ok(out)
 }
 
-/// A chunk is its lines, each terminated by LF. The final terminator is always present,
-/// so a trailing empty segment is an artifact of the split, not a blank line.
+/// Splits a chunk payload back into lines.
+///
+/// Every line in a chunk is LF-terminated, including the last, so a trailing empty segment
+/// is an artifact of the split rather than a blank line.
 pub fn split_chunk(bytes: &[u8], expect: usize) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(expect);
     let mut start = 0usize;
@@ -173,7 +173,7 @@ pub fn split_chunk(bytes: &[u8], expect: usize) -> Vec<Vec<u8>> {
     out
 }
 
-/// Pack lines into a chunk payload.
+/// Packs lines into a chunk payload.
 pub fn pack_chunk(lines: &[RawLine]) -> Vec<u8> {
     let mut out = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
     for line in lines {
@@ -189,9 +189,10 @@ pub fn render_range(conn: &Connection, run_id: RunId, start: i64, end: i64) -> R
     Ok(vt::render_lines(lines.iter().map(|l| l.as_slice())))
 }
 
-/// Verbatim bytes for a line range, CRLF-terminated so it replays correctly into a
-/// terminal. The pty's ONLCR is normalised away on ingest and reapplied here, which is
-/// what makes the stored form deterministic without making replay wrong.
+/// Verbatim bytes for a line range, CRLF-terminated so it replays into a terminal.
+///
+/// The pty's `ONLCR` is normalised away on ingest and reapplied here, keeping the stored
+/// form deterministic without breaking replay.
 pub fn raw_range(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Result<Vec<u8>> {
     let lines = read_lines(conn, run_id, start, end)?;
     let mut out = Vec::new();
@@ -206,16 +207,15 @@ pub fn raw_range(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Resu
 // SQL functions
 // ---------------------------------------------------------------------------
 
-/// Register `runlog_render` and `runlog_raw` on a connection.
+/// Registers `runlog_render` and `runlog_raw` on a connection.
 ///
-/// They need to read `chunks` while a query is already executing on this connection, which
-/// SQLite will not allow re-entrantly, so each function holds its own read-only connection
-/// to the same file. WAL makes that concurrent read free.
+/// Both read `chunks` while a query is already executing on the same connection, which
+/// SQLite disallows, so each holds its own read-only connection to the file.
 pub fn register_functions(conn: &Connection, path: &Path) -> Result<()> {
     use rusqlite::functions::FunctionFlags;
 
-    // Not DIRECTONLY: these are used inside v_entries, and SQLite refuses a
-    // non-innocuous function in a view under the default `trusted_schema = OFF`.
+    // Must be INNOCUOUS rather than DIRECTONLY: these are used inside v_entries, and
+    // SQLite refuses a non-innocuous function in a view under `trusted_schema = OFF`.
     let flags = FunctionFlags::SQLITE_UTF8
         | FunctionFlags::SQLITE_INNOCUOUS
         | FunctionFlags::SQLITE_DETERMINISTIC;
@@ -257,12 +257,11 @@ fn open_reader(path: &Path) -> Result<Arc<Mutex<Connection>>> {
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-/// Names an agent's SQL is allowed to call. Anything absent is denied outright rather
-/// than merely unsupported, so adding a function is a deliberate act.
+/// Function names an agent's SQL may call. Anything absent is denied.
 pub const ALLOWED_FUNCTIONS: &[&str] = &[
     "runlog_render",
     "runlog_raw",
-    // Core SQLite scalar / aggregate surface an analytical query genuinely needs.
+    // Core SQLite scalar and aggregate functions.
     "abs", "avg", "cast", "char", "coalesce", "count", "date", "datetime", "format",
     "group_concat", "hex", "ifnull", "iif", "instr", "json", "json_array",
     "json_array_length", "json_each", "json_extract", "json_object", "json_type",

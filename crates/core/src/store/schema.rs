@@ -1,23 +1,20 @@
 //! Schema for a project database, and for the small central index.
 //!
-//! The shape is two layers. `chunks` is truth: append-only, never rewritten, holding the
-//! captured bytes and nothing else. Everything else — `entries`, `fingerprints`, the
-//! counters, the FTS index — is a derived projection that can be dropped and rebuilt.
+//! Two layers. `chunks` is the truth layer: append-only, never rewritten, holding the
+//! captured bytes and nothing else. `entries`, `fingerprints`, the counters and the FTS
+//! index are a derived projection that can be dropped and rebuilt from it.
 //!
-//! `entries` deliberately holds **no text**. It holds a line range. Text lives once, in
-//! `chunks`, and rendered text is produced on demand by `runlog_render()`. That is what
-//! keeps a reparse safe: if the row *were* the logical entry, regenerating would split and
-//! merge rows, row identity would be unstable, and every reference to it — fingerprints,
-//! session cursors, embeddings — would break.
+//! `entries` stores a line range and no text; text lives once in `chunks` and is rendered
+//! on demand by `runlog_render()`. A reparse therefore rewrites only the derived layer and
+//! can never lose or alter captured output.
 
-/// Bumped whenever the derived layer's meaning changes. On a bump the daemon rebuilds the
-/// index from chunks rather than migrating it, because it can.
+/// Bumped whenever the derived layer's meaning changes. The daemon then rebuilds the index
+/// from chunks rather than migrating it.
 ///
-/// * 2 — severity is read, never inferred. Adds `entries.evidence`; the heuristics that
-///   promoted indented lines to errors are gone, so every existing entry's level is
-///   suspect and gets recomputed from the bytes.
+/// * 2 — severity is read rather than inferred. Adds `entries.evidence` and recomputes
+///   every existing entry's level.
 pub const DERIVED_VERSION: i64 = 2;
-/// Bumped when truth-layer tables change shape. Requires a real migration.
+/// Bumped when truth-layer tables change shape. Requires a migration.
 pub const SCHEMA_VERSION: i64 = 1;
 
 pub const PROJECT_SCHEMA: &str = r#"
@@ -158,8 +155,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 );
 "#;
 
-/// Views and the functions they lean on. Recreated on every open, because they are pure
-/// projections and the function set can grow between versions.
+/// Read-only views over the derived layer.
+///
+/// Dropped and recreated on every open, since they are pure projections and the function
+/// set they call can change between versions.
 pub const PROJECT_VIEWS: &str = r#"
 DROP VIEW IF EXISTS v_entries;
 DROP VIEW IF EXISTS v_errors;
@@ -204,8 +203,8 @@ SELECT r.id, r.project_id, r.command, r.cwd, r.session_group, r.started_at, r.en
   LEFT JOIN run_counters c ON c.run_id = r.id;
 "#;
 
-/// The central registry. Deliberately tiny: it answers "which projects exist" and
-/// "what is on the home screen", and nothing an agent would ever query.
+/// Schema for the central registry: which projects exist, plus a per-run summary for the
+/// home screen. Never queried by agent SQL.
 pub const INDEX_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -239,8 +238,8 @@ CREATE TABLE IF NOT EXISTS run_summaries (
 CREATE INDEX IF NOT EXISTS run_summaries_time ON run_summaries(started_at DESC);
 "#;
 
-/// Handed to an agent by `runlog_schema()` before it writes any SQL. Kept next to the DDL
-/// so the two cannot drift.
+/// Documentation handed to an agent by `runlog_schema()` before it writes any SQL. Kept
+/// next to the DDL so the two cannot drift.
 pub const AGENT_NOTES: &str = r#"
 ## How this database is shaped
 

@@ -1,12 +1,8 @@
-//! Synchronous client for the daemon socket.
+//! Synchronous client for the daemon socket, shared by every binary and the Tauri backend.
 //!
-//! Shared by every binary — the shim, the CLI, the MCP server, the hook, and the Tauri
-//! backend — so there is exactly one implementation of "talk to runlogd" and one place
-//! where its failure modes are decided.
-//!
-//! Blocking and thread-per-connection on purpose. The work is a local unix socket round
-//! trip against a local SQLite database; an async runtime would buy nothing and would
-//! force every consumer to adopt one.
+//! Blocking and thread-per-connection: the work is a local unix socket round trip against
+//! a local SQLite database, so an async runtime would gain nothing and would impose itself
+//! on every consumer.
 
 use crate::error::{Error, Result};
 use crate::model::*;
@@ -39,17 +35,13 @@ impl Client {
         })
     }
 
-    /// Connect, starting the daemon first if nothing is listening.
-    ///
-    /// Auto-start belongs here rather than in an installer step, because "keeps monitoring"
-    /// has to be true after a reboot the user did not think about.
+    /// Connects, starting the daemon first if nothing is listening.
     pub fn connect_or_start() -> Result<Client> {
         match Client::connect() {
             Ok(c) => Ok(c),
             Err(_) => {
                 spawn_daemon()?;
-                // The daemon has to create the socket, bind, and listen. Poll briefly
-                // rather than sleeping a fixed pessimistic amount.
+                // Poll while the daemon creates, binds and listens on the socket.
                 for _ in 0..100 {
                     std::thread::sleep(Duration::from_millis(20));
                     if let Ok(c) = Client::connect() {
@@ -70,7 +62,7 @@ impl Client {
         &self.socket
     }
 
-    /// Send a request and decode the reply into `T`.
+    /// Sends a request and decodes the reply into `T`.
     pub fn call<T: for<'de> serde::Deserialize<'de>>(&mut self, req: &Request) -> Result<T> {
         let value = self.call_value(req)?;
         Ok(serde_json::from_value(value)?)
@@ -90,8 +82,8 @@ impl Client {
         Ok(())
     }
 
-    /// Queue a frame without flushing. Capture uses this so a busy stream costs one
-    /// syscall per batch rather than one per read.
+    /// Queues a frame without flushing, so capture costs one syscall per batch rather
+    /// than one per read.
     pub fn queue(&mut self, frame: &Frame) -> Result<()> {
         frame.write_to(&mut self.writer)?;
         Ok(())
@@ -106,7 +98,7 @@ impl Client {
         Frame::read_from(&mut self.reader)
     }
 
-    // ---- convenience wrappers, so callers do not hand-build requests ----
+    // ---- convenience wrappers over `call` ----
 
     pub fn ping(&mut self) -> Result<()> {
         self.call::<serde_json::Value>(&Request::Ping).map(|_| ())
@@ -194,8 +186,7 @@ impl Client {
         })
     }
 
-    /// Blocking wait for the next matching entry. Used right after making a change, when
-    /// polling would be the wrong shape.
+    /// Blocks until the next matching entry arrives or `timeout_ms` elapses.
     pub fn wait(
         &mut self,
         project: ProjectRef,
@@ -203,8 +194,8 @@ impl Client {
         level: Option<Level>,
         after_entry: Option<EntryId>,
     ) -> Result<Vec<EntryView>> {
-        // Give the socket a little longer than the daemon's own budget, so a timeout is
-        // reported by the daemon as an empty result rather than as a broken connection.
+        // The socket deadline must exceed the daemon's own budget, so an expiry comes back
+        // as an empty result rather than a broken connection.
         self.set_timeout(Some(Duration::from_millis(timeout_ms + 5_000)))?;
         let out = self.call(&Request::Wait {
             project,
@@ -216,7 +207,7 @@ impl Client {
         out
     }
 
-    /// Stream a run's stored bytes. `sink` is called for each data frame in order.
+    /// Streams a run's stored bytes, calling `sink` for each data frame in order.
     pub fn raw_stream(
         &mut self,
         project: ProjectRef,
@@ -240,11 +231,11 @@ impl Client {
         }
     }
 
-    /// Turn this connection into an event subscription. Consumes the client, because no
+    /// Turns this connection into an event subscription. Consumes the client, since no
     /// further requests can be sent on it.
     pub fn subscribe(mut self, project: Option<ProjectRef>) -> Result<Subscription> {
         self.send(&Frame::json(&Request::Subscribe { project })?)?;
-        // The daemon acknowledges before the first event, so a caller knows it is live.
+        // The daemon acknowledges before the first event.
         match self.recv()? {
             Some(frame @ Frame::Json(_)) => {
                 frame.decode_json::<Response>()?.into_result()?;
@@ -260,8 +251,8 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Block for the next event. `Ok(None)` means the daemon went away, which the app
-    /// shows as a disconnected badge rather than treating as an error.
+    /// Blocks for the next event. `Ok(None)` means the daemon went away, which is a
+    /// disconnection rather than an error.
     pub fn next(&mut self) -> Result<Option<Event>> {
         loop {
             match self.client.recv()? {
@@ -273,18 +264,17 @@ impl Subscription {
     }
 }
 
-/// Locate `runlogd`. Next to the current executable first, which is how the bundled app
-/// finds its own daemon rather than whatever happens to be on `PATH`.
+/// Locates `runlogd`, preferring the copy beside the current executable so a bundled app
+/// finds its own daemon rather than one on `PATH`.
 pub fn daemon_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("RUNLOG_DAEMON").map(PathBuf::from) {
         if p.exists() {
             return Some(p);
         }
     }
-    // Canonicalise first. On macOS `current_exe()` reports the path used to launch the
-    // process, so when `runlog` is reached through the symlink the installer places on
-    // PATH, the parent directory is `~/.local/bin` — where `runlogd` will never be. The
-    // daemon lives beside the real binary, inside the app bundle.
+    // Canonicalise before looking for a sibling: on macOS `current_exe()` reports the
+    // launch path, so reaching `runlog` through the installer's `~/.local/bin` symlink
+    // would search that directory instead of the bundle the daemon lives in.
     if let Ok(exe) = std::env::current_exe() {
         let resolved = exe.canonicalize().unwrap_or(exe);
         if let Some(dir) = resolved.parent() {
@@ -295,7 +285,7 @@ pub fn daemon_binary() -> Option<PathBuf> {
             }
         }
     }
-    // The app bundle, for the case where `runlog` was copied rather than linked.
+    // The app bundle, for when `runlog` was copied rather than linked.
     for bundle in ["/Applications/runlog.app", "~/Applications/runlog.app"] {
         let expanded = if let Some(rest) = bundle.strip_prefix("~/") {
             match std::env::var_os("HOME") {
@@ -320,7 +310,7 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Start the daemon detached, so it outlives whatever started it.
+/// Starts the daemon detached, so it outlives the process that spawned it.
 pub fn spawn_daemon() -> Result<()> {
     use std::process::{Command, Stdio};
     let bin = daemon_binary()
@@ -346,14 +336,8 @@ pub fn spawn_daemon() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn the_daemon_is_found_through_the_symlink_the_installer_places_on_path() {
-        // The failure this guards: on macOS `current_exe()` reports the launch path, so
-        // reaching `runlog` through ~/.local/bin/runlog put the search in ~/.local/bin,
-        // where runlogd will never be. `runlog doctor` then reported the daemon binary
-        // missing while that very binary was running the daemon.
         let tmp = tempfile::tempdir().unwrap();
         let real_dir = tmp.path().join("Contents/MacOS");
         std::fs::create_dir_all(&real_dir).unwrap();
@@ -366,7 +350,6 @@ mod tests {
         let link = link_dir.join("runlog");
         std::os::unix::fs::symlink(&real_exe, &link).unwrap();
 
-        // Resolving the link is what makes the sibling lookup land in the bundle.
         // Both sides are canonicalised: on macOS /var is itself a symlink to /private/var,
         // so comparing a resolved path against an unresolved one fails for the wrong reason.
         let resolved = link.canonicalize().unwrap();

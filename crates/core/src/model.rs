@@ -1,4 +1,4 @@
-//! The shared vocabulary. Every binary and the frontend speak in these types.
+//! Types shared by every binary and the frontend.
 
 pub use crate::parse::severity::Evidence;
 use serde::{Deserialize, Serialize};
@@ -8,13 +8,12 @@ pub type ProjectId = i64;
 pub type EntryId = i64;
 pub type FingerprintId = i64;
 
-/// Canonical emulation width. The PTY handed to the child is sized to the user's real
-/// terminal, but the *stored projection* is always emulated at this width so a wrap point
-/// on a laptop and a wrap point on a 34" monitor cannot fingerprint differently.
+/// Width the stored projection is emulated at, regardless of the child's real PTY size,
+/// so that wrap points — and therefore fingerprints — do not vary with terminal width.
 pub const CANONICAL_COLS: usize = 200;
 
-/// A single raw line may not grow past this without an LF before we force a synthetic
-/// break. Protects against a progress bar that emits megabytes of `\r` and never a `\n`.
+/// Length at which a raw line with no LF is broken synthetically, bounding output such as
+/// a progress bar that emits megabytes of `\r` and never a `\n`.
 pub const MAX_RAW_LINE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -52,8 +51,8 @@ impl Level {
     }
 }
 
-/// How entry boundaries were determined for a run. Recorded per run and exposed to agents
-/// so they know how far to trust the grouping rather than assuming it is exact.
+/// How entry boundaries were determined for a run. Recorded per run and exposed to
+/// consumers, since only some modes give exact grouping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DelimiterMode {
@@ -110,8 +109,7 @@ impl Boundaries {
     }
 }
 
-/// Everything a run is stamped with at spawn. The git fields are the entire reason
-/// "it worked yesterday, what changed?" is answerable rather than merely searchable.
+/// Everything recorded about a run at spawn time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunStamp {
     pub command: Vec<String>,
@@ -125,7 +123,7 @@ pub struct RunStamp {
     pub git_dirty_hash: Option<String>,
     /// `{"mix.lock": "<blake3>", ...}` for every lockfile present at the root.
     pub lockfile_hashes: std::collections::BTreeMap<String, String>,
-    /// Environment variable **names** only. Values never leave the process (PRD §8).
+    /// Environment variable names only; values never leave the process (PRD §8).
     pub env_keys: Vec<String>,
     pub term_cols: u16,
     pub term_rows: u16,
@@ -157,7 +155,7 @@ pub struct Run {
 }
 
 impl Run {
-    /// The definition of "it worked": exited cleanly and produced no error-level entry.
+    /// Whether the run exited 0 and produced no error-level entry.
     pub fn is_clean(&self) -> bool {
         self.exit_code == Some(0) && self.counters.n_error == 0
     }
@@ -196,9 +194,10 @@ impl Counters {
     }
 }
 
-/// A grouped log entry. Note that it carries **no text**: text lives once, in `chunks`,
-/// and is produced on demand by re-rendering the line range. That is what lets the whole
-/// entry table be dropped and rebuilt without touching truth or duplicating a byte.
+/// A grouped log entry.
+///
+/// Carries no text: text lives only in `chunks` and is re-rendered on demand from the
+/// line range, so the entry table can be dropped and rebuilt (C3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub id: EntryId,
@@ -210,17 +209,17 @@ pub struct Entry {
     pub captured_at: i64,
     pub level: Level,
     /// Which rung of the severity ladder produced `level`. `Unknown` means the producer
-    /// declared nothing — it is an absence, not a default, and never becomes an error.
+    /// declared nothing; it is an absence rather than a default, and never becomes an error.
     pub evidence: Evidence,
     pub is_error: bool,
-    /// Which rule answered, as `rung:rule` — e.g. `declared:level_token`. `None` when the
+    /// Which rule answered, as `rung:rule`, e.g. `declared:level_token`. `None` when the
     /// severity is unknown.
     pub error_reason: Option<String>,
     pub fingerprint_id: Option<FingerprintId>,
     pub boundaries: Boundaries,
 }
 
-/// An entry plus its rendered text, which is what every consumer actually wants.
+/// An entry plus its rendered text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryView {
     #[serde(flatten)]
@@ -258,7 +257,7 @@ pub struct Project {
     pub notify_enabled: bool,
 }
 
-/// A live snapshot of what the daemon is doing, for the home screen and `runlog status`.
+/// Snapshot of one project's activity, for the home screen and `runlog status`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectStatus {
     pub project: Project,

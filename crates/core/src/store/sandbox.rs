@@ -1,21 +1,20 @@
 //! The read-only SQL endpoint an agent's queries execute in.
 //!
-//! This is the one place in runlog where untrusted model output runs against the user's
-//! machine, so enforcement is layered and each layer is independently sufficient:
+//! Untrusted model output executes here, so enforcement is layered and each layer is
+//! independently sufficient:
 //!
-//! 1. **Read-only handle** — opened `SQLITE_OPEN_READ_ONLY` with `PRAGMA query_only`.
-//! 2. **Authorizer allowlist** — `SELECT`/`READ`/`FUNCTION` on named functions only.
-//!    `ATTACH`, `PRAGMA`, extension loading and every write verb are denied outright.
-//! 3. **Interrupt timer** — statements are cancelled after a fixed budget, so no query can
-//!    pin the daemon.
-//! 4. **Result caps** — row cap and byte cap, both reporting truncation rather than
-//!    silently cutting the answer.
-//! 5. **One project per connection** — with `ATTACH` denied, a query cannot reach another
+//! 1. Read-only handle — opened `SQLITE_OPEN_READ_ONLY` with `PRAGMA query_only`.
+//! 2. Authorizer allowlist — `SELECT`/`READ`/`FUNCTION` on named functions only; `ATTACH`,
+//!    `PRAGMA`, extension loading and every write verb are denied.
+//! 3. Interrupt timer — statements are cancelled after a fixed budget, so no query can pin
+//!    the daemon.
+//! 4. Result caps — row cap and byte cap, both reporting truncation rather than silently
+//!    cutting the answer.
+//! 5. One project per connection — with `ATTACH` denied, a query cannot reach another
 //!    project's data or any other file on disk.
 //!
-//! Rejections are phrased for a model to read and repair: they name the construct that
-//! failed and echo the SQL, because an agent that can fix its own query is worth more than
-//! one that gives up.
+//! Rejections name the construct that failed and echo the SQL, so an agent can repair its
+//! own query.
 
 use crate::error::{Error, Result};
 use crate::proto::QueryResult;
@@ -30,7 +29,7 @@ pub const CEILING_MAX_ROWS: usize = 2000;
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub const QUERY_BUDGET_MS: u64 = 5_000;
 
-/// Run one read-only statement against a project database.
+/// Runs one read-only statement against a project database.
 pub fn query(
     db_path: &Path,
     sql: &str,
@@ -45,13 +44,13 @@ pub fn query(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 2000;")?;
-    // Functions must be registered before the authorizer, since registration itself is a
-    // privileged act the authorizer would otherwise have to permit.
+    // Registration must precede the authorizer: it is itself a privileged act the
+    // authorizer would otherwise have to permit.
     register_functions(&conn, db_path)?;
     install_authorizer(&conn)?;
 
-    // Cancel from another thread rather than trusting a query to finish. A recursive CTE
-    // bomb or a cartesian join will otherwise run until the heat death of the daemon.
+    // Cancelled from another thread rather than trusting the query to finish: a recursive
+    // CTE or a cartesian join can otherwise run unbounded.
     let handle = conn.get_interrupt_handle();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watch_done = done.clone();
@@ -114,8 +113,7 @@ fn run_statement(
             bytes += approx_size(&v);
             r.push(v);
         }
-        // Stop an agent pulling a gigabyte of logs into its own context, which is a
-        // failure for the agent as much as for us.
+        // Cap the response so a single query cannot return the whole log.
         if bytes > MAX_RESPONSE_BYTES {
             truncated = true;
             break;
@@ -146,18 +144,18 @@ fn install_authorizer(conn: &Connection) -> Result<()> {
                 Authorization::Deny
             }
         }
-        // Recursive CTEs are genuinely useful for the analytical questions this endpoint
-        // exists to answer, and the interrupt timer already bounds a runaway one.
+        // Recursive CTEs are needed for analytical queries; the interrupt timer bounds a
+        // runaway one.
         AuthAction::Recursive => Authorization::Allow,
         _ => Authorization::Deny,
     }))?;
     Ok(())
 }
 
-/// A cheap textual pass before SQLite ever sees the string.
+/// A cheap textual pass before SQLite sees the string.
 ///
-/// The authorizer is the real defence; this exists so the common mistakes come back with a
-/// message an agent can act on, instead of an opaque `not authorized`.
+/// The authorizer is the actual defence; this only turns common mistakes into a message an
+/// agent can act on rather than an opaque `not authorized`.
 fn reject_obvious(sql: &str) -> Result<()> {
     let trimmed = sql.trim_start();
     let lower = trimmed.to_ascii_lowercase();
@@ -176,8 +174,8 @@ fn reject_obvious(sql: &str) -> Result<()> {
             )));
         }
     }
-    // One statement per call: a trailing statement after a semicolon is how a benign
-    // SELECT smuggles something else in.
+    // One statement per call: a statement after a semicolon is how a benign-looking SELECT
+    // smuggles something else in.
     if sql.trim_end().trim_end_matches(';').contains(';') {
         return Err(Error::QueryRejected(
             "one statement per call; remove the extra `;`".into(),
@@ -221,8 +219,8 @@ fn sql_to_json(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
         ValueRef::Integer(i) => serde_json::Value::from(i),
         ValueRef::Real(f) => serde_json::Value::from(f),
         ValueRef::Text(t) => serde_json::Value::from(String::from_utf8_lossy(t).into_owned()),
-        // Blobs are chunk payloads. Returning them raw would be megabytes of noise, so
-        // report the shape instead and let the caller use runlog_render.
+        // Blobs are chunk payloads; report their size and let the caller use
+        // runlog_render.
         ValueRef::Blob(b) => serde_json::Value::from(format!("<{} bytes>", b.len())),
     }
 }
@@ -356,7 +354,7 @@ mod tests {
     #[test]
     fn an_unbounded_query_is_cancelled_rather_than_pinning_the_daemon() {
         let (_t, path) = fixture();
-        // No LIMIT and no row the cap can stop at quickly: this must hit the timer.
+        // No LIMIT and no row the cap can stop at: this must hit the timer.
         let r = query(
             &path,
             "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c)

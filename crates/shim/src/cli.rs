@@ -1,20 +1,17 @@
 //! Argument dispatch.
 //!
-//! `runlog` has an unusual argv contract: the primary verb is *whatever you typed*.
-//! `runlog mix phx.server` wraps mix, and `runlog logs` shows logs. That means clap cannot
-//! own argv — handed `runlog test`, clap would reject an unknown subcommand and the tool
-//! would be broken for the single most common thing a developer types.
+//! The primary verb is whatever the user typed: `runlog mix phx.server` wraps mix, and
+//! `runlog logs` shows logs. clap cannot own argv, because it would reject `runlog test` as
+//! an unknown subcommand.
 //!
-//! So argv is classified here first, by exact match against a closed list of subcommand
-//! names, and only a recognised subcommand ever reaches clap. Everything else is a command
-//! to run. Two escape hatches keep that from being a trap: `runlog -- logs` wraps a program
-//! genuinely named `logs`, and the leading wrap flags (`--no-pty`, `--force`) force the
-//! wrap reading too.
+//! So argv is classified here by exact match against a closed list of subcommand names, and
+//! only a recognised subcommand reaches clap; everything else is a command to run. Both
+//! `runlog -- logs` and a leading wrap flag (`--no-pty`, `--force`) force the wrap reading.
 
 use clap::{Parser, Subcommand};
 
-/// The closed list. Adding a subcommand here takes that word away from the wrap path, so
-/// the names are deliberately ones nobody has an executable called.
+/// The closed list. A name added here is taken away from the wrap path, so the names are
+/// deliberately ones nobody has an executable called.
 pub const SUBCOMMANDS: &[&str] = &[
     "cat",
     "logs",
@@ -38,8 +35,8 @@ pub enum Dispatch {
 #[derive(Debug, Default, PartialEq)]
 pub struct WrapArgs {
     pub command: Vec<String>,
-    /// Pipes instead of a pty. Documented as degraded: libc fully buffers a pipe at 4 KB,
-    /// so per-line arrival times stop being real and interactive tooling stops working.
+    /// Pipes instead of a pty. Degraded: libc fully buffers a pipe at 4 KB, so per-line
+    /// arrival times stop being real and interactive tooling stops working.
     pub no_pty: bool,
     /// Capture even a denylisted command.
     pub force: bool,
@@ -81,8 +78,8 @@ pub fn classify(args: &[String]) -> Dispatch {
     if rest.is_empty() {
         return Dispatch::Subcommand;
     }
-    // A leading wrap flag or a `--` is an unambiguous statement of intent, so a
-    // subcommand name after one is a program to run, not a subcommand.
+    // A leading wrap flag or `--` settles the ambiguity: a subcommand name after one is a
+    // program to run.
     if !forced && SUBCOMMANDS.contains(&rest[0].as_str()) {
         return Dispatch::Subcommand;
     }
@@ -187,8 +184,8 @@ pub enum Cmd {
     SqlSchema,
 }
 
-/// Runs a subcommand and returns the process exit code. clap's own `--help` and
-/// `--version` exits happen inside `parse_from`.
+/// Runs a subcommand and returns the process exit code. clap's `--help` and `--version`
+/// exit inside `parse_from`.
 pub fn run_subcommand(args: &[String]) -> i32 {
     let argv = std::iter::once("runlog".to_string()).chain(args.iter().cloned());
     let cli = Cli::parse_from(argv);

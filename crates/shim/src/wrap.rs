@@ -1,17 +1,12 @@
 //! `runlog <cmd> [args...]` — wrap a command and capture what it emits.
 //!
-//! The ordering in here is the product. Constraint C2 says bytes reach the human before
-//! they reach us, so the loop is: read from the pty, write to the user's stdout, flush,
-//! and only then hand a copy to [`crate::sink`], which cannot block. Nothing about the
-//! daemon — down, wedged, mid-upgrade, missing entirely — can add a millisecond of latency
-//! to that, change the exit code, or swallow a signal.
+//! The ordering is load-bearing: read from the pty, write to the user's stdout, flush, and
+//! only then hand a copy to [`crate::sink`], which cannot block. Whatever state the daemon
+//! is in, it cannot add latency, change the exit code, or swallow a signal.
 //!
-//! Constraint C1 says we never touch the wrapped process. No environment variable is set,
-//! nothing is injected, no `FORCE_COLOR` and no `NODE_OPTIONS`. The child inherits exactly
-//! what it would have inherited from the shell, and the only difference it can observe is
-//! that its terminal is a pty we opened rather than one the terminal emulator opened —
-//! which is the point, because that is what keeps colour, `IEx.pry` and per-line arrival
-//! times real.
+//! The wrapped process is never modified. No environment variable is set and nothing is
+//! injected; the child inherits exactly what the shell would have given it, and the only
+//! observable difference is that its terminal is a pty runlog opened.
 
 use crate::cli::WrapArgs;
 use crate::sink::Sink;
@@ -24,17 +19,15 @@ use std::ffi::CStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Exit code for "we could not even start it", matching the shell's convention so scripts
-/// that already branch on 127 keep working.
+/// Exit code for "could not start it", matching the shell's convention.
 const EXIT_CANNOT_RUN: i32 = 127;
 
-/// Diverges: every path here ends in `process::exit` so the child's exit code is the
-/// shim's exit code, verbatim.
+/// Runs the wrapped command and exits with the child's exit code, verbatim.
 pub fn run(args: WrapArgs) -> ! {
     term::install_panic_restore();
     match execute(args) {
         Ok(code) => {
-            // `process::exit` skips destructors, so the guard cannot be relied on here.
+            // `process::exit` skips destructors, so the raw-mode guard cannot be relied on.
             term::restore();
             std::process::exit(code)
         }
@@ -53,8 +46,8 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (cols, rows) = term::size();
 
-    // Ask the daemon for settings *without* starting it, so `runlog vim` does not spin up
-    // a capture daemon for a session it is then going to refuse to capture.
+    // Settings are fetched without starting the daemon, so a denylisted command does not
+    // spin one up only to refuse to capture the session.
     let mut client = Client::connect().ok();
     let settings = client
         .as_mut()
@@ -62,9 +55,8 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
         .unwrap_or_default();
 
     if !args.force && is_denied(&args.command[0], &settings) {
-        // A denylisted command is a session, not a run. Capturing an ssh or psql session
-        // is useless as history and a privacy problem, so we get out of the way entirely:
-        // no pty, no run record, not even a process in between.
+        // A denylisted command is a session, not a run: no pty, no run record, and no
+        // process left in between.
         exec_direct(&args.command);
     }
 
@@ -74,8 +66,8 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
 
     let token = crate::sink::local_token();
     if client.is_some() {
-        // Drain any backlog on its own connection and its own thread. A weekend of daemon
-        // downtime must not be paid for by the command the user just typed.
+        // Drain the backlog on its own connection and thread, so it never delays the
+        // command the user just typed.
         let skip = token.clone();
         std::thread::Builder::new()
             .name("runlog-drain".into())
@@ -88,7 +80,7 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
 
     let run_id = client.as_mut().and_then(|c| start_run(c, &stamp));
     if run_id.is_none() {
-        // Registered nowhere: spool from the first byte rather than losing the run.
+        // Registered nowhere: spool from the first byte rather than lose the run.
         client = None;
     }
 
@@ -117,16 +109,16 @@ fn start_run(client: &mut Client, stamp: &runlog_core::model::RunStamp) -> Optio
             stamp: stamp.clone(),
         })
         .ok()?;
-    // Tolerant of both a bare id and `{"run_id": n}`, so a daemon that tightens its
-    // response shape does not silently turn every run into a spool file.
+    // Accepts a bare id or `{"run_id": n}`, so a daemon that changes its response shape
+    // does not silently turn every run into a spool file.
     value
         .as_i64()
         .or_else(|| value.get("run_id").and_then(|v| v.as_i64()))
         .or_else(|| value.get("id").and_then(|v| v.as_i64()))
 }
 
-/// Denylisted commands are matched on the basename, because `/usr/bin/vim` and `vim` are
-/// the same decision and nobody wants to maintain a list of paths.
+/// Whether `program` is denylisted, matched on the basename so `/usr/bin/vim` and `vim`
+/// are the same decision.
 pub fn is_denied(program: &str, settings: &Settings) -> bool {
     let base = Path::new(program)
         .file_name()
@@ -135,9 +127,10 @@ pub fn is_denied(program: &str, settings: &Settings) -> bool {
     settings.denylist.iter().any(|d| d == &base)
 }
 
-/// Replace this process with the real command. Not a spawn: an exec leaves no shim in the
-/// middle at all, so signals, job control, the terminal and the exit code are exactly what
-/// they would have been without runlog.
+/// Replaces this process with the real command.
+///
+/// An exec rather than a spawn, so signals, job control, the terminal and the exit code are
+/// exactly what they would have been without runlog.
 fn exec_direct(command: &[String]) -> ! {
     use std::os::unix::process::CommandExt;
     let err = std::process::Command::new(&command[0])
@@ -162,9 +155,10 @@ impl Outcome {
     }
 }
 
-/// A shell reports a signalled child as `128 + signum`, and every script that checks
-/// `$? -eq 130` for "the user pressed Ctrl-C" depends on it. Anything else and runlog
-/// changes the meaning of the command it wrapped, which C2 forbids.
+/// The exit code a shell would report: `128 + signum` for a signalled child.
+///
+/// Scripts test `$? -eq 130` for Ctrl-C, so anything else changes the meaning of the
+/// wrapped command.
 pub fn exit_code_for(code: u32, signal: Option<i32>) -> i32 {
     match signal {
         Some(s) => 128 + s,
@@ -194,10 +188,11 @@ pub fn signal_name(n: i32) -> String {
     name.to_string()
 }
 
-/// `portable-pty` reports a signalled exit as libc's *description* ("Interrupt"), not as a
-/// number, so the number is recovered by asking libc the same question in reverse. Doing
-/// it through `strsignal` rather than a hand-written table keeps the two sides consistent
-/// whatever the platform or locale decides those strings are.
+/// Recovers a signal number from libc's description of it.
+///
+/// `portable-pty` reports a signalled exit as the description ("Interrupt") rather than a
+/// number. Matching through `strsignal` rather than a hand-written table keeps the two
+/// sides consistent whatever the platform and locale make those strings.
 pub fn signal_number(description: &str) -> Option<i32> {
     if let Some(rest) = description.strip_prefix("Signal ") {
         return rest.trim().parse().ok();
@@ -243,9 +238,9 @@ fn run_pty(
         .spawn_command(builder)
         .map_err(|e| format!("cannot run {}: {e}", command[0]))?;
 
-    // The parent must let go of the slave or the master never sees EOF: the kernel keeps
-    // the pty open as long as any process holds a slave descriptor, and the read loop
-    // would hang forever after the child exits.
+    // The parent must drop the slave or the master never sees EOF: the kernel keeps the
+    // pty open while any process holds a slave fd, and the read loop would hang forever
+    // after the child exits.
     drop(pair.slave);
 
     let master = pair.master;
@@ -258,8 +253,8 @@ fn run_pty(
         .take_writer()
         .map_err(|e| format!("could not write to the pty: {e}"))?;
 
-    // Our tty stops interpreting keystrokes so the pty's line discipline is the only one
-    // in play. Restored on every exit path, including panics and signals.
+    // Leaves the pty's line discipline as the only one in play. Restored on every exit
+    // path, including panics.
     let _raw = term::raw_mode(libc::STDIN_FILENO);
 
     spawn_stdin_forwarder(writer, master_fd);
@@ -276,7 +271,7 @@ fn run_pty(
     })
 }
 
-/// Read → user's stdout → flush → daemon. In that order, always.
+/// Read → user's stdout → flush → daemon, in that order.
 fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -290,21 +285,21 @@ fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
                     break;
                 }
                 let _ = out.flush();
-                // Only now, and never blocking. The timestamp is taken here rather than
-                // in the sender thread so arrival times stay real under load.
+                // Timestamped here rather than on the sender thread so arrival times stay
+                // real under load.
                 sink.offer(runlog_core::now_micros(), chunk);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            // A pty master reports the child's exit as EIO on Linux rather than as a
-            // clean EOF, so any error here means the stream is over.
+            // A pty master reports the child's exit as EIO on Linux rather than as a clean
+            // EOF, so any error means the stream is over.
             Err(_) => break,
         }
     }
 }
 
 fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i32>) {
-    // Never joined. A blocking read on stdin cannot be cancelled portably, and the run is
-    // over by the time it would matter — the process exits and takes the thread with it.
+    // Never joined: a blocking read on stdin cannot be cancelled portably, and the process
+    // exits and takes the thread with it.
     std::thread::Builder::new()
         .name("runlog-stdin".into())
         .spawn(move || {
@@ -330,25 +325,22 @@ fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i3
             if interactive || forwarded_anything {
                 send_eof(&mut writer, master_fd);
             }
-            // Dropping `writer` would make portable-pty send a newline *and* an EOT, and
-            // that newline is a byte the child never received from the user — it lands in
-            // the child's input, echoes back, and ends up in the captured stream as a
-            // phantom blank line. Under `runlog cmd < /dev/null` it happens before the
-            // command has printed anything. Leaking one fd for the remaining life of the
-            // process is the cheaper mistake.
+            // Dropping `writer` makes portable-pty send a newline as well as an EOT. That
+            // newline is a byte the child never received from the user: it echoes back and
+            // lands in the captured stream as a phantom blank line. Leaking one fd for the
+            // remaining life of the process is the cheaper mistake.
             std::mem::forget(writer);
         })
         .ok();
 }
 
-/// Our stdin ended, so the child's should too, or `echo x | runlog cat` never returns.
-/// A pty has no way to signal EOF except the line discipline's own EOF character, which is
-/// exactly what a user pressing Ctrl-D sends — so this is faithful rather than synthetic.
+/// Sends the pty's EOF character now that our own stdin has ended, or `echo x | runlog cat`
+/// never returns.
 ///
-/// It is only sent when there was a real stdin behind us: an interactive terminal, or a
-/// pipe that actually delivered something. Under `runlog npm test < /dev/null` — every CI
-/// run — stdin is empty from the start, and forwarding an EOF there buys nothing while the
-/// pty dutifully echoes it as `^D` into the first bytes of the captured stream.
+/// A pty can only signal EOF through the line discipline's EOF character, the same byte
+/// Ctrl-D sends. Only sent when there was a real stdin behind it — an interactive terminal,
+/// or a pipe that delivered something — because under `runlog npm test < /dev/null` the pty
+/// echoes it as `^D` into the first bytes of the captured stream.
 fn send_eof(writer: &mut Box<dyn Write + Send>, master_fd: Option<i32>) {
     let Some(fd) = master_fd else { return };
     let mut termios: libc::termios = unsafe { std::mem::zeroed() };
@@ -381,11 +373,10 @@ fn spawn_signal_forwarder(master_fd: Option<i32>, child_pid: Option<i32>, sink: 
                     sink.resize(cols, rows);
                     continue;
                 }
-                // The process *group*, not the pid. `mix phx.server` is a supervisor with
-                // children; signalling only the leader leaves them running and makes
-                // Ctrl-C look broken. `tcgetpgrp` on the master gives the pty's current
-                // foreground group, which is the right target even when the child has
-                // handed control to something it spawned.
+                // The process group, not the pid: signalling only a supervisor's leader
+                // leaves its children running and makes Ctrl-C look broken. `tcgetpgrp`
+                // on the master gives the pty's current foreground group, which is right
+                // even after the child hands control to something it spawned.
                 if let Some(pgrp) = foreground_group(master_fd).or(child_pid) {
                     unsafe { libc::killpg(pgrp, sig) };
                 }
@@ -406,13 +397,12 @@ fn foreground_group(master_fd: Option<i32>) -> Option<i32> {
 // The pipe path (`--no-pty`)
 // ---------------------------------------------------------------------------
 
-/// The escape hatch, for the rare program a pty upsets.
+/// The `--no-pty` escape hatch, for the rare program a pty upsets.
 ///
-/// **Timing fidelity is degraded and that is not fixable here.** libc line-buffers stdout
-/// when `isatty()` is true and fully buffers it at 4 KB when it is not, so under a pipe
-/// every line in a 4 KB clump arrives at the same instant and per-line timestamps become
-/// fiction. Interactive tooling — `IEx.pry`, `rails console` — stops working for the same
-/// reason. Use it when a pty breaks something; do not use it by default.
+/// Timing fidelity is degraded and cannot be fixed here: libc fully buffers stdout at 4 KB
+/// when `isatty()` is false, so every line in a clump arrives at the same instant and
+/// per-line timestamps become fiction. Interactive tooling stops working for the same
+/// reason.
 fn run_piped(command: &[String], cwd: &Path, sink: &Sink) -> Result<Outcome, String> {
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::process::{Command, Stdio};
@@ -431,10 +421,10 @@ fn run_piped(command: &[String], cwd: &Path, sink: &Sink) -> Result<Outcome, Str
         .try_clone()
         .map_err(|e| format!("could not duplicate the pipe: {e}"))?;
 
-    // Scoped so the parent's copies of the write end are closed before the read loop
-    // starts; otherwise the pipe never reaches EOF and the loop hangs after the child has
-    // already exited. Both fds point at one pipe, so stdout and stderr stay interleaved in
-    // the order the child wrote them — the same single-stream shape the pty path produces.
+    // Scoped so the parent's copies of the write end close before the read loop starts;
+    // otherwise the pipe never reaches EOF and the loop hangs after the child has exited.
+    // Both fds point at one pipe, so stdout and stderr stay interleaved in the order the
+    // child wrote them, matching the pty path's single-stream shape.
     let mut child = {
         let mut cmd = Command::new(&command[0]);
         cmd.args(&command[1..])
@@ -461,9 +451,11 @@ fn run_piped(command: &[String], cwd: &Path, sink: &Sink) -> Result<Outcome, Str
     })
 }
 
-/// Pipe mode leaves the child in *our* process group, so the terminal already delivers
-/// Ctrl-C to it directly; `killpg` here would signal the shim as well and loop. Forwarding
-/// to the child pid covers the case where something signals the shim from outside.
+/// Forwards signals to the child pid rather than the process group.
+///
+/// Pipe mode leaves the child in our own group, where the terminal already delivers Ctrl-C
+/// to it directly and `killpg` would signal the shim as well and loop. This covers only the
+/// case where something signals the shim from outside.
 fn spawn_pipe_signal_forwarder(child_pid: i32) {
     use signal_hook::consts::signal::*;
     use signal_hook::iterator::Signals;

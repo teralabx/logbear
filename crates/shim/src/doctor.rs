@@ -1,15 +1,11 @@
-//! `runlog doctor` — why isn't it working?
+//! `runlog doctor` — check the parts of the install that live outside runlog's own files.
 //!
-//! The install has four moving parts that live outside runlog's own files: a binary on
-//! `PATH`, a daemon that has to be running, an MCP entry in each harness's config, and a
-//! hook block in each harness's config. All four are edited by the installer, all four can
-//! be undone by a shell profile change or a harness upgrade, and none of them announce
-//! themselves when they break — the failure mode is "the agent stopped noticing my errors"
-//! with no error anywhere.
+//! A binary on `PATH`, a running daemon, an MCP entry and a hook block in each harness's
+//! config: all four are written by the installer, all four can be undone by a shell profile
+//! change or a harness upgrade, and none announce themselves when they break.
 //!
-//! So every check reports one of ok / missing / broken plus a single line saying what to do
-//! about it, and the process exits non-zero if anything is not ok. That exit code is what
-//! makes this usable from a script and from the app's own diagnostics panel.
+//! Each check reports ok / missing / broken plus one line saying what to do about it, and
+//! the process exits non-zero if anything is not ok.
 
 use crate::ui::{self, Cell};
 use runlog_core::client::Client;
@@ -21,10 +17,9 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Ok,
-    /// Not set up. Actionable, and the usual state on a fresh machine.
+    /// Not set up. The usual state on a fresh machine.
     Missing,
-    /// Set up but wrong — a config that will not parse, a daemon that will not answer.
-    /// Worse than missing, because the user believes it is working.
+    /// Set up but wrong: a config that will not parse, a daemon that will not answer.
     Broken,
 }
 
@@ -150,8 +145,7 @@ fn check_on_path() -> Check {
             if same {
                 Check::ok("runlog on PATH", found.display().to_string())
             } else {
-                // Two installs is the quiet way to spend an afternoon debugging a fix that
-                // was never running.
+                // Two installs means debugging a fix that was never running.
                 Check::broken(
                     "runlog on PATH",
                     format!(
@@ -197,8 +191,8 @@ fn check_daemon() -> Check {
                 ),
                 Err(e) => Check::ok("daemon", format!("responding to ping ({e})")),
             },
-            // A socket that accepts a connection and then does not answer is the worst
-            // case: everything looks installed and nothing works.
+            // A socket that accepts a connection and then does not answer looks installed
+            // while nothing works.
             Err(e) => Check::broken(
                 "daemon",
                 format!("socket accepted the connection but did not answer: {e}"),
@@ -235,9 +229,8 @@ fn home() -> PathBuf {
 // Harness configs
 // ---------------------------------------------------------------------------
 
-/// Claude Code keeps user-level MCP servers in `~/.claude.json`; a project can also
-/// declare them in `.mcp.json`. Both are checked, because "it works in this repo" and "it
-/// works everywhere" are different answers and the user means one of them.
+/// Claude Code keeps user-level MCP servers in `~/.claude.json`; a project can also declare
+/// them in `.mcp.json`. Both are checked.
 fn check_mcp_claude_code() -> Check {
     let candidates = [
         home().join(".claude.json"),
@@ -257,9 +250,8 @@ fn check_mcp_claude_code() -> Check {
     )
 }
 
-/// Hooks live in `~/.claude/settings.json`, and what matters is that some hook command
-/// actually invokes `runlog-hook` — the block's shape is the harness's business and
-/// changes between versions, so this looks for the binary name rather than a schema.
+/// Hooks live in `~/.claude/settings.json`. Matched on the `runlog-hook` binary name rather
+/// than on a schema, since the block's shape changes between harness versions.
 fn check_hook_claude_code() -> Check {
     let candidates = [
         home().join(".claude/settings.json"),
@@ -283,8 +275,8 @@ fn check_mcp_codex() -> Check {
         );
     }
     match std::fs::read_to_string(&path) {
-        // Matched textually rather than by parsing TOML: this is a presence check, and
-        // adding a TOML parser to the shim to answer it would be a poor trade.
+        // A presence check, matched textually rather than by adding a TOML parser to the
+        // shim.
         Ok(text) if text.contains("mcp_servers.runlog") => {
             Check::ok("MCP · Codex", tilde(&path))
         }
@@ -314,12 +306,11 @@ fn check_hook_codex() -> Check {
     )
 }
 
-/// Looks through a list of candidate config files for one that satisfies `found`.
+/// Looks through candidate config files for one that satisfies `found`.
 ///
-/// A file that exists but does not parse is reported as **broken**, not missing: a config
-/// with a trailing comma in it silently disables every hook in the file, and telling the
-/// user "not installed" when the truth is "your JSON is invalid" sends them to fix the
-/// wrong thing.
+/// A file that exists but does not parse is reported as broken rather than missing: invalid
+/// JSON silently disables every hook in the file, and "not installed" would send the user
+/// to fix the wrong thing.
 fn scan_json(
     name: &'static str,
     candidates: &[PathBuf],
@@ -370,8 +361,7 @@ fn tilde(path: &Path) -> String {
 }
 
 /// Whether `needle` appears anywhere in the subtree, at any depth. Hook config is nested
-/// differently in every harness version; what stays constant is that our binary's name has
-/// to appear somewhere in it.
+/// differently in every harness version.
 fn mentions(value: Option<&serde_json::Value>, needle: &str) -> bool {
     match value {
         None => false,

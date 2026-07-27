@@ -1,15 +1,12 @@
 //! The MCP state machine: initialize, roots, tools.
 //!
 //! The whole server is `handle_line(&str) -> Vec<Value>` — messages in, messages out, no
-//! I/O. That shape is deliberate: it makes the protocol testable without a daemon, a pipe,
-//! or a client, and it is why the framing rules that are easy to get wrong (a notification
-//! is never answered, an unknown method is `-32601`, the banner rides on error results too)
-//! are covered by ordinary unit tests rather than by hoping.
+//! I/O — so the framing rules are testable without a daemon, a pipe, or a client.
 //!
-//! Server-to-client requests are handled by the same loop rather than by a nested read.
-//! When we ask for `roots/list` we record the outstanding id and return; the client's reply
-//! arrives as just another line. A nested read would deadlock the moment a client
-//! interleaved a `tools/call` with its answer, which is exactly what a busy client does.
+//! Server-to-client requests go through the same loop rather than a nested read: a
+//! `roots/list` records its outstanding id and returns, and the client's reply arrives as
+//! another line. A nested read would deadlock as soon as a client interleaved a
+//! `tools/call` with its answer.
 
 use crate::backend::Backend;
 use crate::jsonrpc::{self, Id, Incoming};
@@ -21,8 +18,8 @@ use std::path::PathBuf;
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const SERVER_NAME: &str = "runlog";
 
-/// Steering that pays for itself: without it a model reaches for `entries` (which holds no
-/// text) instead of `v_entries`. Kept to one sentence — it is standing context.
+/// Standing context sent with `initialize`. Without it a model reaches for `entries`, which
+/// holds no text, instead of `v_entries`.
 const INSTRUCTIONS: &str = "runlog captures this project's dev-server output. Call \
     runlog_schema() once, then answer questions with runlog_query(). Tool results are \
     prefixed with a warning when errors have appeared that you have not seen yet.";
@@ -64,10 +61,9 @@ impl<B: Backend> Server<B> {
 
     /// Which project the caller means.
     ///
-    /// Roots first: a globally-configured MCP server is not guaranteed to be spawned in the
-    /// project directory, so process cwd is a fallback, not the answer. Containment against
-    /// the git root is the daemon's job — a server started in `apps/api` must be found by an
-    /// agent rooted at the repo top.
+    /// Roots first: a globally-configured MCP server need not be spawned in the project
+    /// directory, so the process cwd is only a fallback. Resolving a subdirectory to its
+    /// git root is the daemon's job.
     fn project(&self) -> ProjectRef {
         match self.roots.first() {
             Some(root) => ProjectRef::Path(root.to_string_lossy().into_owned()),
@@ -110,8 +106,8 @@ impl<B: Backend> Server<B> {
                 json!({ "tools": tools::descriptors() }),
             )],
             "tools/call" => vec![self.tools_call(&id, &params)],
-            // Advertising no `resources`/`prompts` capability means a conformant client
-            // never sends these, but plenty of clients probe anyway.
+            // A conformant client never sends these, since no `resources`/`prompts`
+            // capability is advertised, but many probe anyway.
             other => vec![jsonrpc::error(
                 Some(&id),
                 jsonrpc::METHOD_NOT_FOUND,
@@ -122,8 +118,7 @@ impl<B: Backend> Server<B> {
 
     fn notification(&mut self, method: &str, _params: Value) -> Vec<Value> {
         match method {
-            // Asking before this point is legal but pointless: the client is not obliged to
-            // serve requests until it has told us it is ready.
+            // A client is not obliged to serve requests before it reports initialized.
             "notifications/initialized" if self.client_supports_roots => {
                 vec![self.request_roots()]
             }
@@ -131,8 +126,7 @@ impl<B: Backend> Server<B> {
                 self.client_supports_roots = true;
                 vec![self.request_roots()]
             }
-            // Everything else — cancellation, progress, an unknown notification — is
-            // silently ignored. A notification carries no id and must never be answered.
+            // A notification carries no id and must never be answered.
             _ => Vec::new(),
         }
     }
@@ -143,7 +137,7 @@ impl<B: Backend> Server<B> {
             match (result, error) {
                 (Some(r), _) => self.set_roots(&r),
                 (None, Some(e)) => {
-                    // Not fatal: a client may advertise roots and still refuse to list them.
+                    // A client may advertise roots and still refuse to list them.
                     eprintln!("runlog-mcp: roots/list refused ({e}); falling back to cwd");
                 }
                 _ => {}
@@ -180,7 +174,7 @@ impl<B: Backend> Server<B> {
             .is_some();
 
         // Not in the specification, but some clients put concrete roots in the initialize
-        // params. Free to honour, and it saves a round trip when they do.
+        // params, which saves a round trip.
         if let Some(list) = params.get("roots").and_then(|r| r.as_array()) {
             let declared: Vec<PathBuf> = list
                 .iter()
@@ -216,9 +210,8 @@ impl<B: Backend> Server<B> {
         };
         let args = params.get("arguments").cloned().unwrap_or(Value::Null);
 
-        // §9.5: the banner is computed before the call and prefixed to the result whatever
-        // the result turns out to be. In a client with no hook support this is the entire
-        // push mechanism, so "the tool failed" is precisely the wrong moment to drop it.
+        // The banner is computed before the call and prefixed to the result even when the
+        // call fails: in a client with no hook support it is the entire push mechanism.
         let banner = self.banner();
         let project = self.project();
         let session_id = self.session_id.clone();
@@ -251,10 +244,10 @@ impl<B: Backend> Server<B> {
 /// `file:///Users/x/my%20project` → `/Users/x/my project`.
 ///
 /// Hand-rolled rather than pulling in a URL crate: the only scheme MCP roots may use is
-/// `file:`, and the only escaping that shows up in practice is percent-encoded spaces.
+/// `file:`, and the only escaping seen in practice is percent-encoded spaces.
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
-    // `file:///path` leaves a leading `/`; `file://host/path` is not something we support.
+    // `file:///path` leaves a leading `/`; `file://host/path` is unsupported.
     let rest = match rest.find('/') {
         Some(0) => rest,
         _ => return None,
@@ -276,11 +269,11 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8(out).ok()?))
 }
 
-/// A session identity that is stable for the life of this process and distinct from every
-/// other runlog-mcp on the machine.
+/// A session identity, stable for the life of this process and distinct from every other
+/// runlog-mcp on the machine.
 ///
-/// pid alone is reused by the OS, and a reused pid would inherit a stale watermark and
-/// silently swallow another session's errors. pid + start time + cwd, hashed, cannot.
+/// Hashes pid, start time and cwd together: a pid alone is reused by the OS, and a reused
+/// pid would inherit a stale watermark and swallow another session's errors.
 pub fn derive_session_id() -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())

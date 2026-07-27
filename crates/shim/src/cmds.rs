@@ -1,14 +1,7 @@
 //! The query subcommands.
 //!
-//! These exist because a terminal-resident tool that cannot be queried from the terminal
-//! is annoying. The desktop app is the primary interface; this is the one you reach for
-//! without leaving the shell.
-//!
-//! Two rules run through all of them. Human output is the default and has to be genuinely
-//! readable — aligned columns, relative times, short SHAs, colour only on a tty. And when
-//! the daemon is down, the answer is one sentence saying so and how to start it, never a
-//! Rust error dump: the most common time you run `runlog status` is when something is
-//! already wrong.
+//! Human output is the default and `--json` is for scripts. When the daemon is down the
+//! answer is one sentence saying so and how to start it, never a Rust error dump.
 
 use crate::cli::Cmd;
 use crate::ui::{self, Cell};
@@ -40,8 +33,8 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
     }
 }
 
-/// Read commands deliberately do **not** start the daemon. Someone typing `runlog status`
-/// wants to know whether it is running, not to have the answer changed by asking.
+/// Connects to the daemon without starting it: `runlog status` must report whether it is
+/// running, not change the answer by asking.
 fn connect() -> Result<Client, String> {
     Client::connect().map_err(|_| ui::daemon_down(&paths::socket()))
 }
@@ -64,8 +57,8 @@ fn cat(run_id: RunId) -> Result<i32, String> {
     let mut client = connect()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    // Byte-exact, ANSI intact: `runlog cat` is a replay, not a rendering. Anything that
-    // strips or reflows here breaks the passthrough guarantee the capture side promises.
+    // Byte-exact, ANSI intact: `runlog cat` is a replay, not a rendering. Stripping or
+    // reflowing here would break the guarantee the capture side makes.
     client
         .raw_stream(ProjectRef::cwd(), run_id, |bytes| out.write_all(bytes))
         .map_err(failed)?;
@@ -119,8 +112,8 @@ fn logs(
         return print_json(&entries);
     }
 
-    // Fetched newest-first so the limit takes the *recent* end, printed oldest-first so it
-    // reads the way a log reads.
+    // Fetched newest-first so the limit takes the recent end, printed oldest-first so it
+    // reads like a log.
     entries.reverse();
     if entries.is_empty() {
         println!("{}", ui::ash("no entries"));
@@ -134,8 +127,7 @@ fn logs(
     Ok(0)
 }
 
-/// Width of the widest level name, so `error` and `unknown` do not shift the text column
-/// between one line and the next.
+/// Width of the widest level name, so the text column does not shift between lines.
 const LEVEL_WIDTH: usize = 7;
 
 fn write_entry(out: &mut impl Write, view: &EntryView) {
@@ -147,9 +139,8 @@ fn write_entry(out: &mut impl Write, view: &EntryView) {
     } else {
         String::new()
     };
-    // The gutter is the timestamp plus the level, and continuation lines line up under
-    // the text rather than under the gutter: a stack trace that re-indents itself every
-    // line is unreadable.
+    // Continuation lines line up under the text rather than the gutter, so a stack trace
+    // does not re-indent itself on every line.
     let indent = " ".repeat("00:00:00".len() + 1 + LEVEL_WIDTH + 1);
     let mut lines = view.text.lines();
     let first = lines.next().unwrap_or("");
@@ -250,10 +241,10 @@ fn runs(number: usize, json: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// "N errors (M new)" needs a per-run count of signatures whose very first sighting in
-/// this project was inside that run. There is no request for it, but there is SQL, so it
-/// is asked as SQL — and if the daemon refuses, the column simply loses its parenthetical
-/// rather than the command failing.
+/// Per-run count of error signatures first seen in that run, for the "(M new)" suffix.
+///
+/// Asked as SQL because there is no request for it; if the daemon refuses, the column
+/// loses its parenthetical rather than the command failing.
 fn new_signature_counts(client: &mut Client) -> Option<std::collections::HashMap<RunId, i64>> {
     const SQL: &str = "SELECT rf.run_id, COUNT(*) \
                          FROM run_fingerprints rf \
@@ -292,9 +283,7 @@ fn truncate(s: &str, max: usize) -> String {
 // diff
 // ---------------------------------------------------------------------------
 
-/// `latest`, `last-good` and `last-bad` are accepted alongside a run id because "it worked
-/// yesterday" is a comparison against the last run that worked, and nobody knows that run's
-/// number.
+/// Parses a run id, or one of `latest`, `last-good`, `last-bad`.
 pub fn parse_run_ref(s: &str) -> Result<RunRef, String> {
     match s.trim().to_ascii_lowercase().as_str() {
         "latest" | "last" | "current" => Ok(RunRef::Latest),
@@ -321,7 +310,7 @@ fn diff(a: Option<String>, b: Option<String>, json: bool) -> Result<i32, String>
     }
     print_diff(&diff);
     // Non-zero when something regressed, so `runlog diff && deploy` means what it looks
-    // like it means.
+    // like.
     Ok(if diff.new_signatures.is_empty() { 0 } else { 1 })
 }
 
@@ -391,7 +380,6 @@ fn print_diff(diff: &RunDiff) {
         }
     }
 
-    // The three things that plausibly caused it.
     if !diff.git.commits.is_empty() || !diff.git.files_changed.is_empty() {
         println!(
             "\n{}",
@@ -456,7 +444,7 @@ fn status(json: bool) -> Result<i32, String> {
     };
 
     let daemon = client.status().map_err(failed)?;
-    // A project the daemon has never seen is not an error: it is a project nobody has run
+    // A project the daemon has never seen is not an error, just one nobody has run
     // anything in yet.
     let project = client.project_status(ProjectRef::cwd()).ok();
 
@@ -595,8 +583,8 @@ fn query(sql: &str, json: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Strings print bare — a log line wrapped in quotes and escapes is unreadable, and this
-/// is a viewer, not a serialiser. `--json` is there when the escaping matters.
+/// Strings print bare: this is a viewer, not a serialiser. `--json` is there when the
+/// escaping matters.
 fn render_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::Null => String::new(),

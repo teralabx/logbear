@@ -1,9 +1,8 @@
 //! Protocol-level tests for the hand-rolled JSON-RPC layer.
 //!
-//! These run against a stub backend rather than a live daemon. That is the point: the
-//! failure modes worth guarding here — answering a notification, dropping the banner on an
-//! error path, a malformed `tools/list` — are all framing bugs, and none of them need real
-//! log data to reproduce.
+//! These run against a stub backend: the failure modes worth guarding — answering a
+//! notification, dropping the banner on an error path, a malformed `tools/list` — are
+//! framing bugs, and none of them need real log data.
 
 use runlog_core::model::{EntryId, EntryView, Level};
 use runlog_core::proto::{ProjectRef, QueryResult, RunDiff, RunRef, UnreadState};
@@ -13,7 +12,7 @@ use runlog_mcp::Server;
 use serde_json::{json, Value};
 
 /// A backend with no daemon behind it. `unread` is always non-empty so every test can
-/// assert the banner, and `query` always fails so the error path is easy to reach.
+/// assert the banner, and a query mentioning "boom" fails so the error path is reachable.
 #[derive(Default)]
 struct Stub {
     last_project: Option<String>,
@@ -186,7 +185,7 @@ fn tools_list_is_the_five_tools_with_valid_schemas() {
         assert_eq!(t["inputSchema"]["type"], "object");
         assert!(t["inputSchema"]["properties"].is_object());
     }
-    // The two tools with mandatory arguments say so.
+    // The tools with mandatory arguments say so.
     let by_name = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
     assert_eq!(by_name("runlog_query")["inputSchema"]["required"], json!(["sql"]));
     assert_eq!(
@@ -216,7 +215,6 @@ fn the_banner_rides_on_an_error_result_too() {
     assert_eq!(r["result"]["isError"], true);
     let text = text_of(&r);
     assert!(text.starts_with("⚠️ 6 new errors"), "{text}");
-    // The failing SQL is echoed and there is a route to repair.
     assert!(text.contains("DELETE FROM boom"), "{text}");
     assert!(text.contains("runlog_schema()"), "{text}");
 }
@@ -274,7 +272,7 @@ fn roots_are_requested_after_initialized_and_used_for_routing() {
     let request_id = asked["id"].clone();
     assert!(asked["result"].is_null(), "a request, not a response");
 
-    // The client answers; that answer is itself a message on the same stream.
+    // The client's answer is itself a message on the same stream.
     let answer = json!({
         "jsonrpc": "2.0", "id": request_id,
         "result": { "roots": [{ "uri": "file:///tmp/my%20project", "name": "my project" }] }

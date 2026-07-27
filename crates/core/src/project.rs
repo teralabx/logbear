@@ -1,9 +1,8 @@
 //! Project resolution and run stamping.
 //!
-//! Git is read by shelling out to `git` rather than linking libgit2. It is read-only, it
-//! is already on the machine of anyone who needs this tool, and it gives us `git log a..b`
-//! for the diff view without reimplementing revision walking. Every call is best-effort:
-//! a missing or broken repository degrades to `None`, never to an error the user sees.
+//! Git state is read by shelling out to `git` rather than linking libgit2, which avoids
+//! reimplementing revision walking for the diff view. Every call is best effort: a missing
+//! or broken repository degrades to `None` rather than an error.
 
 use crate::model::RunStamp;
 use std::collections::BTreeMap;
@@ -11,8 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// Lockfiles worth hashing. A change in any of these is the single most common answer to
-/// "what changed?" that is not a commit.
+/// Lockfiles hashed into every run stamp.
 pub const LOCKFILES: &[&str] = &[
     "mix.lock",
     "package-lock.json",
@@ -41,25 +39,24 @@ pub fn project_root(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
-/// Human-facing project name: the directory name of the root.
+/// Human-facing project name, taken from the root directory's name.
 pub fn project_name(root: &Path) -> String {
     root.file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
-/// Does `run_cwd` belong to the project rooted at `root`?
+/// Whether `run_cwd` belongs to the project rooted at `root`.
 ///
-/// Containment, not equality. A Phoenix server started in `apps/api` must be found by an
-/// agent whose workspace root is the repo root — the monorepo case is the common case, and
-/// string equality fails it silently, which is the worst way to fail.
+/// Containment rather than equality, so a server started in a monorepo subdirectory such
+/// as `apps/api` still resolves to the repo root.
 pub fn contains(root: &Path, run_cwd: &Path) -> bool {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let cwd = run_cwd.canonicalize().unwrap_or_else(|_| run_cwd.to_path_buf());
     cwd.starts_with(&root)
 }
 
-/// Everything we know at the instant the command is spawned.
+/// Builds the stamp recorded at the instant a command is spawned.
 pub fn stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp {
     let root = project_root(cwd);
     RunStamp {
@@ -84,8 +81,8 @@ pub fn stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp
     }
 }
 
-/// A hash of the uncommitted working tree, so two runs at the same SHA with different
-/// local edits are distinguishable. `None` when the tree is clean.
+/// Hash of the uncommitted working tree, distinguishing two runs at the same SHA with
+/// different local edits. `None` when the tree is clean.
 pub fn dirty_hash(cwd: &Path) -> Option<String> {
     let diff = git(cwd, &["diff", "HEAD"])?;
     let untracked = git(cwd, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
@@ -112,9 +109,10 @@ pub fn lockfile_hashes(root: &Path) -> BTreeMap<String, String> {
     out
 }
 
-/// Environment variable **names** only. Values never leave this process — that is a hard
-/// product rule with no config flag, because a tool that records everything you run is one
-/// bug away from being the worst thing on your machine.
+/// Environment variable names, sorted.
+///
+/// Values are never read or recorded. This is unconditional and has no setting to relax
+/// it; nothing downstream may reintroduce them.
 pub fn env_keys() -> Vec<String> {
     let mut keys: Vec<String> = std::env::vars_os()
         .map(|(k, _)| k.to_string_lossy().into_owned())
@@ -152,8 +150,8 @@ pub fn files_changed(root: &Path, a: &str, b: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Run a git command, giving up quickly and quietly. Nothing here is worth stalling a
-/// process spawn for: the shim calls this on the hot path of the user pressing enter.
+/// Runs a git command, returning `None` on any failure or timeout. The shim calls this on
+/// the process-spawn path, so it must never stall.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
@@ -162,8 +160,8 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        // Stop git from prompting for credentials or opening an editor if something is
-        // misconfigured — a hung prompt behind a spawn is an unexplainable freeze.
+        // Suppress credential prompts and editors: a hung prompt behind a spawn would
+        // look like a freeze with no explanation.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
 
@@ -245,8 +243,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sub = tmp.path().join("nowhere");
         std::fs::create_dir_all(&sub).unwrap();
-        // Not asserting on git presence: outside a repo this must be the dir itself, and
-        // inside one it must at least be an ancestor.
+        // The temp dir may or may not sit inside a repo, so assert only that the root is
+        // an ancestor.
         let root = project_root(&sub);
         assert!(sub.starts_with(&root) || root == sub);
     }

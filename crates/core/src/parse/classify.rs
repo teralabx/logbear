@@ -1,21 +1,16 @@
 //! Level assignment and error detection.
 //!
-//! This used to be a **union of independent signals, deliberately biased to over-catch**,
-//! on the reasoning that flagging a non-error is cheaper than missing a real one. Pointed
-//! at a real Phoenix server, that bias produced 25 false errors out of 27, and the two
-//! real ones were the only two anything *declared*. Over-catching did not trade precision
-//! for recall; it drowned the recall it bought.
+//! Severity itself is decided by the single ladder in [`super::severity`]; this module
+//! only decides what a severity means:
 //!
-//! So the union is gone. There is one ladder, in [`super::severity`], and this module only
-//! decides what an entry's severity *means*:
-//!
-//! * an error is a **declared** error/fatal, or a **structural** exception banner;
+//! * an error is a declared error/fatal, or a structural exception banner;
 //! * an `unknown` severity is never an error, however alarming the text reads;
 //! * run-level failure (non-zero exit, fatal signal) is folded in separately by the
-//!   daemon, because it is a fact about the process rather than about any line.
+//!   daemon, since it is a fact about the process rather than about any line.
 //!
-//! Everything the old heuristics used to catch is still *stored*, still searchable, and
-//! still surfaced — as novelty rather than as severity. See `store::write` for that half.
+//! Text-shape heuristics are not used to raise severity — on real server output they
+//! produced overwhelmingly false errors. Such lines are still stored and searchable, and
+//! are surfaced as novelty instead; see `store::write`.
 
 use crate::model::Level;
 use crate::parse::severity::{self, Evidence};
@@ -42,7 +37,7 @@ impl Classification {
 pub fn classify(text: &str) -> Classification {
     let s = severity::detect(text);
     let is_error = match s.evidence {
-        // A structural banner *is* the runtime reporting a throw.
+        // A structural banner is the runtime reporting a throw.
         Evidence::Structural => true,
         Evidence::Declared => s.level == Level::Error,
         Evidence::Unknown => false,
@@ -55,12 +50,13 @@ pub fn classify(text: &str) -> Classification {
     }
 }
 
-/// Signals that belong to the run rather than to any one entry. Folded in by the daemon
-/// when the process ends, so a silent crash still registers as a failure even if it never
-/// printed a word.
+/// Reports run-level failure from the process exit status, so a silent crash registers
+/// even when the process printed nothing.
+///
+/// Called by the daemon when the process ends.
 pub fn run_failed(exit_code: Option<i32>, signal: Option<&str>) -> Option<&'static str> {
-    // Ctrl-C is how you stop a dev server, and it exits 130. Checking the signal first is
-    // what stops every deliberate shutdown from being reported as a crash.
+    // Interactive shutdown signals are checked first: Ctrl-C exits 130, which would
+    // otherwise look like a crash.
     if matches!(signal, Some("SIGINT") | Some("SIGTERM") | Some("SIGHUP")) {
         return None;
     }
@@ -132,7 +128,6 @@ mod tests {
 
     #[test]
     fn a_phoenix_request_log_is_not_an_error() {
-        // The reported bug, at the level the daemon actually asks about.
         let c = classify("[debug] Processing with EnlightenWeb.Page.HomeLive.__live__/2\n  Parameters: %{}\n  Pipelines: [:browser]");
         assert!(!c.is_error);
         assert_eq!(c.level, Level::Debug);
@@ -158,7 +153,7 @@ mod tests {
     fn json_logs_are_believed() {
         assert_eq!(lvl(r#"{"level":"warn","msg":"slow"}"#), Level::Warn);
         assert!(is_err(r#"{"level":"error","msg":"boom"}"#));
-        // pino numeric levels, which share OTel's scale
+        // pino's numeric scale, on which 30 is info
         assert_eq!(lvl(r#"{"level":30,"msg":"hi"}"#), Level::Info);
         assert!(is_err(r#"{"level":50,"msg":"bad"}"#));
     }
@@ -175,7 +170,6 @@ mod tests {
         assert_eq!(run_failed(Some(1), None), Some("nonzero_exit"));
         assert_eq!(run_failed(Some(0), None), None);
         assert_eq!(run_failed(None, Some("SIGSEGV")), Some("killed_by_signal"));
-        // Ctrl-C is how you stop a dev server. It is not a failure.
         assert_eq!(run_failed(Some(130), Some("SIGINT")), None);
         assert_eq!(run_failed(None, None), Some("unexpected_death"));
     }

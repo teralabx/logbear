@@ -1,23 +1,19 @@
-//! Notification policy.
+//! Notification policy: pure decision logic, with no OS notification API involved.
 //!
-//! The requirement is blunt: an error occurring a hundred times in a second must not
-//! produce a hundred notifications. So notifications are keyed on **fingerprint**, never
-//! on entry, and every rule below exists to make a burst quieter rather than louder.
-//!
-//! Pure decision logic, deliberately separated from any OS API — the daemon decides so the
-//! behaviour is identical whether or not the app window is open, and so the policy can be
-//! tested without a notification centre.
+//! Notifications are keyed on fingerprint rather than entry, so a signature repeating a
+//! hundred times a second yields one banner with a rising count. The daemon owns this
+//! decision, so behaviour does not depend on whether the app window is open.
 
 use crate::model::{Evidence, FingerprintId, Level, ProjectId};
 use crate::proto::{Notice, QuietHours, Settings};
 use std::collections::HashMap;
 
-/// A repeat of the same signature updates the existing banner's count instead of posting
-/// a new one, for this long.
+/// Window in which a repeat of a signature updates the existing banner's count rather
+/// than posting a new one.
 pub const COOLDOWN_MICROS: i64 = 5 * 60 * 1_000_000;
-/// Ceiling per project, so a project that has gone wrong cannot own the screen.
+/// Ceiling on banners posted per project per minute.
 pub const MAX_PER_MINUTE: usize = 3;
-/// Above this rate, individual notifications stop being information.
+/// Error rate above which individual banners are replaced by a single storm banner.
 pub const STORM_ERRORS_PER_SEC: f64 = 50.0;
 const MINUTE: i64 = 60 * 1_000_000;
 
@@ -27,8 +23,7 @@ pub enum Decision {
     Post(Notice),
     /// Replace the banner already showing for this signature with a higher count.
     Update(Notice),
-    /// Say nothing. The reason is kept for the settings screen's "why am I not getting
-    /// notified" answer, which is otherwise unanswerable.
+    /// Say nothing. The reason is retained so the settings screen can explain why.
     Suppress(&'static str),
 }
 
@@ -39,8 +34,8 @@ pub struct Candidate {
     pub fingerprint_id: FingerprintId,
     pub template: String,
     pub level: Level,
-    /// How the level was arrived at. Only a declared or structural severity may interrupt
-    /// someone; see [`Notifier::consider`].
+    /// How the level was arrived at. Only declared or structural severity may notify;
+    /// see [`Notifier::consider`].
     pub evidence: Evidence,
     pub at: i64,
     pub is_new_signature: bool,
@@ -54,8 +49,8 @@ struct Seen {
     count: i64,
 }
 
-/// Per-project notification state. Held in memory by the daemon; losing it on restart just
-/// means the next error notifies, which is the right failure direction.
+/// Per-project notification state, held in memory by the daemon. Losing it on restart
+/// only means the next error notifies again.
 #[derive(Default)]
 pub struct Notifier {
     seen: HashMap<FingerprintId, Seen>,
@@ -72,7 +67,7 @@ impl Notifier {
         Notifier::default()
     }
 
-    /// Decide what to do about one error.
+    /// Decides what to do about one error.
     pub fn consider(
         &mut self,
         c: &Candidate,
@@ -85,11 +80,9 @@ impl Notifier {
         if project_muted {
             return Decision::Suppress("this project is muted");
         }
-        // The rule the whole redesign exists for: we interrupt someone only when the
-        // process *said* something was wrong. An `unknown` severity is stored, indexed,
-        // searchable and shown in the app — and it never posts a banner, however alarming
-        // the text reads. Novelty does not qualify either: new output is interesting, not
-        // urgent, and it arrives attached to a real failure rather than on its own.
+        // Only a severity the process itself declared may interrupt. Unknown-severity
+        // output is still stored, indexed and shown in the app, but never notifies,
+        // however alarming its text; novelty alone does not qualify either.
         if !c.evidence.may_notify() {
             return Decision::Suppress("the process did not declare this a problem");
         }
@@ -99,9 +92,9 @@ impl Notifier {
 
         self.recent.retain(|t| c.at - *t < MINUTE);
 
-        // The per-signature cooldown is checked *before* storm detection. A hundred
-        // repeats of one signature is one banner whose count ticks up, not a storm —
-        // storm mode is for when the variety of distinct failures is itself the problem.
+        // Order matters: the per-signature cooldown is checked before storm detection, so
+        // repeats of one signature coalesce into a count instead of tripping storm mode,
+        // which is meant for a burst of *distinct* failures.
         {
             let entry = self.seen.entry(c.fingerprint_id).or_default();
             entry.count += 1;
@@ -124,8 +117,7 @@ impl Notifier {
         self.arrivals.push(c.at);
 
         if self.arrivals.len() as f64 >= STORM_ERRORS_PER_SEC {
-            // One banner for the storm, then silence until it passes. A hundred banners
-            // and one banner carry the same information; only one is usable.
+            // One banner for the storm, then silence until it passes.
             let first = self.storm_until <= c.at;
             self.storm_until = c.at + MINUTE;
             self.coalesced += 1;
@@ -170,8 +162,8 @@ impl Notifier {
         })
     }
 
-    /// Process crashes and non-zero exits always notify. They are the events a developer
-    /// would want interrupted for, and there is exactly one per run so they cannot storm.
+    /// Decides what to do about a finished run. Crashes and non-zero exits bypass the
+    /// rate limiter, since there is at most one per run.
     pub fn run_ended(
         &mut self,
         project_id: ProjectId,
@@ -205,7 +197,7 @@ impl Notifier {
         }
     }
 
-    /// Anything the rate limiter swallowed since the last call, as one summary line.
+    /// Summarises everything the rate limiter suppressed since the last call.
     pub fn drain_coalesced(&mut self, project_id: ProjectId, project_name: &str) -> Option<Notice> {
         if self.coalesced == 0 {
             return None;
@@ -223,8 +215,8 @@ impl Notifier {
         })
     }
 
-    /// Called when a run starts, so the first occurrence of a signature in a new run
-    /// notifies again rather than being swallowed by the previous run's cooldown.
+    /// Clears per-signature state at the start of a run, so a signature carried over from
+    /// the previous run is not swallowed by its cooldown.
     pub fn reset_for_new_run(&mut self) {
         self.seen.clear();
         self.arrivals.clear();
@@ -346,7 +338,6 @@ mod tests {
             .count();
         assert_eq!(posted, MAX_PER_MINUTE);
 
-        // What was swallowed is reported, rather than being lost.
         let summary = n.drain_coalesced(1, "my_app").unwrap();
         assert!(summary.title.contains("more errors"), "{}", summary.title);
     }
@@ -356,7 +347,7 @@ mod tests {
         let mut n = Notifier::new();
         let s = settings();
         let mut posts = 0;
-        // 200 distinct signatures inside one second: well past the storm threshold.
+        // 200 distinct signatures in one second, well past the storm threshold.
         for i in 0..200 {
             if let Decision::Post(notice) = n.consider(&candidate(i, 5_000_000 + i * 1000), &s, false)
             {
@@ -420,14 +411,12 @@ mod tests {
     #[test]
     fn quiet_hours_wrap_midnight() {
         let q = Some(QuietHours { start_min: 22 * 60, end_min: 8 * 60 });
-        // Exercised through the pure predicate: minute-of-day 23:00 is quiet, 12:00 is not.
+        // Wrapping ranges are recognised by start > end.
         assert!(matches!(q, Some(qq) if qq.start_min > qq.end_min));
     }
 
     #[test]
     fn an_undeclared_severity_never_interrupts_anyone() {
-        // The bug that produced eight banners for `[debug] Processing with …` reached the
-        // user through exactly this call. Whatever else changes, this must not.
         let mut n = Notifier::new();
         let s = settings();
         let mut c = candidate(1, 0);
@@ -437,9 +426,6 @@ mod tests {
 
     #[test]
     fn novelty_alone_is_not_grounds_for_a_banner() {
-        // A freshly added `IO.inspect` is new, and new is interesting — but it is not a
-        // reason to take over someone's screen. It reaches them as evidence attached to a
-        // real failure, or in the app, and not otherwise.
         let mut n = Notifier::new();
         let s = settings();
         let mut c = candidate(2, 0);

@@ -1,22 +1,19 @@
 //! Terminal emulation, not escape-stripping.
 //!
-//! A spinner or a build progress bar rewrites one visual line in place with `\r` and
-//! `ESC[2K`, spending thousands of bytes to show one thing. Regex-stripping the escapes
-//! turns that into thousands of junk rows. Running the bytes through a real VT state
-//! machine collapses it to its final state, which is what the human saw.
+//! Spinners and progress bars rewrite one visual line in place with `\r` and `ESC[2K`;
+//! stripping the escapes with a regex would turn that into thousands of junk rows, so the
+//! bytes are run through a VT state machine and collapsed to their final state.
 //!
-//! Two deliberate departures from a real terminal:
+//! Two departures from a real terminal:
 //!
-//! * **No wrapping.** A terminal soft-wraps at the right margin without inserting any
-//!   bytes, so re-emulating at unbounded width recovers the unwrapped logical line. If we
-//!   wrapped at the user's real width, the same error would fingerprint differently on a
-//!   laptop and on an external monitor.
-//! * **One row.** Input is a single raw line (no LF), so vertical cursor motion has
-//!   nowhere to go and is ignored.
+//! * No wrapping. Soft-wrapping inserts no bytes, so emulating at unbounded width recovers
+//!   the unwrapped logical line; wrapping at the user's real width would make the same
+//!   error fingerprint differently at different terminal sizes.
+//! * One row. Input is a single raw line (no LF), so vertical cursor motion is ignored.
 
 use crate::model::CANONICAL_COLS;
 
-/// Render one raw line's bytes to plain text: ANSI resolved, `\r` overwrites applied,
+/// Renders one raw line's bytes to plain text: ANSI resolved, `\r` overwrites applied,
 /// trailing whitespace trimmed.
 pub fn render_line(bytes: &[u8]) -> String {
     let mut perf = Row::default();
@@ -25,7 +22,7 @@ pub fn render_line(bytes: &[u8]) -> String {
     perf.finish()
 }
 
-/// Render a sequence of raw lines as a block of text.
+/// Renders a sequence of raw lines as a block of text.
 pub fn render_lines<'a, I>(lines: I) -> String
 where
     I: IntoIterator<Item = &'a [u8]>,
@@ -40,8 +37,10 @@ where
     out
 }
 
-/// Strip escape sequences without emulating. Only for cheap prefilters — mode detection
-/// peeking at a line start — never for stored text.
+/// Strips escape sequences without emulating.
+///
+/// For cheap prefilters only, such as mode detection peeking at a line start; stored text
+/// must go through [`render_line`].
 pub fn quick_strip(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
     let mut i = 0;
@@ -108,7 +107,7 @@ impl vte::Perform for Row {
                     self.put(' ');
                 }
             }
-            // Bell, and anything else a single line cannot act on.
+            // Bell and anything else a single row cannot act on.
             _ => {}
         }
     }
@@ -141,7 +140,7 @@ impl vte::Perform for Row {
                     _ => self.cells.clear(),
                 }
             }
-            // Erase in display — on a single row, same as clearing it.
+            // Erase in display; on a single row this just clears it.
             'J' => {
                 self.cells.clear();
                 self.cursor = 0;
@@ -151,7 +150,7 @@ impl vte::Perform for Row {
             // Cursor forward / back
             'C' => self.cursor += p(0, 1),
             'D' => self.cursor = self.cursor.saturating_sub(p(0, 1)),
-            // Cursor position — only the column is meaningful here.
+            // Cursor position; only the column is meaningful on one row.
             'H' | 'f' => self.cursor = p(1, 1) - 1,
             // Delete characters
             'P' => {
@@ -170,7 +169,7 @@ impl vte::Perform for Row {
                     }
                 }
             }
-            // SGR and everything else does not change which characters are on the row.
+            // SGR and the rest do not change which characters are on the row.
             _ => {}
         }
     }
@@ -178,13 +177,12 @@ impl vte::Perform for Row {
     fn hook(&mut self, _: &vte::Params, _: &[u8], _: bool, _: char) {}
     fn put(&mut self, _: u8) {}
     fn unhook(&mut self) {}
-    /// Window titles and hyperlink wrappers must not bleed into stored text.
+    /// Ignored so window titles and hyperlink wrappers do not bleed into stored text.
     fn osc_dispatch(&mut self, _: &[&[u8]], _: bool) {}
     fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
 }
 
-/// The width the stored projection is emulated at, recorded for the record's sake even
-/// though nothing wraps at it.
+/// Width the stored projection is emulated at. Recorded only as metadata; nothing wraps.
 pub const fn canonical_cols() -> usize {
     CANONICAL_COLS
 }
@@ -206,7 +204,6 @@ mod tests {
 
     #[test]
     fn carriage_return_overwrites_in_place() {
-        // The shape a progress bar actually makes.
         let bytes = b"[    ] 0%\r[==  ] 50%\r[====] 100%";
         assert_eq!(render_line(bytes), "[====] 100%");
     }
@@ -219,7 +216,7 @@ mod tests {
 
     #[test]
     fn partial_overwrite_keeps_the_tail() {
-        // Real terminals leave the uncovered remainder visible; so must we.
+        // Real terminals leave the uncovered remainder visible.
         assert_eq!(render_line(b"abcdef\rXY"), "XYcdef");
     }
 

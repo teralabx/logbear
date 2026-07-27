@@ -1,11 +1,8 @@
 //! Everything the tools need from the daemon, behind one trait.
 //!
-//! Two reasons this is a trait rather than a bare [`Client`]. First, the protocol layer is
-//! worth testing without a running daemon — the JSON-RPC framing, the banner, and the error
-//! shapes are where the bugs live, and none of them need real data. Second, it puts every
-//! reconnect decision in one place: an MCP server is long-lived, the daemon it talks to is
-//! restartable, and a session that dies because runlogd was upgraded mid-conversation would
-//! be indistinguishable from runlog being broken.
+//! A trait rather than a bare [`Client`] so the protocol layer can be tested without a
+//! running daemon, and so every reconnect decision lives in one place: an MCP server is
+//! long-lived and the daemon it talks to is restartable.
 
 use runlog_core::client::Client;
 use runlog_core::model::{EntryId, EntryView, Level};
@@ -19,9 +16,8 @@ pub const HARNESS: &str = "mcp";
 pub trait Backend {
     fn unread(&mut self, project: ProjectRef, session_id: &str) -> Result<UnreadState>;
 
-    /// `Request::Schema` returns prose composed by the daemon (DDL, views, functions,
-    /// worked examples, delimiter mode, retention). It arrives as an opaque value so a
-    /// richer shape later does not break this crate.
+    /// Prose composed by the daemon: DDL, views, functions, worked examples, delimiter mode
+    /// and retention. Opaque, so a richer shape later does not break this crate.
     fn schema(&mut self, project: ProjectRef) -> Result<Value>;
 
     fn query(
@@ -65,9 +61,8 @@ impl DaemonBackend {
 
     /// Run `f` against a live connection, reconnecting once if the socket has gone away.
     ///
-    /// One retry, not a loop: if a second attempt against a freshly opened socket also
-    /// fails, the problem is the request, and retrying it would only turn a clear error
-    /// into a hang.
+    /// One retry, not a loop: if a second attempt against a fresh socket also fails, the
+    /// problem is the request.
     fn with_client<T>(&mut self, mut f: impl FnMut(&mut Client) -> Result<T>) -> Result<T> {
         if self.client.is_none() {
             self.client = Some(Client::connect_or_start()?);
@@ -93,8 +88,8 @@ impl Default for DaemonBackend {
     }
 }
 
-/// A dead socket is worth retrying; a rejected query is not. Getting this wrong in the
-/// permissive direction means re-running a five-second query on every failure.
+/// A dead socket is worth retrying; a rejected query is not, since retrying it would re-run
+/// a query that already cost seconds.
 fn is_transport_failure(e: &runlog_core::Error) -> bool {
     use runlog_core::Error::*;
     matches!(e, DaemonUnreachable(_) | Protocol(_) | Bare(_) | Io { .. })

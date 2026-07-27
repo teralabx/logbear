@@ -1,14 +1,11 @@
 //! JSON-RPC 2.0, hand-rolled.
 //!
 //! The MCP surface runlog needs — `initialize`, `tools/list`, `tools/call`, `ping`, and a
-//! server-to-client `roots/list` — is a few hundred lines of a protocol that has not
-//! changed since 2010. The official Rust SDK is at `3.0.0-beta` with an API that is still
-//! moving, and a churning dependency on the critical path of the product's most visible
-//! surface is a worse trade than owning this file.
+//! server-to-client `roots/list` — is small enough to own outright rather than depend on
+//! the still-moving official SDK.
 //!
-//! One rule dominates the whole crate: **stdout carries protocol frames and nothing else.**
-//! A stray `println!` corrupts the stream and the client disconnects with no useful error,
-//! so every diagnostic in this crate goes to stderr.
+//! stdout carries protocol frames and nothing else: a stray `println!` corrupts the stream
+//! and the client disconnects with no useful error, so diagnostics go to stderr.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,8 +16,10 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
-/// A JSON-RPC id. The spec allows a string or a number and forbids reusing one; we echo
-/// back whatever the client sent rather than normalising, because clients index on it.
+/// A JSON-RPC id: a string or a number.
+///
+/// Echoed back exactly as the client sent it rather than normalised, because clients index
+/// on it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Id {
@@ -30,9 +29,8 @@ pub enum Id {
 
 /// A parsed inbound message.
 ///
-/// The distinction that matters most is `Request` vs `Notification`: a notification has no
-/// `id` and **must never** be answered. Replying to one is the single most common way to
-/// wedge an MCP client, because it then has a response it cannot correlate.
+/// A `Notification` has no `id` and must never be answered: the client would receive a
+/// response it cannot correlate.
 #[derive(Debug)]
 pub enum Incoming {
     Request { id: Id, method: String, params: Value },
@@ -45,14 +43,13 @@ pub enum Incoming {
 
 /// Parse one line of the stream.
 ///
-/// `Err` is reserved for "this was not JSON at all", which is the only case that maps to
-/// `-32700`; everything else is a structural complaint carried in [`Incoming::Invalid`] so
-/// the caller can still echo the id back.
+/// `Err` means the line was not JSON at all, the only case that maps to `-32700`. Every
+/// other complaint is carried in [`Incoming::Invalid`] so the caller can echo the id back.
 pub fn parse(line: &str) -> Result<Incoming, String> {
     let value: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
 
-    // Protocol revision 2025-06-18 removed JSON-RPC batching. Naming that explicitly beats
-    // a generic "invalid request" when a client built against an older revision connects.
+    // Protocol revision 2025-06-18 removed JSON-RPC batching; naming it beats a generic
+    // "invalid request" when a client built against an older revision connects.
     if value.is_array() {
         return Ok(Incoming::Invalid {
             id: None,

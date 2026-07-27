@@ -9,9 +9,8 @@
 //!    when something threw.
 //! 3. [`Evidence::Unknown`] — the producer said nothing. Never promoted to an error.
 //!
-//! A declared level wins outright: `[debug]` stays debug whatever follows it. This mirrors
-//! Loki's detector and OpenTelemetry's rule that an unspecified severity must not be
-//! defaulted.
+//! A declared level wins outright: `[debug]` stays debug whatever follows it. As in
+//! OpenTelemetry, an unspecified severity is never defaulted.
 
 use crate::model::Level;
 use regex::Regex;
@@ -26,7 +25,7 @@ pub enum Evidence {
     Declared,
     /// An exception banner a runtime emits only when something threw.
     Structural,
-    /// The producer declared nothing. An absence, not a default.
+    /// Nothing was declared; an absence, not a default.
     Unknown,
 }
 
@@ -47,7 +46,7 @@ impl Evidence {
         }
     }
 
-    /// Whether this rung may raise a notification. `Unknown` never may.
+    /// Whether this rung may raise a notification; `Unknown` never does.
     pub fn may_notify(self) -> bool {
         matches!(self, Evidence::Declared | Evidence::Structural)
     }
@@ -76,11 +75,12 @@ impl Severity {
     }
 }
 
-/// A severity token is a prefix field, not prose. Sized to clear the longest real-world
-/// prefix: syslog's `Jul 26 12:04:11 host app[1234]:` ends at 37, Ruby's Logger at 35.
+/// How far into a line a severity token is still treated as a prefix field rather than
+/// prose. Sized to clear the longest common prefixes: syslog's
+/// `Jul 26 12:04:11 host app[1234]:` ends at 37, Ruby's Logger at 35.
 const PREFIX_WINDOW: usize = 80;
 
-/// Earliest position in the line wins. List order only breaks ties at the same offset,
+/// Severity words, matched leftmost-first. List order only breaks ties at the same offset,
 /// where the candidates map to the same level anyway (`warn`/`warning`, `err`/`error`).
 const LEVEL_WORDS: &[(&str, Level)] = &[
     ("trace", Level::Trace),
@@ -112,8 +112,8 @@ const LEVEL_KEYS: &[&str] = &[
 
 /// Banners a runtime prints only when something threw.
 ///
-/// Every pattern is anchored at column zero. Loose shapes such as `[A-Z]\w*Error` matching
-/// anywhere in a line do not belong here — they fire on prose.
+/// Every pattern must be anchored at column zero; unanchored shapes such as
+/// `[A-Z]\w*Error` fire on prose.
 static STRUCTURAL: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     let r = |p: &str| Regex::new(p).expect(p);
     vec![
@@ -129,9 +129,8 @@ static STRUCTURAL: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r(r"(?m)^Exception in thread "), "java_exception"),
         (r(r"(?m)^Caused by: "), "exception_cause_chain"),
         (r(r"(?m)^Unhandled (?:exception|rejection|promise rejection)"), "unhandled_exception"),
-        // Column-zero `SomeError: message` — how Python terminates a traceback and how
-        // Node prints an uncaught throw. Anchored and capitalised, so it cannot fire on
-        // the word "error" appearing inside a sentence.
+        // Column-zero `SomeError: message`: how Python terminates a traceback and how Node
+        // prints an uncaught throw. Anchored and capitalised so it cannot fire on prose.
         (
             r(r"(?m)^[A-Z][A-Za-z0-9_.]*(?:Error|Exception|Fault|Interrupt):[ \t]"),
             "exception_banner",
@@ -142,7 +141,7 @@ static STRUCTURAL: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     ]
 });
 
-/// Detect the severity of one grouped entry.
+/// Detects the severity of one grouped entry.
 pub fn detect(text: &str) -> Severity {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
 
@@ -163,8 +162,8 @@ pub fn detect(text: &str) -> Severity {
     Severity::unknown()
 }
 
-/// Read a declared severity. Structured fields first: a field named `level` is
-/// unambiguous in a way a word in a sentence is not.
+/// Reads a declared severity, preferring structured fields, which are unambiguous where a
+/// bare word is not.
 fn declared(line: &str) -> Option<(Level, &'static str)> {
     let trimmed = line.trim();
 
@@ -176,8 +175,7 @@ fn declared(line: &str) -> Option<(Level, &'static str)> {
     if let Some(level) = logfmt_level(trimmed) {
         return Some((level, "logfmt_field"));
     }
-    // Fall through even when a structured parse found no level field: a JSON line can
-    // still carry one inside its message.
+    // A structured line with no level field can still carry one inside its message.
     keyword_level(line).map(|l| (l, "level_token"))
 }
 
@@ -208,11 +206,10 @@ fn json_level(line: &str) -> Option<Level> {
     None
 }
 
-/// `level=error msg="..."` — scan key=value pairs without pulling in a logfmt crate.
+/// Scans `key=value` pairs for a level, as in `level=error msg="..."`.
 fn logfmt_level(line: &str) -> Option<Level> {
     for pair in line.split_whitespace() {
-        // Skip non-pairs rather than bailing, or `ts=... level=error` gives up on the
-        // first bare word.
+        // Skipped rather than bailing, so a bare word does not end the scan early.
         let Some((k, v)) = pair.split_once('=') else {
             continue;
         };
@@ -227,13 +224,13 @@ fn logfmt_level(line: &str) -> Option<Level> {
     None
 }
 
-/// Leftmost severity word in the prefix region that reads as a declaration.
+/// Returns the leftmost severity word in the prefix region that reads as a declaration.
 ///
-/// A token boundary alone is not enough: `loaded 12 error handlers` is bounded on both
-/// sides and is still prose. See [`is_declaration`] for the extra condition.
+/// Token boundaries alone are not enough: `loaded 12 error handlers` is bounded on both
+/// sides and is still prose, so [`is_declaration`] applies a further test.
 fn keyword_level(line: &str) -> Option<Level> {
     let window = &line[..floor_boundary(line, PREFIX_WINDOW)];
-    // `to_ascii_lowercase` is length-preserving, so offsets index both alike.
+    // `to_ascii_lowercase` is length-preserving, so offsets index both strings alike.
     let lower = window.to_ascii_lowercase();
 
     let mut best: Option<(usize, Level)> = None;
@@ -259,7 +256,7 @@ fn floor_boundary(s: &str, max: usize) -> usize {
     i
 }
 
-/// Leftmost occurrence of `word` that stands alone *and* reads as a declaration.
+/// Leftmost occurrence of `word` that both stands alone and reads as a declaration.
 fn declared_index(lower: &str, original: &str, word: &str) -> Option<usize> {
     let bytes = lower.as_bytes();
     let mut from = 0;
@@ -283,7 +280,7 @@ fn is_left_boundary(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'[' | b'(' | b'{' | b'"' | b'\'' | b'=' | b'|')
 }
 
-/// A colon **is** a right boundary, so `debug: message` and `ERROR:root:msg` both read.
+/// A colon is a right boundary, so `debug: message` and `ERROR:root:msg` both read.
 fn is_right_boundary(c: u8) -> bool {
     matches!(
         c,
@@ -311,8 +308,8 @@ fn is_right_boundary(c: u8) -> bool {
 /// * closed by a colon — `warning: deprecated`
 /// * capitalised — `2026-07-26T12:04:11Z ERROR my_crate: msg`
 ///
-/// Quotes are boundaries but not declarations, which keeps `%{status: "error"}` out. The
-/// genuine quoted form `level="error"` is logfmt and never reaches here.
+/// Quotes are boundaries but not declarations, which keeps `%{status: "error"}` out; the
+/// genuine quoted form `level="error"` is handled as logfmt and never reaches here.
 fn is_declaration(at: usize, left: Option<u8>, right: Option<u8>, matched: &str) -> bool {
     at == 0
         || matches!(left, Some(b'[') | Some(b'(') | Some(b'{') | Some(b'='))
@@ -320,8 +317,8 @@ fn is_declaration(at: usize, left: Option<u8>, right: Option<u8>, matched: &str)
         || matched.bytes().all(|b| b.is_ascii_uppercase())
 }
 
-/// Map a severity word onto our level set. Unrecognised words stay `Unknown` rather than
-/// becoming a default, which is the whole point.
+/// Maps a severity word onto [`Level`]. Unrecognised words stay `Unknown` rather than
+/// taking a default.
 pub fn normalise_level(s: &str) -> Level {
     match s.trim().to_ascii_lowercase().as_str() {
         "trace" | "verbose" | "trc" => Level::Trace,
@@ -334,14 +331,12 @@ pub fn normalise_level(s: &str) -> Level {
     }
 }
 
-/// Numeric `level` fields, on pino and bunyan's scale: 10 trace, 20 debug, 30 info,
-/// 40 warn, 50 error, 60 fatal.
+/// Maps a numeric `level` field onto [`Level`], using pino and bunyan's scale: 10 trace,
+/// 20 debug, 30 info, 40 warn, 50 error, 60 fatal.
 ///
-/// This is *not* OpenTelemetry's 1–24 scale, on which 30 would be an error rather than
-/// info. The two disagree over most of their range, and since runlog reads stdout rather
-/// than OTLP, a bare numeric `level` in a JSON log line is a Node logger every time.
-///
-/// Zero and below stay unknown: both scales reserve them for "unspecified".
+/// Not OpenTelemetry's 1–24 scale, on which 30 would be an error rather than info; runlog
+/// reads stdout rather than OTLP, so a bare numeric `level` comes from a Node logger.
+/// Zero and below stay unknown, which both scales reserve for "unspecified".
 pub fn from_numeric_level(n: i64) -> Level {
     match n {
         i64::MIN..=0 => Level::Unknown,
@@ -370,8 +365,6 @@ mod tests {
 
     #[test]
     fn a_debug_header_with_indented_detail_is_not_an_error() {
-        // Phoenix logs this on every request. Counting the indented lines as stack frames
-        // made each one an error.
         let s = d("[debug] Processing with EnlightenWeb.AuthRequestController.keep_alive/2\n  Parameters: %{}\n  Pipelines: [:browser, :authenticated]");
         assert_eq!(s.level, Level::Debug);
         assert_eq!(s.evidence, Evidence::Declared);
@@ -379,8 +372,7 @@ mod tests {
 
     #[test]
     fn a_declared_level_is_never_overridden_by_what_follows_it() {
-        // If the traceback belongs to a separate entry, that is a grouping bug. Severity
-        // does not compensate by second-guessing the producer.
+        // A misplaced traceback is a grouping bug; severity does not compensate for it.
         let s = d("[debug] rendering\nTraceback (most recent call last):\n  File \"/app/m.py\", line 1");
         assert_eq!(s.level, Level::Debug);
         assert_eq!(s.evidence, Evidence::Declared);
@@ -417,7 +409,6 @@ mod tests {
         // 30 is info to pino and error to OpenTelemetry.
         assert_eq!(from_numeric_level(30), Level::Info);
         assert_eq!(from_numeric_level(50), Level::Error);
-        // Unspecified stays unknown rather than defaulting to info.
         assert_eq!(from_numeric_level(0), Level::Unknown);
         assert_eq!(d(r#"{"level":0,"msg":"x"}"#).evidence, Evidence::Unknown);
     }
@@ -466,8 +457,8 @@ mod tests {
 
     #[test]
     fn go_banners_declare_their_own_level_at_column_zero() {
-        // Level words at position zero, so they resolve as declarations before the
-        // structural list is consulted. Either rung is fine; both are errors.
+        // Level words at position zero resolve as declarations before the structural list
+        // is consulted; either rung is an error.
         for text in [
             "panic: runtime error: index out of range [3]\n\tmain.main()",
             "fatal error: concurrent map writes",
@@ -480,8 +471,8 @@ mod tests {
 
     #[test]
     fn traceback_does_not_read_as_the_trace_level() {
-        // `Traceback` opens with the letters of `trace`; only the right-hand boundary
-        // check separates a Python crash from trace-level chatter.
+        // `Traceback` opens with the letters of `trace`; the right-hand boundary check
+        // separates them.
         let s = d("Traceback (most recent call last):\n  File \"/a.py\", line 1");
         assert_eq!(s.level, Level::Error);
         assert_eq!(s.signal, Some("python_traceback"));
@@ -489,7 +480,7 @@ mod tests {
 
     #[test]
     fn structural_matching_is_anchored_not_loose() {
-        // An unanchored `[A-Z]\w*Error` makes all of these errors.
+        // An unanchored `[A-Z]\w*Error` would match all of these.
         for text in [
             "registered handler for ValueError in the retry policy",
             "see docs/RuntimeError.md for details",
@@ -501,7 +492,6 @@ mod tests {
 
     #[test]
     fn print_debugging_output_is_unknown_not_an_error() {
-        // Not errors, and not info either: the producer said nothing.
         for text in [
             "%{user_id: 42, role: \"admin\"}",
             "HERE: %{conn: #PID<0.123.0>}",
