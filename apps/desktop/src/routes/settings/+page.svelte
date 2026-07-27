@@ -178,7 +178,7 @@
 	sub={app.daemon ? `runlog ${app.daemon.version} · pid ${app.daemon.pid}` : 'daemon not reachable'}
 />
 
-<div class="pane body">
+<div class="pane flex-1 pb-[90px]">
 	{#if loadError}
 		<ErrorNote what="Could not read settings." detail={loadError} retry={() => void loadAll()} />
 	{/if}
@@ -188,51 +188,57 @@
 
 	{#if settings}
 		<!-- ---------------------------------------------------------------- -->
-		<section class="sec">
-			<div class="sechead">
-				<h3>Storage</h3>
-				<p class="lede meta">
+		<section
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+		>
+			<div>
+				<h3 class="text-[13px] font-semibold">Storage</h3>
+				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
 					runlog stores raw output on disk. When a project passes its cap the oldest runs are
 					evicted — their counts and fingerprints survive, their bytes do not.
 				</p>
 			</div>
 
-			<div class="secbody">
-				<div class="field">
-					<label for="global-cap">Default cap per project</label>
-					<div class="inputrow">
+			<div class="min-w-0">
+				<div class="my-3">
+					<label class="mb-[5px] block text-[12px]" for="global-cap">Default cap per project</label>
+					<div class="flex flex-wrap items-center gap-2">
 						<input
 							id="global-cap"
 							type="number"
 							min="64"
 							step="64"
-							class="tnum"
+							class="tnum input input-xs w-[110px] border-hair bg-transparent px-[7px] text-[12px] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 							value={Math.round(settings.retention_bytes / MB)}
 							oninput={(e) => {
 								const v = Number((e.currentTarget as HTMLInputElement).value);
 								if (settings && Number.isFinite(v)) settings.retention_bytes = Math.max(1, v) * MB;
 							}}
 						/>
-						<span class="unit meta">MB</span>
-						<span class="hint meta">Applies to any project without its own cap.</span>
+						<span class="meta text-[11px]">MB</span>
+						<span class="meta max-w-[62ch] text-[11px] leading-[1.6]"
+							>Applies to any project without its own cap.</span
+						>
 					</div>
 				</div>
 
-				<div class="projects">
+				<div class="mt-4 rule-t">
 					{#each app.projects as p (p.id)}
 						{@const r = retentions[p.id]}
-						<div class="prow">
-							<div class="pident">
-								<span class="pname">{p.name}</span>
+						<div
+							class="grid grid-cols-[minmax(140px,200px)_minmax(0,1fr)_130px] items-center gap-[18px] py-3 rule-b"
+						>
+							<div class="min-w-0">
+								<span class="block text-[12.5px] font-medium">{p.name}</span>
 								<button
 									type="button"
-									class="ppath meta"
+									class="meta block max-w-full cursor-pointer overflow-hidden text-left text-[11px] text-ellipsis whitespace-nowrap hover:text-base-content"
 									onclick={() => void revealPath(p.root)}
 									title="Reveal {p.root} in Finder">{tildePath(p.root)}</button
 								>
 							</div>
 
-							<div class="pmeter">
+							<div>
 								{#if r}
 									<Meter
 										used={r.bytes_used}
@@ -243,19 +249,19 @@
 											: `Nothing evicted yet. Oldest run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`}
 									/>
 								{:else}
-									<p class="meta small">Reading store size…</p>
+									<p class="meta text-[11px]">Reading store size…</p>
 								{/if}
 							</div>
 
-							<div class="pcap">
-								<label class="label-xs" for="cap-{p.id}">cap</label>
-								<div class="inputrow tight">
+							<div class="flex flex-col items-start gap-[3px]">
+								<label class="label-xs mb-[5px] block text-[12px]" for="cap-{p.id}">cap</label>
+								<div class="flex flex-wrap items-center gap-1">
 									<input
 										id="cap-{p.id}"
 										type="number"
 										min="0"
 										step="64"
-										class="tnum narrow"
+										class="tnum input input-xs w-[78px] border-hair bg-transparent px-[7px] text-[12px] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 										placeholder={String(Math.round(settings.retention_bytes / MB))}
 										value={p.retention_bytes === null ? '' : Math.round(p.retention_bytes / MB)}
 										onchange={(e) => {
@@ -265,14 +271,14 @@
 											});
 										}}
 									/>
-									<span class="unit meta">MB</span>
+									<span class="meta text-[11px]">MB</span>
 								</div>
 								{#if p.retention_bytes === null}
-									<span class="meta small">using default</span>
+									<span class="meta text-[11px]">using default</span>
 								{:else}
 									<button
 										type="button"
-										class="linkish"
+										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
 										onclick={() => void setProject(p.id, { retentionBytes: null })}
 										>use default</button
 									>
@@ -280,30 +286,32 @@
 							</div>
 						</div>
 					{:else}
-						<p class="meta small">No projects tracked yet.</p>
+						<p class="meta text-[11px]">No projects tracked yet.</p>
 					{/each}
 				</div>
 			</div>
 		</section>
 
 		<!-- ---------------------------------------------------------------- -->
-		<section class="sec">
-			<div class="sechead">
-				<h3>Notifications</h3>
-				<p class="lede meta">
+		<section
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+		>
+			<div>
+				<h3 class="text-[13px] font-semibold">Notifications</h3>
+				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
 					A notification fires when a run produces an error signature this project has not seen
 					before. Repeats of a known signature stay silent.
 				</p>
 			</div>
 
-			<div class="secbody">
+			<div class="min-w-0">
 				<Toggle
 					bind:checked={settings.notifications_enabled}
 					label="Notify on new error signatures"
 					hint="Off means runlog still records everything — it just never interrupts you."
 				/>
 
-				<div class="field indent" class:off={!settings.notifications_enabled}>
+				<div class="my-3 {settings.notifications_enabled ? '' : 'opacity-55'}">
 					<Toggle
 						checked={quietOn}
 						label="Quiet hours"
@@ -315,10 +323,10 @@
 						}}
 					/>
 					{#if settings.quiet_hours}
-						<div class="inputrow indent2">
+						<div class="mt-1.5 ml-10 flex flex-wrap items-center gap-2">
 							<input
 								type="time"
-								class="tnum"
+								class="tnum input input-xs w-[110px] border-hair bg-transparent px-[7px] text-[12px] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 								aria-label="Quiet hours start"
 								value={minutesToHhmm(settings.quiet_hours.start_min)}
 								onchange={(e) => {
@@ -331,7 +339,7 @@
 							<span class="meta">to</span>
 							<input
 								type="time"
-								class="tnum"
+								class="tnum input input-xs w-[110px] border-hair bg-transparent px-[7px] text-[12px] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 								aria-label="Quiet hours end"
 								value={minutesToHhmm(settings.quiet_hours.end_min)}
 								onchange={(e) => {
@@ -341,7 +349,7 @@
 										);
 								}}
 							/>
-							<span class="hint meta">
+							<span class="meta max-w-[62ch] text-[11px] leading-[1.6]">
 								{minutesToHhmm(settings.quiet_hours.start_min)} →
 								{minutesToHhmm(settings.quiet_hours.end_min)}
 								{settings.quiet_hours.end_min < settings.quiet_hours.start_min
@@ -352,15 +360,16 @@
 					{/if}
 				</div>
 
-				<div class="mutes">
+				<div class="mt-[14px] pt-2.5 rule-t">
 					<span class="label-xs">per project</span>
 					{#each app.projects as p (p.id)}
-						<div class="muterow">
-							<span class="pname">{p.name}</span>
+						<div class="flex max-w-[340px] items-center justify-between py-1">
+							<span class="block text-[12.5px] font-medium">{p.name}</span>
 							<button
 								type="button"
-								class="mutebtn"
-								class:muted={!p.notify_enabled}
+								class="badge badge-xs h-auto cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.16em] uppercase hover:border-hair-strong {p.notify_enabled
+									? 'badge-outline'
+									: 'badge-dash text-meta'}"
 								onclick={() => void setProject(p.id, { notifyEnabled: !p.notify_enabled })}
 							>
 								{p.notify_enabled ? 'notifying' : 'muted'}
@@ -372,50 +381,53 @@
 		</section>
 
 		<!-- ---------------------------------------------------------------- -->
-		<section class="sec">
-			<div class="sechead">
-				<h3>Agent push</h3>
-				<p class="lede meta">
+		<section
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+		>
+			<div>
+				<h3 class="text-[13px] font-semibold">Agent push</h3>
+				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
 					When a run fails, runlog can push a short block of context — the command, the exit code,
 					the new signatures — into the coding agent's next turn instead of waiting to be asked.
 				</p>
 			</div>
 
-			<div class="secbody">
+			<div class="min-w-0">
 				<Toggle
 					bind:checked={settings.push_enabled}
 					label="Push run context to agents"
 					hint="Requires the session hook below to be installed for at least one agent."
 				/>
 
-				<div class="field">
-					<label for="budget">Block budget per session</label>
-					<div class="inputrow">
+				<div class="my-3">
+					<label class="mb-[5px] block text-[12px]" for="budget">Block budget per session</label>
+					<div class="flex flex-wrap items-center gap-2">
 						<input
 							id="budget"
 							type="number"
 							min="0"
 							max="200"
-							class="tnum narrow"
+							class="tnum input input-xs w-[78px] border-hair bg-transparent px-[7px] text-[12px] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong disabled:border-hair disabled:bg-transparent disabled:text-base-content disabled:opacity-50"
 							bind:value={settings.block_budget}
 							disabled={!settings.push_enabled}
 						/>
-						<span class="hint meta">
+						<span class="meta max-w-[62ch] text-[11px] leading-[1.6]">
 							The most blocks runlog will push into one agent session. Reached budget means later
 							failures are still recorded and still queryable — they just stop being volunteered.
 						</span>
 					</div>
 				</div>
 
-				<div class="mutes">
+				<div class="mt-[14px] pt-2.5 rule-t">
 					<span class="label-xs">per project</span>
 					{#each app.projects as p (p.id)}
-						<div class="muterow">
-							<span class="pname">{p.name}</span>
+						<div class="flex max-w-[340px] items-center justify-between py-1">
+							<span class="block text-[12.5px] font-medium">{p.name}</span>
 							<button
 								type="button"
-								class="mutebtn"
-								class:muted={!p.push_enabled}
+								class="badge badge-xs h-auto cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.16em] uppercase hover:border-hair-strong {p.push_enabled
+									? 'badge-outline'
+									: 'badge-dash text-meta'}"
 								onclick={() => void setProject(p.id, { pushEnabled: !p.push_enabled })}
 							>
 								{p.push_enabled ? 'pushing' : 'off'}
@@ -427,28 +439,32 @@
 		</section>
 
 		<!-- ---------------------------------------------------------------- -->
-		<section class="sec">
-			<div class="sechead">
-				<h3>Capture and redaction</h3>
-				<p class="lede meta">
+		<section
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+		>
+			<div>
+				<h3 class="text-[13px] font-semibold">Capture and redaction</h3>
+				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
 					Redaction happens on the way in. Data that never lands cannot leak. Environment variable
 					values are never recorded at all — only their names.
 				</p>
 			</div>
 
-			<div class="secbody">
+			<div class="min-w-0">
 				<Toggle
 					bind:checked={settings.redaction_enabled}
 					label="Redact secrets before writing"
 					hint="Matches AWS keys, bearer tokens, connection strings and private key blocks. Turning this off is not recommended and does not retroactively expose anything already stored."
 				/>
 
-				<div class="field">
-					<label for="denylist">Never capture these commands</label>
+				<div class="my-3">
+					<label class="mb-[5px] block text-[12px]" for="denylist"
+						>Never capture these commands</label
+					>
 					<textarea
 						id="denylist"
 						rows="3"
-						class="mono"
+						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[11.5px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 						value={settings.denylist.join('\n')}
 						oninput={(e) => {
 							if (settings)
@@ -458,18 +474,18 @@
 									.filter(Boolean);
 						}}
 					></textarea>
-					<p class="hint meta">
+					<p class="meta mt-[5px] max-w-[62ch] text-[11px] leading-[1.6]">
 						One per line. Sessions rather than runs — a shell, an editor, a database client — are
 						passed through untouched and nothing is stored.
 					</p>
 				</div>
 
-				<div class="field">
-					<label for="patterns">Extra redaction patterns</label>
+				<div class="my-3">
+					<label class="mb-[5px] block text-[12px]" for="patterns">Extra redaction patterns</label>
 					<textarea
 						id="patterns"
 						rows="3"
-						class="mono"
+						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[11.5px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 						value={settings.extra_redaction_patterns.join('\n')}
 						oninput={(e) => {
 							if (settings)
@@ -479,7 +495,7 @@
 									.filter(Boolean);
 						}}
 					></textarea>
-					<p class="hint meta">
+					<p class="meta mt-[5px] max-w-[62ch] text-[11px] leading-[1.6]">
 						One regular expression per line, applied in addition to the built-in set. Matches are
 						replaced with <code>[redacted]</code> before anything is written to disk.
 					</p>
@@ -489,45 +505,64 @@
 	{/if}
 
 	<!-- ------------------------------------------------------------------ -->
-	<section class="sec">
-		<div class="sechead">
-			<h3>Install</h3>
-			<p class="lede meta">
+	<section
+		class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+	>
+		<div>
+			<h3 class="text-[13px] font-semibold">Install</h3>
+			<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
 				Each step is independent and reversible. Anything runlog edits is backed up first, and the
 				backup path is shown here.
 			</p>
 		</div>
 
-		<div class="secbody">
+		<div class="min-w-0">
 			{#if install}
-				<div class="steps">
+				<div class="flex flex-col">
 					{#each INSTALL_STEPS as step (step)}
 						{@const s = install[step]}
-						<div class="step" class:installed={s.installed} class:unavailable={!s.available}>
-							<span class="stepdot" aria-hidden="true"></span>
-							<div class="steptext">
-								<div class="steptop">
-									<span class="steptitle">{STEP_COPY[step].title}</span>
-									<span class="stepstate label-xs">
+						<div
+							class="grid grid-cols-[10px_minmax(0,1fr)_110px] items-start gap-3 py-3 rule-b last:border-b-0"
+						>
+							<span
+								class="mt-[5px] h-2 w-2 rounded-full border {s.installed
+									? 'border-success bg-success'
+									: 'border-hair-strong'} {s.available ? '' : 'border-dashed'}"
+								aria-hidden="true"
+							></span>
+							<div>
+								<div class="flex items-baseline gap-2.5">
+									<span class="text-[12.5px] font-medium">{STEP_COPY[step].title}</span>
+									<span
+										class="label-xs {s.installed
+											? 'text-success'
+											: s.available
+												? ''
+												: 'text-warning'}"
+									>
 										{s.installed ? 'installed' : s.available ? 'not installed' : 'unavailable'}
 									</span>
 								</div>
-								<p class="what meta">{STEP_COPY[step].what}</p>
-								<p class="detail meta">{s.detail}</p>
+								<p class="meta mt-1 max-w-[74ch] text-[11px] leading-[1.6]">
+									{STEP_COPY[step].what}
+								</p>
+								<p class="mt-1 max-w-[74ch] text-[10.5px] leading-[1.6] text-base-content opacity-75">
+									{s.detail}
+								</p>
 								{#if s.backup}
 									<button
 										type="button"
-										class="linkish"
+										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
 										onclick={() => void revealPath(s.backup!)}
 										title="Reveal the backup in Finder">backup: {s.backup}</button
 									>
 								{/if}
 							</div>
-							<div class="stepact">
+							<div class="flex justify-end">
 								{#if s.installed}
 									<button
 										type="button"
-										class="btn"
+										class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[11.5px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
 										disabled={stepBusy !== null}
 										onclick={() => void runStep(step, 'uninstall')}
 									>
@@ -536,7 +571,7 @@
 								{:else}
 									<button
 										type="button"
-										class="btn primary"
+										class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
 										disabled={stepBusy !== null || !s.available}
 										onclick={() => void runStep(step, 'install')}
 									>
@@ -548,44 +583,59 @@
 					{/each}
 				</div>
 			{:else}
-				<p class="meta small">Reading install state…</p>
+				<p class="meta text-[11px]">Reading install state…</p>
 			{/if}
 		</div>
 	</section>
 
 	<!-- ------------------------------------------------------------------ -->
 	{#if app.daemon}
-		<section class="sec last">
-			<div class="sechead">
-				<h3>Daemon</h3>
+		<section
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5"
+		>
+			<div>
+				<h3 class="text-[13px] font-semibold">Daemon</h3>
 			</div>
-			<div class="secbody">
-				<dl class="kv">
-					<div><dt class="label-xs">version</dt><dd class="tnum">{app.daemon.version}</dd></div>
-					<div><dt class="label-xs">pid</dt><dd class="tnum">{app.daemon.pid}</dd></div>
+			<div class="min-w-0">
+				<dl class="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-x-5 gap-y-3">
 					<div>
-						<dt class="label-xs">up since</dt>
-						<dd class="tnum">{fmtAgo(app.daemon.started_at)}</dd>
+						<dt class="label-xs mb-[3px]">version</dt>
+						<dd class="tnum text-[12px]">{app.daemon.version}</dd>
 					</div>
 					<div>
-						<dt class="label-xs">socket</dt>
-						<dd>
-							<button type="button" class="linkish" onclick={() => void revealPath(app.daemon!.socket)}
+						<dt class="label-xs mb-[3px]">pid</dt>
+						<dd class="tnum text-[12px]">{app.daemon.pid}</dd>
+					</div>
+					<div>
+						<dt class="label-xs mb-[3px]">up since</dt>
+						<dd class="tnum text-[12px]">{fmtAgo(app.daemon.started_at)}</dd>
+					</div>
+					<div>
+						<dt class="label-xs mb-[3px]">socket</dt>
+						<dd class="text-[12px]">
+							<button
+								type="button"
+								class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
+								onclick={() => void revealPath(app.daemon!.socket)}
 								>{tildePath(app.daemon.socket)}</button
 							>
 						</dd>
 					</div>
-					<div><dt class="label-xs">projects</dt><dd class="tnum">{app.daemon.projects}</dd></div>
 					<div>
-						<dt class="label-xs">active runs</dt><dd class="tnum">{app.daemon.active_runs}</dd>
+						<dt class="label-xs mb-[3px]">projects</dt>
+						<dd class="tnum text-[12px]">{app.daemon.projects}</dd>
 					</div>
 					<div>
-						<dt class="label-xs">total on disk</dt>
-						<dd class="tnum">{fmtBytes(app.daemon.total_db_bytes)}</dd>
+						<dt class="label-xs mb-[3px]">active runs</dt>
+						<dd class="tnum text-[12px]">{app.daemon.active_runs}</dd>
 					</div>
 					<div>
-						<dt class="label-xs">spool pending</dt>
-						<dd class="tnum">{app.daemon.spool_pending}</dd>
+						<dt class="label-xs mb-[3px]">total on disk</dt>
+						<dd class="tnum text-[12px]">{fmtBytes(app.daemon.total_db_bytes)}</dd>
+					</div>
+					<div>
+						<dt class="label-xs mb-[3px]">spool pending</dt>
+						<dd class="tnum text-[12px]">{app.daemon.spool_pending}</dd>
 					</div>
 				</dl>
 			</div>
@@ -594,340 +644,30 @@
 </div>
 
 {#if dirty || justSaved}
-	<div class="savebar" class:done={!dirty && justSaved}>
-		<span class="stext">
+	<div
+		class="fixed bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-[3px] border bg-base-200 px-3 py-2 shadow-[0_8px_24px_rgb(0_0_0/0.3)] {!dirty &&
+		justSaved
+			? 'border-[color-mix(in_oklch,var(--color-success)_50%,transparent)]'
+			: 'border-hair-strong'}"
+	>
+		<span class="text-[12px]">
 			{#if dirty}Unsaved changes to global settings.{:else}Saved.{/if}
 		</span>
 		{#if dirty}
-			<button type="button" class="btn" onclick={revert} disabled={saving}>Discard</button>
-			<button type="button" class="btn primary" onclick={save} disabled={saving}>
+			<button
+				type="button"
+				class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[11.5px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
+				onclick={revert}
+				disabled={saving}>Discard</button
+			>
+			<button
+				type="button"
+				class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+				onclick={save}
+				disabled={saving}
+			>
 				{saving ? 'saving…' : 'Save changes'}
 			</button>
 		{/if}
 	</div>
 {/if}
-
-<style>
-	.body {
-		flex: 1;
-		padding: 0 0 90px;
-	}
-	.sec {
-		display: grid;
-		grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-		gap: 32px;
-		padding: 20px 16px;
-		border-bottom: 1px solid var(--rl-hair);
-		max-width: 1180px;
-	}
-	.sec.last {
-		border-bottom: 0;
-	}
-	.sechead h3 {
-		margin: 0;
-		font-size: 13px;
-		font-weight: 600;
-	}
-	.lede {
-		margin: 6px 0 0;
-		font-size: 11.5px;
-		line-height: 1.65;
-	}
-	.secbody {
-		min-width: 0;
-	}
-	.field {
-		margin: 12px 0;
-	}
-	.field.off {
-		opacity: 0.55;
-	}
-	.field.indent {
-		margin-left: 0;
-	}
-	label {
-		display: block;
-		font-size: 12px;
-		margin-bottom: 5px;
-	}
-	.inputrow {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.inputrow.tight {
-		gap: 4px;
-	}
-	.indent2 {
-		margin: 6px 0 0 40px;
-	}
-	input[type='number'],
-	input[type='time'] {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-content);
-		font: inherit;
-		font-size: 12px;
-		padding: 3px 7px;
-		width: 110px;
-		outline: none;
-	}
-	input.narrow {
-		width: 78px;
-	}
-	input:focus {
-		border-color: var(--rl-hair-strong);
-	}
-	input:disabled {
-		opacity: 0.5;
-	}
-	textarea {
-		width: 100%;
-		max-width: 640px;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: var(--rl-code-bg);
-		color: var(--color-base-content);
-		font-family: var(--font-mono);
-		font-size: 11.5px;
-		line-height: 1.6;
-		padding: 7px 9px;
-		outline: none;
-		resize: vertical;
-	}
-	textarea:focus {
-		border-color: var(--rl-hair-strong);
-	}
-	.hint {
-		font-size: 11px;
-		line-height: 1.6;
-		max-width: 62ch;
-	}
-	p.hint {
-		margin: 5px 0 0;
-	}
-	.unit {
-		font-size: 11px;
-	}
-	.small {
-		font-size: 11px;
-	}
-
-	.projects {
-		margin-top: 16px;
-		border-top: 1px solid var(--rl-hair);
-	}
-	.prow {
-		display: grid;
-		grid-template-columns: minmax(140px, 200px) minmax(0, 1fr) 130px;
-		gap: 18px;
-		align-items: center;
-		padding: 12px 0;
-		border-bottom: 1px solid var(--rl-hair);
-	}
-	.pident {
-		min-width: 0;
-	}
-	.pname {
-		display: block;
-		font-size: 12.5px;
-		font-weight: 500;
-	}
-	.ppath {
-		display: block;
-		background: none;
-		border: 0;
-		padding: 0;
-		font: inherit;
-		font-size: 11px;
-		color: var(--rl-meta);
-		cursor: pointer;
-		text-align: left;
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.ppath:hover {
-		color: var(--color-base-content);
-	}
-	.pcap {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		align-items: flex-start;
-	}
-	.linkish {
-		background: none;
-		border: 0;
-		padding: 0;
-		font: inherit;
-		font-size: 10.5px;
-		color: var(--rl-meta);
-		cursor: pointer;
-		text-align: left;
-		border-bottom: 1px dotted var(--rl-hair-strong);
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.linkish:hover {
-		color: var(--color-base-content);
-	}
-
-	.mutes {
-		margin-top: 14px;
-		padding-top: 10px;
-		border-top: 1px solid var(--rl-hair);
-	}
-	.muterow {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		max-width: 340px;
-		padding: 4px 0;
-	}
-	.mutebtn {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-content);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		padding: 2px 8px;
-		cursor: pointer;
-	}
-	.mutebtn.muted {
-		color: var(--rl-meta);
-		border-style: dashed;
-	}
-	.mutebtn:hover {
-		border-color: var(--rl-hair-strong);
-	}
-
-	.steps {
-		display: flex;
-		flex-direction: column;
-	}
-	.step {
-		display: grid;
-		grid-template-columns: 10px minmax(0, 1fr) 110px;
-		gap: 12px;
-		align-items: start;
-		padding: 12px 0;
-		border-bottom: 1px solid var(--rl-hair);
-	}
-	.step:last-child {
-		border-bottom: 0;
-	}
-	.stepdot {
-		width: 8px;
-		height: 8px;
-		margin-top: 5px;
-		border-radius: 50%;
-		border: 1px solid var(--rl-hair-strong);
-	}
-	.step.installed .stepdot {
-		background: var(--color-success);
-		border-color: var(--color-success);
-	}
-	.step.unavailable .stepdot {
-		border-style: dashed;
-	}
-	.steptop {
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-	}
-	.steptitle {
-		font-size: 12.5px;
-		font-weight: 500;
-	}
-	.step.installed .stepstate {
-		color: var(--color-success);
-	}
-	.step.unavailable .stepstate {
-		color: var(--color-warning);
-	}
-	.what,
-	.detail {
-		margin: 4px 0 0;
-		font-size: 11px;
-		line-height: 1.6;
-		max-width: 74ch;
-	}
-	.detail {
-		color: var(--color-base-content);
-		opacity: 0.75;
-		font-size: 10.5px;
-	}
-	.stepact {
-		display: flex;
-		justify-content: flex-end;
-	}
-
-	.btn {
-		border: 1px solid var(--rl-hair-strong);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-content);
-		font: inherit;
-		font-size: 11.5px;
-		padding: 4px 11px;
-		cursor: pointer;
-		white-space: nowrap;
-	}
-	.btn:hover:not(:disabled) {
-		border-color: var(--color-base-content);
-	}
-	.btn:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	.btn.primary {
-		background: var(--color-base-content);
-		color: var(--color-base-100);
-		border-color: var(--color-base-content);
-	}
-
-	.kv {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-		gap: 12px 20px;
-		margin: 0;
-	}
-	dt {
-		margin-bottom: 3px;
-	}
-	dd {
-		margin: 0;
-		font-size: 12px;
-	}
-
-	.savebar {
-		position: fixed;
-		bottom: 16px;
-		left: 50%;
-		transform: translateX(-50%);
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 8px 12px;
-		background: var(--color-base-200);
-		border: 1px solid var(--rl-hair-strong);
-		border-radius: 3px;
-		box-shadow: 0 8px 24px rgb(0 0 0 / 0.3);
-		z-index: 30;
-	}
-	.savebar.done {
-		border-color: color-mix(in oklch, var(--color-success) 50%, transparent);
-	}
-	.stext {
-		font-size: 12px;
-	}
-</style>

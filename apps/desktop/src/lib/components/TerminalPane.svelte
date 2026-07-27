@@ -138,16 +138,13 @@
 	});
 </script>
 
-<div class="term {klass}" bind:this={host}></div>
+<div
+	class="term h-full min-h-0 w-full bg-term-bg py-2 pr-1 pl-2.5 {klass}"
+	bind:this={host}
+></div>
 
 <style>
-	.term {
-		height: 100%;
-		width: 100%;
-		min-height: 0;
-		background: var(--rl-term-bg);
-		padding: 8px 4px 8px 10px;
-	}
+	/* Third-party (xterm.js) override — must reach into markup we do not own. */
 	.term :global(.xterm) {
 		height: 100%;
 	}

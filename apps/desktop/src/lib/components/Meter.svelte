@@ -20,78 +20,28 @@
 	const state = $derived(pct >= 0.95 ? 'critical' : pct >= 0.8 ? 'warn' : 'ok');
 </script>
 
-<div class="meter" data-state={state}>
-	<div class="head">
+<div class="group" data-state={state}>
+	<div class="mb-[5px] flex items-baseline justify-between gap-3">
 		<span class="label-xs">{label}</span>
-		<span class="tnum figures">
-			<span class="used">{fmtBytes(used)}</span>
+		<span class="tnum inline-flex items-baseline gap-1.5 text-[12px]">
+			<span class="font-semibold">{fmtBytes(used)}</span>
 			<span class="meta">/ {fmtBytes(cap)}</span>
-			<span class="pct meta">{Math.round(pct * 100)}%</span>
+			<span class="meta min-w-[34px] text-right">{Math.round(pct * 100)}%</span>
 		</span>
 	</div>
 	<div
-		class="track"
+		class="relative h-1.5 overflow-hidden rounded-[1px] bg-hair"
 		role="meter"
 		aria-valuenow={used}
 		aria-valuemin={0}
 		aria-valuemax={cap}
 		aria-label="{label}: {fmtBytes(used)} of {fmtBytes(cap)}"
 	>
-		<div class="fill" style="width: {(pct * 100).toFixed(2)}%"></div>
-		<div class="tick" style="left: 80%"></div>
+		<div
+			class="h-full bg-base-content transition-[width] duration-300 ease-out group-data-[state=critical]:bg-flare group-data-[state=warn]:bg-warning"
+			style="width: {(pct * 100).toFixed(2)}%"
+		></div>
+		<div class="absolute top-0 bottom-0 left-[80%] w-px bg-base-100 opacity-70"></div>
 	</div>
-	{#if note}<p class="note meta">{note}</p>{/if}
+	{#if note}<p class="meta mt-1.5 text-[11px]">{note}</p>{/if}
 </div>
-
-<style>
-	.head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 12px;
-		margin-bottom: 5px;
-	}
-	.figures {
-		font-size: 12px;
-		display: inline-flex;
-		gap: 6px;
-		align-items: baseline;
-	}
-	.used {
-		font-weight: 600;
-	}
-	.pct {
-		min-width: 34px;
-		text-align: right;
-	}
-	.track {
-		position: relative;
-		height: 6px;
-		background: var(--rl-hair);
-		border-radius: 1px;
-		overflow: hidden;
-	}
-	.fill {
-		height: 100%;
-		background: var(--color-base-content);
-		transition: width 300ms ease-out;
-	}
-	[data-state='warn'] .fill {
-		background: var(--color-warning);
-	}
-	[data-state='critical'] .fill {
-		background: var(--color-flare);
-	}
-	.tick {
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		width: 1px;
-		background: var(--color-base-100);
-		opacity: 0.7;
-	}
-	.note {
-		margin-top: 6px;
-		font-size: 11px;
-	}
-</style>

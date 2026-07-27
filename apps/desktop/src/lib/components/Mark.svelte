@@ -62,8 +62,7 @@
 	height={size}
 	role="img"
 	aria-label={title}
-	class={klass}
-	style="display:block"
+	class="block {klass}"
 >
 	<g fill="currentColor">
 		{#each geometry.bars as b (b.x + ':' + b.y)}

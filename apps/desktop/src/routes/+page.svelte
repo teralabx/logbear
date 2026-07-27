@@ -47,7 +47,7 @@
 		: ''}
 />
 
-<div class="pane body">
+<div class="pane flex-1 p-4">
 	{#if app.daemonError}
 		<ErrorNote
 			what="The runlog daemon is not answering, so this list may be stale."
@@ -57,49 +57,62 @@
 	{/if}
 
 	{#if !app.loaded}
-		<p class="meta loading">Reading the store…</p>
+		<p class="meta text-[12px]">Reading the store…</p>
 	{:else if app.projects.length === 0}
 		<EmptyState
 			title="Nothing recorded yet"
 			body="runlog records a project the first time you run something through it — start your dev command with runlog and this list fills itself in."
 			command="runlog npm run dev"
 		>
-			<p class="teach meta">
+			<p class="meta m-0 text-[11.5px] leading-[1.6]">
 				Once it is capturing, install the PATH shims from Settings → Install and you can drop the
 				prefix entirely.
 			</p>
 		</EmptyState>
 	{:else}
-		<div class="grid">
+		<div class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3">
 			{#each ordered as { p, s } (p.id)}
 				{@const running = s?.active_runs ?? []}
 				{@const last = s?.last_run ?? null}
-				<article class="card" class:running={running.length > 0}>
-					<a class="hit" href="/project/{p.id}/live" aria-label="Open {p.name}"></a>
+				<!-- A project running something reads as running from across the room: a lit
+				     left edge, a tinted surface, and a breathing pip. -->
+				<article
+					class="card relative min-w-0 gap-2.5 border border-hair border-l-2 px-[14px] pt-3 pb-2.5 hover:border-hair-strong {running.length
+						? 'border-l-success bg-[color-mix(in_oklch,var(--color-success)_5%,var(--color-base-200))] hover:border-l-success'
+						: 'border-l-hair-strong bg-base-200'}"
+				>
+					<a class="absolute inset-0 z-0" href="/project/{p.id}/live" aria-label="Open {p.name}"></a>
 
-					<header class="top">
-						<div class="ident">
-							<h3>{p.name}</h3>
-							<span class="root meta" title={p.root}>{tildePath(p.root)}</span>
+					<header class="pointer-events-none relative z-[1] flex items-start justify-between gap-3">
+						<div class="min-w-0">
+							<h3 class="m-0 text-[14px] font-semibold">{p.name}</h3>
+							<span class="meta block truncate text-[11px]" title={p.root}>{tildePath(p.root)}</span>
 						</div>
 						{#if running.length}
-							<span class="state live">
-								<span class="pip is-running"></span>
+							<span
+								class="inline-flex flex-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-success uppercase"
+							>
+								<span class="is-running size-[7px] rounded-full bg-success"></span>
 								running
 							</span>
 						{:else}
-							<span class="state idle">idle</span>
+							<span
+								class="inline-flex flex-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-meta uppercase"
+								>idle</span
+							>
 						{/if}
 					</header>
 
 					{#if running.length}
-						<div class="now">
+						<div class="pointer-events-none relative z-[1]">
 							{#each running as r (r.id)}
-								<div class="nowrow">
-									<code class="cmd">{fmtCommand(r.command)}</code>
-									<span class="tnum elapsed">{fmtDuration(runElapsed(r, now))}</span>
+								<div class="flex items-center justify-between gap-2.5">
+									<code class="min-w-0 truncate text-[12px]">{fmtCommand(r.command)}</code>
+									<span class="tnum flex-none text-[12px] text-success"
+										>{fmtDuration(runElapsed(r, now))}</span
+									>
 								</div>
-								<div class="nowmeta meta tnum">
+								<div class="meta tnum mt-[3px] truncate text-[11px]">
 									{(app.counters[r.id] ?? r.counters).n_entries} entries ·
 									{(app.counters[r.id] ?? r.counters).n_error} errors ·
 									{r.git_branch ?? 'no branch'}@{shortSha(r.git_sha)}
@@ -107,12 +120,12 @@
 							{/each}
 						</div>
 					{:else if last}
-						<div class="lastrun">
-							<div class="nowrow">
-								<code class="cmd dim">{fmtCommand(last.command)}</code>
+						<div class="pointer-events-none relative z-[1]">
+							<div class="flex items-center justify-between gap-2.5">
+								<code class="meta min-w-0 truncate text-[12px]">{fmtCommand(last.command)}</code>
 								<ExitBadge run={last} showLabel={false} />
 							</div>
-							<div class="nowmeta meta tnum">
+							<div class="meta tnum mt-[3px] truncate text-[11px]">
 								{fmtAgo(last.started_at, now)} · {fmtDuration(runDuration(last))} ·
 								{last.git_branch ?? 'no branch'}@{shortSha(last.git_sha)}{last.git_dirty_hash
 									? ' +dirty'
@@ -120,13 +133,15 @@
 							</div>
 						</div>
 					{:else}
-						<div class="lastrun">
+						<div class="pointer-events-none relative z-[1]">
 							<span class="meta">No completed runs stored.</span>
 						</div>
 					{/if}
 
-					<footer class="foot">
-						<span class="stat">
+					<footer
+						class="rule-t pointer-events-none relative z-[1] flex items-end gap-[18px] pt-[9px]"
+					>
+						<span class="flex flex-col gap-[3px]">
 							<span class="label-xs">last hour</span>
 							<ErrorCount
 								total={s?.errors_last_hour ?? 0}
@@ -135,20 +150,29 @@
 								size="sm"
 							/>
 						</span>
-						<span class="stat">
+						<span class="flex flex-col gap-[3px]">
 							<span class="label-xs">stored</span>
-							<span class="tnum val">{fmtBytes(s?.db_bytes ?? 0)}</span>
+							<span class="tnum text-[11.5px]">{fmtBytes(s?.db_bytes ?? 0)}</span>
 						</span>
-						<span class="stat">
+						<span class="flex flex-col gap-[3px]">
 							<span class="label-xs">last seen</span>
-							<span class="tnum val" title={fmtStamp(p.last_seen_at)}
+							<span class="tnum text-[11.5px]" title={fmtStamp(p.last_seen_at)}
 								>{fmtAgo(p.last_seen_at, now)}</span
 							>
 						</span>
-						<nav class="links">
-							<a href="/project/{p.id}/runs">runs</a>
-							<a href="/project/{p.id}/errors">errors</a>
-							<a href="/project/{p.id}/diff">diff</a>
+						<nav class="pointer-events-auto ml-auto flex gap-2.5">
+							<a
+								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								href="/project/{p.id}/runs">runs</a
+							>
+							<a
+								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								href="/project/{p.id}/errors">errors</a
+							>
+							<a
+								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								href="/project/{p.id}/diff">diff</a
+							>
 						</nav>
 					</footer>
 				</article>
@@ -156,158 +180,3 @@
 		</div>
 	{/if}
 </div>
-
-<style>
-	.body {
-		flex: 1;
-		padding: 16px;
-	}
-	.loading {
-		font-size: 12px;
-	}
-	.teach {
-		font-size: 11.5px;
-		line-height: 1.6;
-		margin: 0;
-	}
-	.grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-		gap: 12px;
-	}
-	.card {
-		position: relative;
-		border: 1px solid var(--rl-hair);
-		border-left: 2px solid var(--rl-hair-strong);
-		border-radius: 3px;
-		background: var(--color-base-200);
-		padding: 12px 14px 10px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		min-width: 0;
-	}
-	.card:hover {
-		border-color: var(--rl-hair-strong);
-	}
-	/* A project running something reads as running from across the room: a lit
-	   left edge, a tinted surface, and a breathing pip. */
-	.card.running {
-		border-left-color: var(--color-success);
-		background: color-mix(in oklch, var(--color-success) 5%, var(--color-base-200));
-	}
-	.hit {
-		position: absolute;
-		inset: 0;
-		z-index: 0;
-	}
-	.top,
-	.now,
-	.lastrun,
-	.foot {
-		position: relative;
-		z-index: 1;
-		pointer-events: none;
-	}
-	.top {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 12px;
-	}
-	.ident {
-		min-width: 0;
-	}
-	h3 {
-		font-size: 14px;
-		font-weight: 600;
-		margin: 0;
-	}
-	.root {
-		display: block;
-		font-size: 11px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.state {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.16em;
-	}
-	.state.live {
-		color: var(--color-success);
-	}
-	.state.idle {
-		color: var(--rl-meta);
-	}
-	.pip {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--color-success);
-	}
-	.nowrow {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 10px;
-	}
-	.cmd {
-		font-size: 12px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
-	}
-	.cmd.dim {
-		color: var(--rl-meta);
-	}
-	.elapsed {
-		font-size: 12px;
-		color: var(--color-success);
-		flex: none;
-	}
-	.nowmeta {
-		margin-top: 3px;
-		font-size: 11px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.foot {
-		display: flex;
-		align-items: flex-end;
-		gap: 18px;
-		padding-top: 9px;
-		border-top: 1px solid var(--rl-hair);
-	}
-	.stat {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-	.val {
-		font-size: 11.5px;
-	}
-	.links {
-		margin-left: auto;
-		display: flex;
-		gap: 10px;
-		pointer-events: auto;
-	}
-	.links a {
-		font-size: 11px;
-		color: var(--rl-meta);
-		text-decoration: none;
-		border-bottom: 1px solid transparent;
-	}
-	.links a:hover {
-		color: var(--color-base-content);
-		border-bottom-color: var(--rl-hair-strong);
-	}
-</style>

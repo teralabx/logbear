@@ -159,31 +159,47 @@
 
 <PageHeader title="Diff" sub={project ? project.name : ''}>
 	{#snippet actions()}
-		<div class="seg" role="group" aria-label="Baseline">
+		<div
+			class="flex overflow-hidden rounded-[2px] border border-hair"
+			role="group"
+			aria-label="Baseline"
+		>
 			<button
 				type="button"
-				class:on={!aParam && baselineKind === 'last_good'}
+				class="cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {!aParam &&
+				baselineKind === 'last_good'
+					? 'bg-base-content text-base-100'
+					: 'text-meta'}"
 				onclick={() => setBaseline('last_good')}>vs last good</button
 			>
 			<button
 				type="button"
-				class:on={!aParam && baselineKind === 'last_bad'}
+				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {!aParam &&
+				baselineKind === 'last_bad'
+					? 'bg-base-content text-base-100'
+					: 'text-meta'}"
 				onclick={() => setBaseline('last_bad')}>vs last failure</button
 			>
 		</div>
 		{#if aParam || bParam}
-			<button type="button" class="pill" onclick={clearPins}>reset to default</button>
+			<button
+				type="button"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase"
+				onclick={clearPins}>reset to default</button
+			>
 		{/if}
-		<a class="back" href="/project/{projectId}/runs">pick runs →</a>
+		<a class="text-[11px] text-meta hover:text-base-content" href="/project/{projectId}/runs"
+			>pick runs →</a
+		>
 	{/snippet}
 </PageHeader>
 
 {#if loadError}
-	<div class="pad"><ErrorNote what="Could not build the diff." detail={loadError} /></div>
+	<div class="p-4"><ErrorNote what="Could not build the diff." detail={loadError} /></div>
 {:else if loading}
-	<p class="pad meta">Comparing runs…</p>
+	<p class="p-4 text-meta">Comparing runs…</p>
 {:else if !diff}
-	<div class="pad">
+	<div class="p-4">
 		<EmptyState
 			title="Nothing to compare yet"
 			body="A diff needs two runs. Run your command once, change something, run it again."
@@ -191,67 +207,95 @@
 		/>
 	</div>
 {:else}
-	<div class="pane body">
+	<div class="pane flex-1 pb-10">
 		{#if verdict}
-			<section class="verdict" data-tone={verdict.tone}>
-				<span class="stripe" aria-hidden="true"></span>
+			<section class="rule-b flex gap-[14px] py-[18px] pr-4" data-tone={verdict.tone}>
+				<span
+					class="w-[3px] flex-none {verdict.tone === 'bad'
+						? 'bg-flare'
+						: verdict.tone === 'good'
+							? 'bg-clear'
+							: verdict.tone === 'warn'
+								? 'bg-warning'
+								: 'bg-hair-strong'}"
+					aria-hidden="true"
+				></span>
 				<div>
-					<h1>{verdict.headline}</h1>
-					<p class="detail">{verdict.detail}</p>
+					<h1 class="max-w-[72ch] text-[19px] font-semibold tracking-normal">{verdict.headline}</h1>
+					<p class="mt-[7px] max-w-[80ch] text-[12.5px] leading-[1.6] text-meta">{verdict.detail}</p>
 				</div>
 			</section>
 		{/if}
 
-		<section class="pair" aria-label="Runs being compared">
+		<section class="rule-b relative grid grid-cols-2 bg-base-200" aria-label="Runs being compared">
 			{#each [{ side: 'A', run: diff.a, note: aParam ? 'pinned' : baselineKind === 'last_bad' ? 'last failure' : 'last known good' }, { side: 'B', run: diff.b, note: bParam ? 'pinned' : 'latest' }] as col (col.side)}
-				<div class="col">
-					<div class="colhead">
-						<span class="side">{col.side}</span>
+				<div class="min-w-0 px-4 py-[10px] {col.side === 'B' ? 'rule-l' : ''}">
+					<div class="flex items-baseline gap-2">
+						<span class="rounded-[2px] border border-hair-strong px-[5px] text-[11px] font-semibold"
+							>{col.side}</span
+						>
 						<span class="label-xs">{col.note}</span>
 					</div>
 					{#if col.run}
-						<a class="runline" href="/project/{projectId}/runs/{col.run.id}">
-							<code>{fmtCommand(col.run.command)}</code>
+						<a class="group mt-[5px] block" href="/project/{projectId}/runs/{col.run.id}">
+							<code class="text-[12.5px] group-hover:border-b group-hover:border-hair-strong"
+								>{fmtCommand(col.run.command)}</code
+							>
 						</a>
-						<div class="runmeta tnum meta">
+						<div class="tnum mt-[5px] flex flex-wrap items-center gap-[10px] text-[11px] text-meta">
 							<span>{fmtStamp(col.run.started_at)}</span>
 							<span>{fmtDuration(runDuration(col.run))}</span>
 							<span>{shortSha(col.run.git_sha)} {col.run.git_branch ?? ''}</span>
-							{#if col.run.git_dirty_hash}<span class="dirty">dirty</span>{/if}
+							{#if col.run.git_dirty_hash}<span
+									class="text-[9px] tracking-[0.16em] text-warning uppercase">dirty</span
+								>{/if}
 							<ExitBadge run={col.run} />
 						</div>
 					{:else}
-						<p class="norun meta">No run matched.</p>
+						<p class="mt-[6px] text-[12px] text-meta">No run matched.</p>
 					{/if}
 				</div>
 			{/each}
-			<div class="arrow" aria-hidden="true">→</div>
+			<div
+				class="absolute top-1/2 left-1/2 grid h-[22px] w-[22px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-hair bg-base-200 text-[12px] text-meta"
+				aria-hidden="true"
+			>
+				→
+			</div>
 		</section>
 
-		<section class="block">
-			<h2 class="blockhead flare-head">
+		<section class="rule-b px-4 pt-4 pb-1">
+			<h2 class="mb-[10px] flex items-baseline gap-[9px] text-[13px] font-semibold">
 				New signatures
-				<span class="n tnum">{diff.new_signatures.length}</span>
-				<span class="sub meta">present in B, absent from A</span>
+				<span
+					class="tnum rounded-[2px] border border-flare bg-flare px-[6px] text-[12px] font-semibold text-flare-content"
+					>{diff.new_signatures.length}</span
+				>
+				<span class="text-[11px] font-normal text-meta">present in B, absent from A</span>
 			</h2>
 			{#if diff.new_signatures.length === 0}
-				<p class="empty-line meta">
+				<p class="mb-3 max-w-[80ch] text-[12px] leading-[1.6] text-meta">
 					Nothing appeared that the baseline did not already produce. Whatever is failing now was
 					failing then.
 				</p>
 			{:else}
-				<ul class="sigs">
+				<ul class="mb-2 flex flex-col gap-[6px]">
 					{#each diff.new_signatures as s (s.fingerprint_id)}
-						<li class="sig new" data-level={s.level}>
-							<span class="stripe" aria-hidden="true"></span>
-							<div class="sigbody">
-								<div class="sigtop">
+						<li
+							class="flex overflow-hidden rounded-[3px] border border-[color-mix(in_oklch,var(--color-flare)_35%,transparent)] bg-base-200"
+							data-level={s.level}
+						>
+							<span class="w-[3px] flex-none bg-flare" aria-hidden="true"></span>
+							<div class="min-w-0 flex-1 px-3 py-2">
+								<div class="flex min-w-0 items-center gap-[10px]">
 									<LevelChip level={s.level} />
-									<code class="tpl">{s.template}</code>
-									<span class="delta tnum">+{s.count_b}</span>
+									<code class="min-w-0 flex-1 truncate text-[12px]">{s.template}</code>
+									<span class="tnum flex-none text-[12px] font-semibold text-flare">+{s.count_b}</span
+									>
 								</div>
 								{#if s.sample}
-									<pre class="sample mono-block">{s.sample}</pre>
+									<pre
+										class="mono-block mt-[7px] max-w-full overflow-x-auto border-l border-hair-strong bg-code-bg px-[9px] py-[7px] text-[11px]! text-meta">{s.sample}</pre>
 								{/if}
 							</div>
 						</li>
@@ -260,24 +304,34 @@
 			{/if}
 		</section>
 
-		<section class="block">
-			<h2 class="blockhead clear-head">
+		<section class="rule-b px-4 pt-4 pb-1">
+			<h2 class="mb-[10px] flex items-baseline gap-[9px] text-[13px] font-semibold">
 				Resolved signatures
-				<span class="n tnum">{diff.resolved_signatures.length}</span>
-				<span class="sub meta">present in A, absent from B</span>
+				<span
+					class="tnum rounded-[2px] border border-clear bg-clear px-[6px] text-[12px] font-semibold text-flare-content"
+					>{diff.resolved_signatures.length}</span
+				>
+				<span class="text-[11px] font-normal text-meta">present in A, absent from B</span>
 			</h2>
 			{#if diff.resolved_signatures.length === 0}
-				<p class="empty-line meta">Everything the baseline produced still occurs.</p>
+				<p class="mb-3 max-w-[80ch] text-[12px] leading-[1.6] text-meta">
+					Everything the baseline produced still occurs.
+				</p>
 			{:else}
-				<ul class="sigs">
+				<ul class="mb-2 flex flex-col gap-[6px]">
 					{#each diff.resolved_signatures as s (s.fingerprint_id)}
-						<li class="sig resolved" data-level={s.level}>
-							<span class="stripe" aria-hidden="true"></span>
-							<div class="sigbody">
-								<div class="sigtop">
+						<li
+							class="flex overflow-hidden rounded-[3px] border border-hair bg-base-200"
+							data-level={s.level}
+						>
+							<span class="w-[3px] flex-none bg-clear" aria-hidden="true"></span>
+							<div class="min-w-0 flex-1 px-3 py-2">
+								<div class="flex min-w-0 items-center gap-[10px]">
 									<LevelChip level={s.level} />
-									<code class="tpl">{s.template}</code>
-									<span class="delta gone tnum">−{s.count_a}</span>
+									<code class="min-w-0 flex-1 truncate text-[12px]">{s.template}</code>
+									<span class="tnum flex-none text-[12px] font-semibold text-success"
+										>−{s.count_a}</span
+									>
 								</div>
 							</div>
 						</li>
@@ -287,22 +341,32 @@
 		</section>
 
 		{#if diff.changed_counts.length}
-			<section class="block">
-				<h2 class="blockhead">
+			<section class="rule-b px-4 pt-4 pb-1">
+				<h2 class="mb-[10px] flex items-baseline gap-[9px] text-[13px] font-semibold">
 					Count changes
-					<span class="n tnum">{diff.changed_counts.length}</span>
-					<span class="sub meta">same signature, different volume</span>
+					<span
+						class="tnum rounded-[2px] border border-hair-strong px-[6px] text-[12px] font-semibold"
+						>{diff.changed_counts.length}</span
+					>
+					<span class="text-[11px] font-normal text-meta">same signature, different volume</span>
 				</h2>
-				<ul class="counts">
+				<ul class="mb-[10px]">
 					{#each diff.changed_counts as s (s.fingerprint_id)}
-						<li data-level={s.level}>
+						<li
+							class="rule-b grid grid-cols-[76px_1fr_110px] items-center gap-3 py-1"
+							data-level={s.level}
+						>
 							<LevelChip level={s.level} />
-							<code class="tpl">{s.template}</code>
-							<span class="tnum ab">
-								<span class="meta">{s.count_a}</span>
-								<span class="meta">→</span>
-								<span class:up={s.count_b > s.count_a} class:down={s.count_b < s.count_a}
-									>{s.count_b}</span
+							<code class="min-w-0 truncate text-[12px]">{s.template}</code>
+							<span class="tnum flex justify-end gap-[6px] text-[12px]">
+								<span class="text-meta">{s.count_a}</span>
+								<span class="text-meta">→</span>
+								<span
+									class={s.count_b > s.count_a
+										? 'font-semibold text-flare'
+										: s.count_b < s.count_a
+											? 'font-semibold text-success'
+											: ''}>{s.count_b}</span
 								>
 							</span>
 						</li>
@@ -311,95 +375,110 @@
 			</section>
 		{/if}
 
-		<section class="block">
-			<h2 class="blockhead">What moved between them</h2>
+		<section class="rule-b px-4 pt-4 pb-1">
+			<h2 class="mb-[10px] flex items-baseline gap-[9px] text-[13px] font-semibold">
+				What moved between them
+			</h2>
 
-			<div class="evidence">
-				<div class="ev">
+			<div class="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-x-6 gap-y-[14px] pb-3">
+				<div>
 					<span class="label-xs"
 						>commits {diff.git.sha_a && diff.git.sha_b
 							? `${shortSha(diff.git.sha_a)}..${shortSha(diff.git.sha_b)}`
 							: ''}</span
 					>
 					{#if diff.git.commits.length}
-						<ul class="commits">
+						<ul class="mt-[6px] text-[11.5px]">
 							{#each diff.git.commits as c (c.sha)}
-								<li>
-									<span class="csha tnum meta">{shortSha(c.sha)}</span>
-									<span class="csub">{c.subject}</span>
-									<span class="cauth meta">{c.author}</span>
+								<li class="grid grid-cols-[62px_1fr_auto] items-baseline gap-[10px] py-[2px]">
+									<span class="tnum text-meta">{shortSha(c.sha)}</span>
+									<span class="truncate">{c.subject}</span>
+									<span class="text-[10.5px] text-meta">{c.author}</span>
 								</li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="ev-none meta">
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
 							Same commit{diff.git.dirty_changed
 								? ', but the working tree dirty state changed'
 								: ''}.
 						</p>
 					{/if}
 					{#if diff.git.branch_a !== diff.git.branch_b}
-						<p class="ev-note">
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6]">
 							Branch changed: <b>{diff.git.branch_a ?? '—'}</b> → <b>{diff.git.branch_b ?? '—'}</b>
 						</p>
 					{/if}
 				</div>
 
-				<div class="ev">
+				<div>
 					<span class="label-xs">files changed ({diff.git.files_changed.length})</span>
 					{#if diff.git.files_changed.length}
-						<ul class="files">
+						<ul class="mt-[6px] text-[11.5px]">
 							{#each diff.git.files_changed as f (f)}
-								<li><code>{f}</code></li>
+								<li><code class="text-meta">{f}</code></li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="ev-none meta">No tracked files differ.</p>
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+							No tracked files differ.
+						</p>
 					{/if}
 				</div>
 
-				<div class="ev">
+				<div>
 					<span class="label-xs">lockfiles</span>
 					{#if diff.lockfiles_changed.length}
-						<ul class="locks">
+						<ul class="mt-[6px] text-[11.5px]">
 							{#each diff.lockfiles_changed as l (l.file)}
-								<li>
+								<li class="flex flex-wrap items-baseline gap-[10px] py-[2px]">
 									<code>{l.file}</code>
-									<span class="tnum meta">{shortHash(l.hash_a)} → {shortHash(l.hash_b)}</span>
-									<span class="moved">moved</span>
+									<span class="tnum text-meta">{shortHash(l.hash_a)} → {shortHash(l.hash_b)}</span>
+									<span class="text-[9px] tracking-[0.16em] text-warning uppercase">moved</span>
 								</li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="ev-none meta">Unchanged. Dependencies are identical in both runs.</p>
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+							Unchanged. Dependencies are identical in both runs.
+						</p>
 					{/if}
 				</div>
 
-				<div class="ev">
+				<div>
 					<span class="label-xs">environment variable names</span>
 					{#if diff.env_added.length || diff.env_removed.length}
-						<div class="envs">
+						<div class="mt-[6px] flex flex-wrap gap-[5px]">
 							{#each diff.env_added as k (k)}
-								<code class="env added">+{k}</code>
+								<code
+									class="rounded-[2px] border border-[color-mix(in_oklch,var(--color-flare)_40%,transparent)] px-[6px] py-px text-[11px] text-flare"
+									>+{k}</code
+								>
 							{/each}
 							{#each diff.env_removed as k (k)}
-								<code class="env removed">−{k}</code>
+								<code class="rounded-[2px] border border-hair px-[6px] py-px text-[11px] text-meta"
+									>−{k}</code
+								>
 							{/each}
 						</div>
-						<p class="ev-note meta">Names only. runlog never records environment values.</p>
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+							Names only. runlog never records environment values.
+						</p>
 					{:else}
-						<p class="ev-none meta">Same set of variables in both runs.</p>
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+							Same set of variables in both runs.
+						</p>
 					{/if}
 				</div>
 
 				{#if diff.command_changed}
-					<div class="ev span2">
+					<div class="col-span-full">
 						<span class="label-xs">command</span>
-						<p class="ev-note">
+						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6]">
 							The command is not the same in both runs, so some of the difference above may simply
 							be a different program.
 						</p>
-						<div class="cmdpair tnum">
+						<div class="tnum mt-[7px] flex flex-col gap-[3px] text-[11.5px]">
 							<code>A · {diff.a ? fmtCommand(diff.a.command) : '—'}</code>
 							<code>B · {diff.b ? fmtCommand(diff.b.command) : '—'}</code>
 						</div>
@@ -409,386 +488,3 @@
 		</section>
 	</div>
 {/if}
-
-<style>
-	.pad {
-		padding: 16px;
-	}
-	.body {
-		flex: 1;
-		padding: 0 0 40px;
-	}
-	.back {
-		font-size: 11px;
-		color: var(--rl-meta);
-		text-decoration: none;
-	}
-	.back:hover {
-		color: var(--color-base-content);
-	}
-	.seg {
-		display: flex;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		overflow: hidden;
-	}
-	.seg button {
-		border: 0;
-		background: transparent;
-		color: var(--rl-meta);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		padding: 4px 9px;
-		cursor: pointer;
-	}
-	.seg button + button {
-		border-left: 1px solid var(--rl-hair);
-	}
-	.seg button.on {
-		background: var(--color-base-content);
-		color: var(--color-base-100);
-	}
-	.pill {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--rl-meta);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		padding: 4px 8px;
-		cursor: pointer;
-	}
-
-	/* ---- verdict ---- */
-	.verdict {
-		display: flex;
-		gap: 14px;
-		padding: 18px 16px 18px 0;
-		border-bottom: 1px solid var(--rl-hair);
-	}
-	.verdict .stripe {
-		width: 3px;
-		flex: none;
-		background: var(--rl-hair-strong);
-	}
-	.verdict[data-tone='bad'] .stripe {
-		background: var(--color-flare);
-	}
-	.verdict[data-tone='good'] .stripe {
-		background: var(--color-success);
-	}
-	.verdict[data-tone='warn'] .stripe {
-		background: var(--color-warning);
-	}
-	h1 {
-		font-size: 19px;
-		font-weight: 600;
-		letter-spacing: normal;
-		margin: 0;
-		max-width: 72ch;
-	}
-	.verdict .detail {
-		margin: 7px 0 0;
-		font-size: 12.5px;
-		color: var(--rl-meta);
-		line-height: 1.6;
-		max-width: 80ch;
-	}
-
-	/* ---- pair ---- */
-	.pair {
-		position: relative;
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		border-bottom: 1px solid var(--rl-hair);
-		background: var(--color-base-200);
-	}
-	.col {
-		padding: 10px 16px;
-		min-width: 0;
-	}
-	.col + .col {
-		border-left: 1px solid var(--rl-hair);
-	}
-	.colhead {
-		display: flex;
-		align-items: baseline;
-		gap: 8px;
-	}
-	.side {
-		font-size: 11px;
-		font-weight: 600;
-		border: 1px solid var(--rl-hair-strong);
-		border-radius: 2px;
-		padding: 0 5px;
-	}
-	.runline {
-		display: block;
-		margin-top: 5px;
-		text-decoration: none;
-		color: var(--color-base-content);
-	}
-	.runline code {
-		font-size: 12.5px;
-	}
-	.runline:hover code {
-		border-bottom: 1px solid var(--rl-hair-strong);
-	}
-	.runmeta {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 10px;
-		align-items: center;
-		margin-top: 5px;
-		font-size: 11px;
-	}
-	.dirty {
-		color: var(--color-warning);
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-	}
-	.arrow {
-		position: absolute;
-		left: 50%;
-		top: 50%;
-		transform: translate(-50%, -50%);
-		background: var(--color-base-200);
-		border: 1px solid var(--rl-hair);
-		border-radius: 50%;
-		width: 22px;
-		height: 22px;
-		display: grid;
-		place-items: center;
-		font-size: 12px;
-		color: var(--rl-meta);
-	}
-	.norun {
-		margin: 6px 0 0;
-		font-size: 12px;
-	}
-
-	/* ---- blocks ---- */
-	.block {
-		padding: 16px 16px 4px;
-		border-bottom: 1px solid var(--rl-hair);
-	}
-	.blockhead {
-		display: flex;
-		align-items: baseline;
-		gap: 9px;
-		font-size: 13px;
-		font-weight: 600;
-		margin: 0 0 10px;
-	}
-	.blockhead .n {
-		font-size: 12px;
-		border: 1px solid var(--rl-hair-strong);
-		border-radius: 2px;
-		padding: 0 6px;
-		font-weight: 600;
-	}
-	.flare-head .n {
-		background: var(--color-flare);
-		border-color: var(--color-flare);
-		color: #180703;
-	}
-	.clear-head .n {
-		background: var(--color-success);
-		border-color: var(--color-success);
-		color: var(--color-success-content);
-	}
-	.blockhead .sub {
-		font-size: 11px;
-		font-weight: 400;
-	}
-	.empty-line {
-		margin: 0 0 12px;
-		font-size: 12px;
-		max-width: 80ch;
-		line-height: 1.6;
-	}
-
-	.sigs {
-		list-style: none;
-		margin: 0 0 8px;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-	}
-	.sig {
-		display: flex;
-		border: 1px solid var(--rl-hair);
-		border-radius: 3px;
-		overflow: hidden;
-		background: var(--color-base-200);
-	}
-	.sig .stripe {
-		width: 3px;
-		flex: none;
-	}
-	.sig.new .stripe {
-		background: var(--color-flare);
-	}
-	.sig.resolved .stripe {
-		background: var(--color-success);
-	}
-	.sig.new {
-		border-color: color-mix(in oklch, var(--color-flare) 35%, transparent);
-	}
-	.sigbody {
-		padding: 8px 12px;
-		min-width: 0;
-		flex: 1;
-	}
-	.sigtop {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		min-width: 0;
-	}
-	.tpl {
-		flex: 1;
-		font-size: 12px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
-	}
-	.delta {
-		flex: none;
-		font-size: 12px;
-		font-weight: 600;
-		color: var(--color-flare);
-	}
-	.delta.gone {
-		color: var(--color-success);
-	}
-	.sample {
-		margin: 7px 0 0;
-		padding: 7px 9px;
-		background: var(--rl-code-bg);
-		border-left: 1px solid var(--rl-hair-strong);
-		color: var(--rl-meta);
-		overflow-x: auto;
-		max-width: 100%;
-		font-size: 11px;
-	}
-
-	.counts {
-		list-style: none;
-		margin: 0 0 10px;
-		padding: 0;
-	}
-	.counts li {
-		display: grid;
-		grid-template-columns: 76px 1fr 110px;
-		gap: 12px;
-		align-items: center;
-		padding: 4px 0;
-		border-bottom: 1px solid var(--rl-hair);
-	}
-	.ab {
-		display: flex;
-		gap: 6px;
-		justify-content: flex-end;
-		font-size: 12px;
-	}
-	.ab .up {
-		color: var(--color-flare);
-		font-weight: 600;
-	}
-	.ab .down {
-		color: var(--color-success);
-		font-weight: 600;
-	}
-
-	/* ---- evidence ---- */
-	.evidence {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-		gap: 14px 24px;
-		padding-bottom: 12px;
-	}
-	.ev.span2 {
-		grid-column: 1 / -1;
-	}
-	.ev-none,
-	.ev-note {
-		margin: 6px 0 0;
-		font-size: 11.5px;
-		line-height: 1.6;
-		max-width: 70ch;
-	}
-	.commits,
-	.files,
-	.locks {
-		list-style: none;
-		margin: 6px 0 0;
-		padding: 0;
-		font-size: 11.5px;
-	}
-	.commits li {
-		display: grid;
-		grid-template-columns: 62px 1fr auto;
-		gap: 10px;
-		padding: 2px 0;
-		align-items: baseline;
-	}
-	.csub {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.cauth {
-		font-size: 10.5px;
-	}
-	.files li code {
-		font-size: 11.5px;
-		color: var(--rl-meta);
-	}
-	.locks li {
-		display: flex;
-		gap: 10px;
-		align-items: baseline;
-		padding: 2px 0;
-		flex-wrap: wrap;
-	}
-	.moved {
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--color-warning);
-	}
-	.envs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 5px;
-		margin-top: 6px;
-	}
-	.env {
-		font-size: 11px;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		padding: 1px 6px;
-	}
-	.env.added {
-		color: var(--color-flare);
-		border-color: color-mix(in oklch, var(--color-flare) 40%, transparent);
-	}
-	.env.removed {
-		color: var(--rl-meta);
-	}
-	.cmdpair {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		margin-top: 7px;
-		font-size: 11.5px;
-	}
-</style>

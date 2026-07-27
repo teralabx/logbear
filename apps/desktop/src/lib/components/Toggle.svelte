@@ -20,7 +20,7 @@
 	}
 </script>
 
-<div class="row" class:disabled>
+<div class="flex items-start gap-2.5 py-[7px] {disabled ? 'opacity-50' : ''}">
 	<button
 		type="button"
 		role="switch"
@@ -28,82 +28,23 @@
 		aria-label={label}
 		{disabled}
 		onclick={flip}
-		class="sw"
-		class:on={checked}
+		class="relative mt-px h-[17px] w-[30px] flex-none cursor-pointer rounded-[2px] border transition-[background-color] duration-[140ms] disabled:cursor-not-allowed {checked
+			? 'border-base-content bg-base-content'
+			: 'border-hair-strong bg-transparent'}"
 	>
-		<span class="knob"></span>
+		<span
+			class="absolute top-0.5 left-0.5 h-[11px] w-[11px] rounded-[1px] transition-[transform,background-color] duration-[140ms] {checked
+				? 'translate-x-[13px] bg-base-100'
+				: 'bg-hair-strong'}"
+		></span>
 	</button>
-	<div class="text">
-		<button type="button" class="lbl" {disabled} onclick={flip}>{label}</button>
-		{#if hint}<p class="hint meta">{hint}</p>{/if}
+	<div class="min-w-0">
+		<button
+			type="button"
+			class="cursor-pointer bg-transparent p-0 text-left text-[12.5px] text-base-content disabled:cursor-not-allowed"
+			{disabled}
+			onclick={flip}>{label}</button
+		>
+		{#if hint}<p class="meta mt-0.5 max-w-[60ch] text-[11px] leading-[1.5]">{hint}</p>{/if}
 	</div>
 </div>
-
-<style>
-	.row {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
-		padding: 7px 0;
-	}
-	.row.disabled {
-		opacity: 0.5;
-	}
-	.sw {
-		flex: none;
-		width: 30px;
-		height: 17px;
-		margin-top: 1px;
-		border-radius: 2px;
-		border: 1px solid var(--rl-hair-strong);
-		background: transparent;
-		position: relative;
-		cursor: pointer;
-		transition: background-color 140ms;
-	}
-	.sw.on {
-		background: var(--color-base-content);
-		border-color: var(--color-base-content);
-	}
-	.sw:disabled {
-		cursor: not-allowed;
-	}
-	.knob {
-		position: absolute;
-		top: 2px;
-		left: 2px;
-		width: 11px;
-		height: 11px;
-		border-radius: 1px;
-		background: var(--rl-hair-strong);
-		transition:
-			transform 140ms,
-			background-color 140ms;
-	}
-	.sw.on .knob {
-		transform: translateX(13px);
-		background: var(--color-base-100);
-	}
-	.text {
-		min-width: 0;
-	}
-	.lbl {
-		background: none;
-		border: 0;
-		padding: 0;
-		font: inherit;
-		font-size: 12.5px;
-		color: var(--color-base-content);
-		cursor: pointer;
-		text-align: left;
-	}
-	.lbl:disabled {
-		cursor: not-allowed;
-	}
-	.hint {
-		margin: 2px 0 0;
-		font-size: 11px;
-		line-height: 1.5;
-		max-width: 60ch;
-	}
-</style>

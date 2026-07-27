@@ -2,6 +2,15 @@
 // snake_case. Do not "fix" the casing here; it is the contract.
 
 export type Level = 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'unknown';
+
+/**
+ * How an entry's level was determined.
+ *
+ * `declared` — the process emitted a severity token and it was read verbatim.
+ * `structural` — no token, but a runtime printed an exception banner.
+ * `unknown` — the process said nothing. Never an error, and never notified on.
+ */
+export type Evidence = 'declared' | 'structural' | 'unknown';
 export type Boundaries = 'exact' | 'inferred';
 export type DelimiterMode = 'json' | 'colour_bracket' | 'prefix' | 'fallback';
 export type ProjectRef = { by: 'path'; value: string } | { by: 'id'; value: number };
@@ -61,7 +70,10 @@ export interface Entry {
 	end_line: number;
 	captured_at: number;
 	level: Level;
+	/** How `level` was arrived at. `unknown` means the process declared nothing. */
+	evidence: Evidence;
 	is_error: boolean;
+	/** `rung:rule`, e.g. `declared:level_token`. Null when the severity is unknown. */
 	error_reason: string | null;
 	fingerprint_id: number | null;
 	boundaries: Boundaries;
@@ -108,6 +120,8 @@ export interface EntryFilter {
 	run_id?: number | null;
 	level?: Level | null;
 	errors_only?: boolean;
+	/** Signatures being seen for the first time in this project, at any severity. */
+	novel_only?: boolean;
 	since?: number | null;
 	after_entry?: number | null;
 	search?: string | null;

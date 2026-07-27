@@ -9,50 +9,15 @@
 	}: { title: string; sub?: string; actions?: Snippet; children?: Snippet } = $props();
 </script>
 
-<header class="head">
-	<div class="titles">
-		<h2>{title}</h2>
-		{#if sub}<span class="sub meta">{sub}</span>{/if}
+<header
+	class="rule-b flex h-[46px] flex-none items-center justify-between gap-4 bg-base-100 px-4"
+>
+	<div class="flex min-w-0 items-baseline gap-2.5">
+		<h2 class="text-[15px] font-semibold whitespace-nowrap">{title}</h2>
+		{#if sub}<span class="meta truncate text-[11.5px]">{sub}</span>{/if}
 		{#if children}{@render children()}{/if}
 	</div>
 	{#if actions}
-		<div class="actions">{@render actions()}</div>
+		<div class="flex flex-none items-center gap-2">{@render actions()}</div>
 	{/if}
 </header>
-
-<style>
-	.head {
-		flex: none;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-		height: 46px;
-		padding: 0 16px;
-		border-bottom: 1px solid var(--rl-hair);
-		background: var(--color-base-100);
-	}
-	.titles {
-		display: flex;
-		align-items: baseline;
-		gap: 10px;
-		min-width: 0;
-	}
-	h2 {
-		font-size: 15px;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-	.sub {
-		font-size: 11.5px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex: none;
-	}
-</style>

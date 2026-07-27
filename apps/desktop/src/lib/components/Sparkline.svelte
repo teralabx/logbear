@@ -37,9 +37,9 @@
 	role="img"
 	aria-label="{points.reduce((a, p) => a + p.count, 0)} occurrences across the last {points.length} runs"
 	data-level={level}
-	class="spark"
+	class="block overflow-visible"
 >
-	<line x1="0" y1={baseline + 0.5} x2={width} y2={baseline + 0.5} class="axis" />
+	<line x1="0" y1={baseline + 0.5} x2={width} y2={baseline + 0.5} class="stroke-hair stroke-1" />
 	{#each points as p, i (p.run_id)}
 		{@const x = i * (barW + gap)}
 		{@const h = p.count === 0 ? 1 : Math.max(2, Math.round((p.count / max) * (height - 3)))}
@@ -48,8 +48,7 @@
 			y={baseline - h}
 			width={barW}
 			height={h}
-			class:zero={p.count === 0}
-			class:last={i === points.length - 1}
+			class={p.count === 0 ? 'fill-hair-strong' : 'fill-[var(--lvl)]'}
 		>
 			<title>run #{p.run_id} · {p.count} × · {fmtStamp(p.started_at)}</title>
 		</rect>
@@ -57,34 +56,17 @@
 </svg>
 
 <style>
-	.spark {
-		display: block;
-		overflow: visible;
-	}
-	.axis {
-		stroke: var(--rl-hair);
-		stroke-width: 1;
-	}
-	rect {
-		fill: var(--lvl);
-	}
-	rect.zero {
-		fill: var(--rl-hair-strong);
-	}
-	rect.last {
-		fill: var(--lvl);
-	}
-
+	/* Attribute-driven custom property mapping: not expressible as a utility. */
 	[data-level='error'] {
-		--lvl: var(--rl-lvl-error);
+		--lvl: var(--color-lvl-error);
 	}
 	[data-level='warn'] {
-		--lvl: var(--rl-lvl-warn);
+		--lvl: var(--color-lvl-warn);
 	}
 	[data-level='info'],
 	[data-level='debug'],
 	[data-level='trace'],
 	[data-level='unknown'] {
-		--lvl: var(--rl-lvl-info);
+		--lvl: var(--color-lvl-info);
 	}
 </style>

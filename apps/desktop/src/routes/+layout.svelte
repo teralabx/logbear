@@ -26,28 +26,11 @@
 	});
 </script>
 
-<div class="shell">
+<div class="flex h-screen w-screen overflow-hidden">
 	<Rail />
-	<main class="main">
+	<main class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
 		{@render children()}
 	</main>
 </div>
 
 <NoticeStack />
-
-<style>
-	.shell {
-		display: flex;
-		height: 100vh;
-		width: 100vw;
-		overflow: hidden;
-	}
-	.main {
-		flex: 1;
-		min-width: 0;
-		min-height: 0;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-	}
-</style>

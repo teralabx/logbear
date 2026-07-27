@@ -627,16 +627,52 @@ impl Harness {
     }
 }
 
+/// Locate a harness CLI on the user's login-shell PATH.
+///
+/// A GUI app inherits launchd's PATH, which does not contain the directories these tools
+/// install into, so [`user_path`] is searched rather than `std::env::var("PATH")`.
+fn harness_cli(name: &str) -> Option<PathBuf> {
+    user_path()
+        .into_iter()
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Whether `claude mcp get runlog` resolves. Exits non-zero when the server is unknown.
+///
+/// Preferred over reading `~/.claude.json` because a server may be registered at local,
+/// user or project scope, and only the CLI knows which scopes are in play.
+fn claude_cli_has_runlog(cli: &Path) -> bool {
+    std::process::Command::new(cli)
+        .args(["mcp", "get", MCP_NAME])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+const MCP_NAME: &str = "runlog";
+
 fn mcp_status(h: Harness) -> StepState {
     let path = h.mcp_config();
-    let installed = match h {
-        Harness::Claude => read_json(&path)
+    let cli = matches!(h, Harness::Claude)
+        .then(|| harness_cli("claude"))
+        .flatten();
+
+    let installed = match (&cli, h) {
+        (Some(cli), _) => claude_cli_has_runlog(cli),
+        (None, Harness::Claude) => read_json(&path)
             .and_then(|v| v.get("mcpServers").cloned())
-            .map(|v| v.get("runlog").is_some())
+            .map(|v| v.get(MCP_NAME).is_some())
             .unwrap_or(false),
-        Harness::Codex => std::fs::read_to_string(&path)
+        (None, Harness::Codex) => std::fs::read_to_string(&path)
             .map(|s| s.contains("[mcp_servers.runlog]"))
             .unwrap_or(false),
+    };
+
+    let where_ = match &cli {
+        Some(_) => "Claude Code (user scope)".to_string(),
+        None => path.display().to_string(),
     };
     StepState {
         installed,
@@ -644,12 +680,55 @@ fn mcp_status(h: Harness) -> StepState {
         detail: if !h.present() {
             format!("{} was not detected on this machine", h.label())
         } else if installed {
-            format!("registered in {}", path.display())
+            format!("registered in {where_}")
         } else {
-            format!("not registered in {}", path.display())
+            format!("not registered in {where_}")
         },
         backup: None,
     }
+}
+
+/// Start `runlog-mcp` and complete an `initialize` handshake.
+///
+/// Registering the server only edits config; this is what proves the binary runs and
+/// speaks the protocol, so a failure surfaces here rather than as a silent absence inside
+/// the agent later.
+fn verify_mcp(server: &Path) -> Result<String, String> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut child = std::process::Command::new(server)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{} would not start: {e}", server.display()))?;
+
+    let req = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"#,
+        r#""2025-06-18","capabilities":{},"clientInfo":{"name":"runlog-installer","#,
+        r#""version":"1"}}}"#,
+        "\n"
+    );
+    let write = child
+        .stdin
+        .as_mut()
+        .ok_or("no stdin")
+        .and_then(|s| s.write_all(req.as_bytes()).map_err(|_| "write failed"));
+
+    let reply = write.ok().and_then(|()| {
+        let stdout = child.stdout.take()?;
+        BufReader::new(stdout).lines().next()?.ok()
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let reply = reply.ok_or_else(|| "runlog-mcp did not answer an initialize request".to_string())?;
+    let v: serde_json::Value =
+        serde_json::from_str(&reply).map_err(|e| format!("runlog-mcp replied with non-JSON: {e}"))?;
+    v.pointer("/result/serverInfo/version")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("unexpected initialize reply: {reply}"))
 }
 
 fn install_mcp(h: Harness) -> Result<StepState, String> {
@@ -657,9 +736,28 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
     if !server.exists() {
         return Err(format!("runlog-mcp is missing from {}", bin_dir().display()));
     }
+    verify_mcp(&server)?;
+
+    // The CLI owns the config format across versions and scopes; hand-editing is the
+    // fallback for when it is absent.
+    if let (Harness::Claude, Some(cli)) = (h, harness_cli("claude")) {
+        let out = std::process::Command::new(&cli)
+            .args(["mcp", "add", "--scope", "user", MCP_NAME, "--"])
+            .arg(&server)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("{} failed: {e}", cli.display()))?;
+        if !out.status.success() && !claude_cli_has_runlog(&cli) {
+            return Err(format!(
+                "claude mcp add failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        return Ok(mcp_status(h));
+    }
+
     let path = h.mcp_config();
     let backup = back_up(&path)?;
-
     match h {
         Harness::Claude => {
             let mut root = read_json(&path).unwrap_or_else(|| serde_json::json!({}));
@@ -675,7 +773,7 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
                 return Err(format!("mcpServers in {} is not an object", path.display()));
             }
             servers.as_object_mut().unwrap().insert(
-                "runlog".into(),
+                MCP_NAME.into(),
                 serde_json::json!({
                     "command": server.to_string_lossy(),
                     "args": [],
@@ -684,8 +782,8 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
             write_json(&path, &root)?;
         }
         Harness::Codex => {
-            // TOML, and the file may hold anything. Append a clearly delimited block
-            // rather than parsing and rewriting someone else's config.
+            // Append a delimited block rather than parsing and rewriting someone else's
+            // TOML, which may hold anything.
             let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
             if !existing.contains("[mcp_servers.runlog]") {
                 if !existing.is_empty() && !existing.ends_with('\n') {
@@ -709,13 +807,24 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
 }
 
 fn uninstall_mcp(h: Harness) -> Result<StepState, String> {
+    if let (Harness::Claude, Some(cli)) = (h, harness_cli("claude")) {
+        if claude_cli_has_runlog(&cli) {
+            let _ = std::process::Command::new(&cli)
+                .args(["mcp", "remove", "--scope", "user", MCP_NAME])
+                .stdin(std::process::Stdio::null())
+                .output();
+        }
+    }
+
+    // Also clear a hand-written entry, which may predate the CLI being available.
     let path = h.mcp_config();
     match h {
         Harness::Claude => {
             if let Some(mut root) = read_json(&path) {
                 if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-                    servers.remove("runlog");
-                    write_json(&path, &root)?;
+                    if servers.remove(MCP_NAME).is_some() {
+                        write_json(&path, &root)?;
+                    }
                 }
             }
         }

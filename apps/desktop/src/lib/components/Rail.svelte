@@ -31,41 +31,69 @@
 	function isRunning(projectId: number): boolean {
 		return (app.statuses[projectId]?.active_runs.length ?? 0) > 0;
 	}
+
+	// Shared shape of every rail link; the on/hover colours differ per state.
+	const linkBase =
+		'flex items-center gap-2 border-l-2 py-1 text-[12.5px] no-underline';
+	const linkOn =
+		'border-l-base-content bg-[color-mix(in_oklch,var(--color-base-content)_6%,transparent)] text-base-content';
+	const linkOff =
+		'border-l-transparent text-meta hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)] hover:text-base-content';
 </script>
 
-<nav class="rail" aria-label="Primary">
+<nav class="rule-r flex h-full min-h-0 w-[208px] flex-none flex-col bg-base-200" aria-label="Primary">
 	<!-- The whole strip is a drag handle: with an overlay title bar there is otherwise
-	     nothing left to move the window by. The link itself opts back out. -->
-	<div class="brand-bar" data-tauri-drag-region>
-		<a class="brand" href="/" title="runlog — all projects">
+	     nothing left to move the window by. The link itself opts back out.
+	     `pl-[14px]` is the non-macOS inset; the <style> block below widens it to make
+	     room for the traffic lights when the root carries data-platform="macos". -->
+	<div class="brand-bar rule-b flex h-[46px] flex-none items-center pl-[14px]" data-tauri-drag-region>
+		<!-- The arbitrary property opts this link out of the drag region so it stays clickable. -->
+		<a
+			class="flex items-center gap-[9px] text-base-content no-underline [-webkit-app-region:no-drag]"
+			href="/"
+			title="runlog — all projects"
+		>
 			<Mark size={22} />
-			<span class="wordmark">runlog</span>
+			<span class="text-[15px] font-semibold tracking-normal">runlog</span>
 		</a>
 	</div>
 
-	<div class="scroll pane">
-		<div class="group">
-			<div class="group-head">
+	<div class="pane flex-1 pt-3 pb-2">
+		<div>
+			<div class="flex items-center justify-between px-[14px] pb-[7px]">
 				<span class="label-xs">Projects</span>
-				<a class="all" href="/" class:on={active === '/'}>all</a>
+				<a
+					class="text-[10px] tracking-[0.16em] no-underline uppercase hover:text-base-content {active ===
+					'/'
+						? 'text-base-content'
+						: 'text-meta'}"
+					href="/">all</a
+				>
 			</div>
 			{#if app.projects.length === 0}
-				<p class="none meta">{app.loaded ? 'None yet' : 'Loading…'}</p>
+				<p class="meta m-0 px-[14px] py-0.5 text-[11px]">{app.loaded ? 'None yet' : 'Loading…'}</p>
 			{:else}
-				<ul>
+				<ul class="m-0 list-none p-0">
 					{#each app.projects as p (p.id)}
 						<li>
 							<a
 								href="/project/{p.id}/live"
-								class="proj"
-								class:on={currentId === p.id && active.startsWith('/project/')}
+								class="{linkBase} pr-[14px] pl-3 {currentId === p.id && active.startsWith('/project/')
+									? linkOn
+									: linkOff}"
 								title={tildePath(p.root)}
 							>
-								<span class="run-dot" class:live={isRunning(p.id)} aria-hidden="true"></span>
-								<span class="pname">{p.name}</span>
+								<span
+									class="size-1.5 flex-none rounded-full {isRunning(p.id)
+										? 'bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-success)_22%,transparent)]'
+										: 'bg-hair-strong'}"
+									aria-hidden="true"
+								></span>
+								<span class="truncate">{p.name}</span>
 								{#if (app.statuses[p.id]?.errors_last_hour ?? 0) > 0}
-									<span class="err tnum" title="Errors in the last hour"
-										>{app.statuses[p.id].errors_last_hour}</span
+									<span
+										class="tnum ml-auto text-[10px] text-lvl-error"
+										title="Errors in the last hour">{app.statuses[p.id].errors_last_hour}</span
 									>
 								{/if}
 							</a>
@@ -76,17 +104,23 @@
 		</div>
 
 		{#if sections.length}
-			<div class="group">
-				<div class="group-head">
+			<div class="rule-t mt-[18px] pt-[14px]">
+				<div class="flex items-center justify-between px-[14px] pb-[7px]">
 					<span class="label-xs">{app.project(currentId!)?.name ?? 'Project'}</span>
 				</div>
-				<ul>
+				<ul class="m-0 list-none p-0">
 					{#each sections as s (s.key)}
 						<li>
-							<a href={s.href} class="nav" class:on={active.startsWith(s.href)}>
+							<a
+								href={s.href}
+								class="{linkBase} px-[14px] {active.startsWith(s.href) ? linkOn : linkOff}"
+							>
 								{s.label}
 								{#if s.key === 'live' && isRunning(currentId!)}
-									<span class="live-tag is-running">live</span>
+									<span
+										class="is-running ml-auto text-[9px] tracking-[0.16em] text-success uppercase"
+										>live</span
+									>
 								{/if}
 							</a>
 						</li>
@@ -96,16 +130,20 @@
 		{/if}
 	</div>
 
-	<div class="foot">
+	<div class="rule-t flex-none px-[14px] pt-2 pb-2.5">
 		<a
-			class="daemon"
+			class="group flex items-center gap-[7px] pt-0.5 pb-1.5 text-[11px] text-meta no-underline"
 			href="/settings"
 			title={app.connected
 				? `runlog daemon ${app.daemon?.version} · pid ${app.daemon?.pid} · ${fmtBytes(app.daemon?.total_db_bytes ?? 0)} stored`
 				: (app.daemonError ?? 'Daemon not reachable')}
 		>
-			<span class="dot" class:up={app.connected} class:down={!app.connected}></span>
-			<span class="dtext">
+			<span
+				class="size-[7px] flex-none rounded-full {app.connected
+					? 'bg-success'
+					: 'is-running bg-flare'}"
+			></span>
+			<span class="group-hover:text-base-content">
 				{#if app.connected}
 					daemon {app.daemon?.version}
 				{:else}
@@ -114,11 +152,16 @@
 			</span>
 		</a>
 
-		<div class="foot-row">
-			<a class="settings" href="/settings" class:on={active.startsWith('/settings')}>Settings</a>
+		<div class="flex items-center justify-between gap-2">
+			<a
+				class="text-[12px] no-underline hover:text-base-content {active.startsWith('/settings')
+					? 'text-base-content'
+					: 'text-meta'}"
+				href="/settings">Settings</a
+			>
 			<button
 				type="button"
-				class="theme"
+				class="cursor-pointer rounded-[2px] border border-hair bg-transparent px-1.5 py-0.5 text-[10px] tracking-[0.16em] text-meta uppercase hover:border-hair-strong hover:text-base-content"
 				onclick={() => theme.toggle()}
 				title={theme.isDark ? 'Switch to the bone theme' : 'Switch to the ink theme'}
 				aria-label={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -128,7 +171,10 @@
 		</div>
 
 		{#if app.mock}
-			<p class="mockwarn" title="No Tauri backend detected — every screen is showing generated data">
+			<p
+				class="mt-2 mb-0 cursor-help text-[9px] tracking-[0.16em] text-warning uppercase"
+				title="No Tauri backend detected — every screen is showing generated data"
+			>
 				sample data
 			</p>
 		{/if}
@@ -136,196 +182,9 @@
 </nav>
 
 <style>
-	.rail {
-		width: 208px;
-		flex: none;
-		display: flex;
-		flex-direction: column;
-		background: var(--color-base-200);
-		border-right: 1px solid var(--rl-hair);
-		height: 100%;
-		min-height: 0;
-	}
-	.brand-bar {
-		display: flex;
-		align-items: center;
-		height: 46px;
-		border-bottom: 1px solid var(--rl-hair);
-		flex: none;
-		/* Room for the macOS window buttons, which are drawn over this area. */
-		padding-left: 14px;
-	}
+	/* Room for the macOS window buttons, which are drawn over the brand bar. A
+	   `:root[...]` ancestor selector is not expressible as a utility. */
 	:global(:root[data-platform='macos']) .brand-bar {
 		padding-left: 78px;
-	}
-	.brand {
-		display: flex;
-		align-items: center;
-		gap: 9px;
-		color: var(--color-base-content);
-		text-decoration: none;
-		/* Opt out of the drag region so the link stays clickable. */
-		-webkit-app-region: no-drag;
-	}
-	.wordmark {
-		font-size: 15px;
-		font-weight: 600;
-		letter-spacing: normal;
-	}
-	.scroll {
-		flex: 1;
-		padding: 12px 0 8px;
-	}
-	.group + .group {
-		margin-top: 18px;
-		padding-top: 14px;
-		border-top: 1px solid var(--rl-hair);
-	}
-	.group-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0 14px 7px;
-	}
-	.all {
-		font-size: 10px;
-		color: var(--rl-meta);
-		text-decoration: none;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-	}
-	.all.on,
-	.all:hover {
-		color: var(--color-base-content);
-	}
-	ul {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-	}
-	.proj,
-	.nav {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 4px 14px 4px 12px;
-		font-size: 12.5px;
-		color: var(--rl-meta);
-		text-decoration: none;
-		border-left: 2px solid transparent;
-	}
-	.proj:hover,
-	.nav:hover {
-		color: var(--color-base-content);
-		background: color-mix(in oklch, var(--color-base-content) 4%, transparent);
-	}
-	.proj.on,
-	.nav.on {
-		color: var(--color-base-content);
-		border-left-color: var(--color-base-content);
-		background: color-mix(in oklch, var(--color-base-content) 6%, transparent);
-	}
-	.pname {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.run-dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--rl-hair-strong);
-		flex: none;
-	}
-	.run-dot.live {
-		background: var(--color-success);
-		box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-success) 22%, transparent);
-	}
-	.err {
-		margin-left: auto;
-		font-size: 10px;
-		color: var(--rl-lvl-error);
-	}
-	.nav {
-		padding-left: 14px;
-	}
-	.live-tag {
-		margin-left: auto;
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--color-success);
-	}
-	.none {
-		padding: 2px 14px;
-		font-size: 11px;
-	}
-	.foot {
-		flex: none;
-		border-top: 1px solid var(--rl-hair);
-		padding: 8px 14px 10px;
-	}
-	.daemon {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		text-decoration: none;
-		color: var(--rl-meta);
-		font-size: 11px;
-		padding: 2px 0 6px;
-	}
-	.daemon:hover .dtext {
-		color: var(--color-base-content);
-	}
-	.dot {
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		flex: none;
-	}
-	.dot.up {
-		background: var(--color-success);
-	}
-	.dot.down {
-		background: var(--color-flare);
-		animation: rl-breathe 2.4s ease-in-out infinite;
-	}
-	.foot-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-	}
-	.settings {
-		font-size: 12px;
-		color: var(--rl-meta);
-		text-decoration: none;
-	}
-	.settings.on,
-	.settings:hover {
-		color: var(--color-base-content);
-	}
-	.theme {
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--rl-meta);
-		background: transparent;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		padding: 2px 6px;
-		cursor: pointer;
-	}
-	.theme:hover {
-		color: var(--color-base-content);
-		border-color: var(--rl-hair-strong);
-	}
-	.mockwarn {
-		margin: 8px 0 0;
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--color-warning);
-		cursor: help;
 	}
 </style>

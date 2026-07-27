@@ -55,61 +55,77 @@
 </script>
 
 <div
-	class="row"
+	class="group grid grid-cols-[2px_16px_62px_1fr] items-start gap-x-1.5 gap-y-0 border-b border-transparent py-px pr-2 hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)]"
 	class:entry-enter={fresh}
 	data-level={entry.level}
 	class:is-new={entry.is_new_signature}
 >
-	<span class="stripe" aria-hidden="true"></span>
+	<span
+		class="min-h-[17px] self-stretch bg-[var(--lvl)] opacity-85 group-data-[level=debug]:opacity-[0.28] group-data-[level=info]:opacity-[0.28] group-data-[level=trace]:opacity-[0.28] group-data-[level=unknown]:opacity-[0.28]"
+		aria-hidden="true"
+	></span>
 
 	<button
 		type="button"
-		class="disclose"
+		class="flex h-[18px] cursor-pointer items-center justify-center bg-transparent p-0 text-meta disabled:cursor-default"
 		disabled={!multiline}
 		aria-expanded={multiline ? expanded : undefined}
 		aria-label={multiline ? (expanded ? 'Collapse entry' : 'Expand entry') : 'Single line entry'}
 		onclick={() => onToggle?.(entry)}
 	>
-		{#if multiline}<span class="caret" class:open={expanded}>›</span>{/if}
+		{#if multiline}<span
+				class="inline-block text-[13px] leading-none transition-transform duration-[120ms]"
+				class:rotate-90={expanded}>›</span
+			>{/if}
 	</button>
 
-	<time class="ts tnum meta" datetime={String(entry.captured_at)}>{fmtClock(entry.captured_at)}</time>
+	<time class="tnum meta text-right text-[11px] leading-[18px]" datetime={String(entry.captured_at)}
+		>{fmtClock(entry.captured_at)}</time
+	>
 
-	<span class="body">
-		<span class="first">
-			{#each segments(first, highlight) as s, i (i)}{#if s.hit}<mark>{s.t}</mark>{:else}{s.t}{/if}{/each}
+	<span class="min-w-0 text-[12px] leading-[18px]">
+		<span class="whitespace-pre-wrap text-[var(--lvl-text)] [overflow-wrap:anywhere]">
+			{#each segments(first, highlight) as s, i (i)}{#if s.hit}<mark
+						class="rounded-[1px] bg-[color-mix(in_oklch,var(--color-warning)_40%,transparent)] text-inherit"
+						>{s.t}</mark
+					>{:else}{s.t}{/if}{/each}
 		</span>
 
 		{#if entry.is_new_signature}
-			<span class="new-tag" title="This signature has never appeared in this project before"
-				>new</span
+			<span
+				class="ml-1.5 inline-block rounded-[2px] bg-flare px-1 align-[1px] text-[10px] font-semibold tracking-[0.08em] text-flare-content uppercase"
+				title="This signature has never appeared in this project before">new</span
 			>
 		{/if}
 
 		{#if entry.boundaries === 'inferred'}
 			<span
-				class="inferred"
+				class="ml-1.5 cursor-help border-b border-dotted border-current text-[12px] text-meta"
 				title="Entry boundaries inferred. The daemon could not find an explicit delimiter here, so this grouping is a best guess."
 				aria-label="Boundaries inferred">≈</span
 			>
 		{/if}
 
 		{#if multiline && !expanded}
-			<span class="more meta">+{rest.length}</span>
+			<span class="meta ml-1 rounded-[2px] border border-hair px-1 text-[10px] whitespace-nowrap"
+				>+{rest.length}</span
+			>
 		{/if}
 
 		{#if multiline && expanded}
-			<pre class="rest mono-block">{#each rest as l, i (i)}{#each segments(l, highlight) as s, j (j)}{#if s.hit}<mark
+			<pre
+				class="mono-block mt-[3px] mb-1.5 block max-w-full overflow-x-auto border-l border-hair-strong bg-code-bg px-2 py-1.5 text-meta">{#each rest as l, i (i)}{#each segments(l, highlight) as s, j (j)}{#if s.hit}<mark
+								class="rounded-[1px] bg-[color-mix(in_oklch,var(--color-warning)_40%,transparent)] text-inherit"
 								>{s.t}</mark
 							>{:else}{s.t}{/if}{/each}{'\n'}{/each}</pre>
 			{#if entry.template}
-				<div class="template">
+				<div class="mb-1.5 flex items-baseline gap-2">
 					<span class="label-xs">signature</span>
-					<code>{entry.template}</code>
+					<code class="text-[11px] text-base-content [overflow-wrap:anywhere]">{entry.template}</code>
 				</div>
 			{/if}
 			{#if entry.error_reason}
-				<div class="reason meta">
+				<div class="meta mb-1.5 flex items-baseline gap-2 text-[11px]">
 					<span class="label-xs">flagged</span>
 					{entry.error_reason} · lines {entry.start_line}–{entry.end_line}
 				</div>
@@ -119,148 +135,26 @@
 </div>
 
 <style>
-	.row {
-		display: grid;
-		grid-template-columns: 2px 16px 62px 1fr;
-		align-items: start;
-		gap: 0 6px;
-		padding: 1px 8px 1px 0;
-		border-bottom: 1px solid transparent;
-	}
-	.row:hover {
-		background: color-mix(in oklch, var(--color-base-content) 4%, transparent);
-	}
-	.stripe {
-		align-self: stretch;
-		background: var(--lvl);
-		opacity: 0.85;
-		min-height: 17px;
-	}
-	[data-level='info'] .stripe,
-	[data-level='debug'] .stripe,
-	[data-level='trace'] .stripe,
-	[data-level='unknown'] .stripe {
-		opacity: 0.28;
-	}
-	.disclose {
-		background: none;
-		border: 0;
-		padding: 0;
-		height: 18px;
-		color: var(--rl-meta);
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.disclose:disabled {
-		cursor: default;
-	}
-	.caret {
-		display: inline-block;
-		transition: transform 120ms;
-		font-size: 13px;
-		line-height: 1;
-	}
-	.caret.open {
-		transform: rotate(90deg);
-	}
-	.ts {
-		font-size: 11px;
-		line-height: 18px;
-		text-align: right;
-	}
-	.body {
-		min-width: 0;
-		font-size: 12px;
-		line-height: 18px;
-	}
-	.first {
-		color: var(--lvl-text);
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-	.rest {
-		display: block;
-		margin: 3px 0 6px;
-		padding: 6px 8px;
-		background: var(--rl-code-bg);
-		border-left: 1px solid var(--rl-hair-strong);
-		color: var(--rl-meta);
-		overflow-x: auto;
-		max-width: 100%;
-	}
-	.template {
-		margin: 0 0 6px;
-		display: flex;
-		gap: 8px;
-		align-items: baseline;
-	}
-	.template code {
-		font-size: 11px;
-		color: var(--color-base-content);
-		overflow-wrap: anywhere;
-	}
-	.reason {
-		margin: 0 0 6px;
-		font-size: 11px;
-		display: flex;
-		gap: 8px;
-		align-items: baseline;
-	}
-	.more {
-		font-size: 10px;
-		padding: 0 4px;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		margin-left: 4px;
-		white-space: nowrap;
-	}
-	.new-tag {
-		display: inline-block;
-		margin-left: 6px;
-		padding: 0 4px;
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		background: var(--color-flare);
-		color: #180703;
-		border-radius: 2px;
-		vertical-align: 1px;
-	}
-	.inferred {
-		margin-left: 6px;
-		color: var(--rl-meta);
-		font-size: 12px;
-		cursor: help;
-		border-bottom: 1px dotted currentColor;
-	}
-	mark {
-		background: color-mix(in oklch, var(--color-warning) 40%, transparent);
-		color: inherit;
-		border-radius: 1px;
-	}
-
+	/* Attribute-driven custom property mapping: not expressible as a utility. */
 	[data-level='error'] {
-		--lvl: var(--rl-lvl-error);
-		--lvl-text: var(--rl-lvl-error);
+		--lvl: var(--color-lvl-error);
+		--lvl-text: var(--color-lvl-error);
 	}
 	[data-level='warn'] {
-		--lvl: var(--rl-lvl-warn);
-		--lvl-text: var(--rl-lvl-warn);
+		--lvl: var(--color-lvl-warn);
+		--lvl-text: var(--color-lvl-warn);
 	}
 	[data-level='info'] {
-		--lvl: var(--rl-lvl-info);
+		--lvl: var(--color-lvl-info);
 		--lvl-text: var(--color-base-content);
 	}
 	[data-level='debug'] {
-		--lvl: var(--rl-lvl-debug);
-		--lvl-text: var(--rl-meta);
+		--lvl: var(--color-lvl-debug);
+		--lvl-text: var(--color-meta);
 	}
 	[data-level='trace'],
 	[data-level='unknown'] {
-		--lvl: var(--rl-lvl-trace);
-		--lvl-text: var(--rl-meta);
+		--lvl: var(--color-lvl-trace);
+		--lvl-text: var(--color-meta);
 	}
 </style>

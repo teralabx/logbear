@@ -34,7 +34,7 @@
 </script>
 
 <span
-	class="badge tnum"
+	class="tnum inline-flex h-[18px] items-center rounded-[2px] border border-transparent px-1.5 text-[11px] leading-none whitespace-nowrap data-[state=fail]:bg-flare data-[state=fail]:font-semibold data-[state=fail]:text-flare-content data-[state=ok]:border-[color-mix(in_oklch,var(--color-success)_40%,transparent)] data-[state=ok]:text-success data-[state=running]:border-hair-strong data-[state=running]:text-base-content data-[state=signal]:bg-warning data-[state=signal]:font-semibold data-[state=signal]:text-warning-content"
 	data-state={state}
 	class:is-running={state === 'running'}
 	title={state === 'running'
@@ -47,35 +47,3 @@
 >
 	{text}
 </span>
-
-<style>
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		height: 18px;
-		padding: 0 6px;
-		border-radius: 2px;
-		font-size: 11px;
-		line-height: 1;
-		border: 1px solid transparent;
-		white-space: nowrap;
-	}
-	[data-state='ok'] {
-		color: var(--color-success);
-		border-color: color-mix(in oklch, var(--color-success) 40%, transparent);
-	}
-	[data-state='fail'] {
-		background: var(--color-flare);
-		color: #180703;
-		font-weight: 600;
-	}
-	[data-state='signal'] {
-		background: var(--color-warning);
-		color: var(--color-warning-content);
-		font-weight: 600;
-	}
-	[data-state='running'] {
-		color: var(--color-base-content);
-		border-color: var(--rl-hair-strong);
-	}
-</style>

@@ -150,106 +150,134 @@
 	sub={project ? `${project.name} · ${run ? fmtCommand(run.command) : ''}` : ''}
 >
 	{#snippet actions()}
-		<a class="back" href="/project/{projectId}/runs">← all runs</a>
-		<a class="back" href="/project/{projectId}/diff?b={runId}">diff against last good →</a>
-		<button type="button" class="pill" onclick={() => (showMeta = !showMeta)}
-			>{showMeta ? 'hide' : 'show'} context</button
+		<a class="text-[11px] text-meta hover:text-base-content" href="/project/{projectId}/runs"
+			>← all runs</a
+		>
+		<a
+			class="text-[11px] text-meta hover:text-base-content"
+			href="/project/{projectId}/diff?b={runId}">diff against last good →</a
+		>
+		<button
+			type="button"
+			class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content"
+			onclick={() => (showMeta = !showMeta)}>{showMeta ? 'hide' : 'show'} context</button
 		>
 	{/snippet}
 </PageHeader>
 
 {#if loadError}
-	<div class="pad">
+	<div class="p-4">
 		<ErrorNote what="Could not load run #{runId}." detail={loadError} />
 	</div>
 {:else if loading}
-	<p class="pad meta">Loading stored output…</p>
+	<p class="p-4 text-meta">Loading stored output…</p>
 {:else if run}
 	{#if showMeta}
-		<section class="meta-grid" aria-label="Run context">
-			<div class="cell">
+		<section
+			class="rule-b grid flex-none grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-0 bg-base-200"
+			aria-label="Run context"
+		>
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">outcome</span>
-				<span class="v"><ExitBadge {run} /></span>
+				<span class="mt-1 block truncate text-[12px]"><ExitBadge {run} /></span>
 			</div>
-			<div class="cell">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">started</span>
-				<span class="v tnum" title={fmtFull(run.started_at)}>{fmtStamp(run.started_at)}</span>
+				<span class="tnum mt-1 block truncate text-[12px]" title={fmtFull(run.started_at)}
+					>{fmtStamp(run.started_at)}</span
+				>
 			</div>
-			<div class="cell">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">duration</span>
-				<span class="v tnum">{fmtDuration(runDuration(run))}</span>
+				<span class="tnum mt-1 block truncate text-[12px]">{fmtDuration(runDuration(run))}</span>
 			</div>
-			<div class="cell">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">commit</span>
-				<span class="v tnum"
+				<span class="tnum mt-1 block truncate text-[12px]"
 					>{shortSha(run.git_sha)}
-					<span class="meta">{run.git_branch ?? '—'}</span>
-					{#if run.git_dirty_hash}<span class="dirty">dirty {shortHash(run.git_dirty_hash)}</span
+					<span class="text-meta">{run.git_branch ?? '—'}</span>
+					{#if run.git_dirty_hash}<span
+							class="ml-[6px] text-[10px] tracking-[0.16em] text-warning uppercase"
+							>dirty {shortHash(run.git_dirty_hash)}</span
 						>{/if}</span
 				>
 			</div>
-			<div class="cell">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">entries</span>
-				<span class="v tnum"
+				<span class="tnum mt-1 block truncate text-[12px]"
 					>{run.counters.n_entries}
-					<span class="meta">/ {run.counters.n_error} err / {run.counters.n_warn} warn</span></span
+					<span class="text-meta"
+						>/ {run.counters.n_error} err / {run.counters.n_warn} warn</span
+					></span
 				>
 			</div>
-			<div class="cell">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
 				<span class="label-xs">new signatures</span>
-				<span class="v tnum" class:flare={newSignatures > 0}>{newSignatures}</span>
-			</div>
-			<div class="cell">
-				<span class="label-xs">delimiter mode</span>
-				<span class="v" title="How the daemon split this stream into entries"
-					>{run.delimiter_mode}</span
+				<span
+					class="tnum mt-1 block truncate text-[12px] {newSignatures > 0
+						? 'font-semibold text-flare'
+						: ''}">{newSignatures}</span
 				>
 			</div>
-			<div class="cell">
-				<span class="label-xs">terminal width</span>
-				<span class="v tnum">{run.term_cols} cols</span>
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
+				<span class="label-xs">delimiter mode</span>
+				<span
+					class="mt-1 block truncate text-[12px]"
+					title="How the daemon split this stream into entries">{run.delimiter_mode}</span
+				>
 			</div>
-			<div class="cell wide">
+			<div class="rule-r rule-b min-w-0 px-[14px] py-2">
+				<span class="label-xs">terminal width</span>
+				<span class="tnum mt-1 block truncate text-[12px]">{run.term_cols} cols</span>
+			</div>
+			<div class="rule-r rule-b col-span-2 min-w-0 px-[14px] py-2">
 				<span class="label-xs">working directory</span>
 				<button
 					type="button"
-					class="v pathbtn"
+					class="mt-1 block max-w-full cursor-pointer truncate border-b border-dotted border-hair-strong text-left text-[12px] text-base-content"
 					onclick={() => void revealPath(run!.cwd)}
 					title="Reveal {run.cwd} in Finder">{tildePath(run.cwd)}</button
 				>
 			</div>
-			<div class="cell wide">
+			<div class="rule-r rule-b col-span-2 min-w-0 px-[14px] py-2">
 				<span class="label-xs">lockfiles</span>
-				<span class="v tnum small">
+				<span class="tnum mt-1 block overflow-hidden text-[11px] text-ellipsis whitespace-normal">
 					{#each Object.entries(run.lockfile_hashes) as [f, h] (f)}
-						<span class="kv">{f} <span class="meta">{shortHash(h)}</span></span>
+						<span class="mr-3 inline-block">{f} <span class="text-meta">{shortHash(h)}</span></span>
 					{:else}
-						<span class="meta">none recorded</span>
+						<span class="text-meta">none recorded</span>
 					{/each}
 				</span>
 			</div>
-			<div class="cell full">
-				<span class="label-xs">environment variable names ({run.env_keys.length}) · values are never stored</span>
-				<span class="v small envkeys">
-					{#each run.env_keys as k (k)}<code>{k}</code>{/each}
+			<div class="col-span-full min-w-0 px-[14px] py-2">
+				<span class="label-xs"
+					>environment variable names ({run.env_keys.length}) · values are never stored</span
+				>
+				<span class="mt-[5px] flex flex-wrap gap-x-[6px] gap-y-1 overflow-hidden text-[11px]">
+					{#each run.env_keys as k (k)}<code
+							class="rounded-[2px] border border-hair px-[5px] py-px text-[10.5px] text-meta"
+							>{k}</code
+						>{/each}
 				</span>
 			</div>
 		</section>
 	{/if}
 
 	{#if run.chunks_evicted}
-		<p class="evicted">
+		<p
+			class="rule-b flex-none bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] px-4 py-[7px] text-[11.5px]"
+		>
 			Part of this run's raw output was evicted by the retention cap. The structured entries below
 			are complete; the terminal replay is not. Raise the cap in Settings to keep more.
 		</p>
 	{/if}
 
-	<section class="termwrap" aria-label="Terminal replay">
+	<section class="h-[40%] min-h-[160px] flex-none overflow-hidden bg-term-bg" aria-label="Terminal replay">
 		<TerminalPane bind:this={termRef} cols={run.term_cols} />
 	</section>
 
-	<div class="controls">
-		<div class="chips">
+	<div class="rule-t rule-b flex flex-none flex-wrap items-center justify-between gap-3 px-3 py-[7px]">
+		<div class="flex flex-wrap gap-[5px]">
 			{#each LEVELS as l (l)}
 				{@const n = countFor(l)}
 				{#if n > 0}
@@ -262,16 +290,17 @@
 				{/if}
 			{/each}
 		</div>
-		<div class="right">
+		<div class="flex items-center gap-2">
 			<input
 				type="search"
+				class="w-[200px] rounded-[2px] border border-hair bg-transparent px-2 py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
 				placeholder="Filter entries…"
 				bind:value={search}
 				aria-label="Filter entries by text"
 			/>
 			<button
 				type="button"
-				class="pill"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 				disabled={busy !== null}
 				onclick={doReparse}
 				title="Re-run the fingerprinter over this run's stored bytes. Nothing is re-executed."
@@ -279,7 +308,7 @@
 			>
 			<button
 				type="button"
-				class="pill danger"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-flare enabled:hover:text-flare disabled:cursor-default disabled:opacity-50"
 				disabled={busy !== null}
 				onclick={doDelete}
 				title="Permanently delete this run and its stored output"
@@ -288,7 +317,7 @@
 		</div>
 	</div>
 
-	<div class="entries pane">
+	<div class="pane flex-1 pt-1 pb-6">
 		{#each filtered as e (e.id)}
 			<EntryRow
 				entry={e}
@@ -297,182 +326,7 @@
 				onToggle={toggleEntry}
 			/>
 		{:else}
-			<p class="none meta">No entries match this filter.</p>
+			<p class="px-4 py-[14px] text-[12px] text-meta">No entries match this filter.</p>
 		{/each}
 	</div>
 {/if}
-
-<style>
-	.pad {
-		padding: 16px;
-	}
-	.back {
-		font-size: 11px;
-		color: var(--rl-meta);
-		text-decoration: none;
-	}
-	.back:hover {
-		color: var(--color-base-content);
-	}
-	.pill {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--rl-meta);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		padding: 4px 8px;
-		cursor: pointer;
-	}
-	.pill:hover:not(:disabled) {
-		color: var(--color-base-content);
-		border-color: var(--rl-hair-strong);
-	}
-	.pill:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-	.pill.danger:hover:not(:disabled) {
-		color: var(--color-flare);
-		border-color: var(--color-flare);
-	}
-
-	.meta-grid {
-		flex: none;
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-		gap: 0;
-		border-bottom: 1px solid var(--rl-hair);
-		background: var(--color-base-200);
-	}
-	.cell {
-		padding: 8px 14px;
-		border-right: 1px solid var(--rl-hair);
-		border-bottom: 1px solid var(--rl-hair);
-		min-width: 0;
-	}
-	.cell.wide {
-		grid-column: span 2;
-	}
-	.cell.full {
-		grid-column: 1 / -1;
-		border-right: 0;
-		border-bottom: 0;
-	}
-	.v {
-		display: block;
-		margin-top: 4px;
-		font-size: 12px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.v.small {
-		font-size: 11px;
-		white-space: normal;
-	}
-	.v.flare {
-		color: var(--color-flare);
-		font-weight: 600;
-	}
-	.dirty {
-		color: var(--color-warning);
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.16em;
-		margin-left: 6px;
-	}
-	.kv {
-		display: inline-block;
-		margin-right: 12px;
-	}
-	.pathbtn {
-		background: none;
-		border: 0;
-		padding: 0;
-		font: inherit;
-		font-size: 12px;
-		color: var(--color-base-content);
-		cursor: pointer;
-		text-align: left;
-		border-bottom: 1px dotted var(--rl-hair-strong);
-		max-width: 100%;
-	}
-	.envkeys {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px 6px;
-		margin-top: 5px;
-	}
-	.envkeys code {
-		font-size: 10.5px;
-		color: var(--rl-meta);
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		padding: 1px 5px;
-	}
-
-	.evicted {
-		flex: none;
-		margin: 0;
-		padding: 7px 16px;
-		font-size: 11.5px;
-		background: color-mix(in oklch, var(--color-warning) 10%, transparent);
-		border-bottom: 1px solid var(--rl-hair);
-	}
-
-	.termwrap {
-		flex: none;
-		height: 40%;
-		min-height: 160px;
-		overflow: hidden;
-		background: var(--rl-term-bg);
-	}
-
-	.controls {
-		flex: none;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 7px 12px;
-		border-top: 1px solid var(--rl-hair);
-		border-bottom: 1px solid var(--rl-hair);
-		flex-wrap: wrap;
-	}
-	.chips {
-		display: flex;
-		gap: 5px;
-		flex-wrap: wrap;
-	}
-	.right {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-	input[type='search'] {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-content);
-		font: inherit;
-		font-size: 11.5px;
-		padding: 3px 8px;
-		width: 200px;
-		outline: none;
-	}
-	input[type='search']:focus {
-		border-color: var(--rl-hair-strong);
-	}
-	.entries {
-		flex: 1;
-		min-height: 0;
-		padding: 4px 0 24px;
-	}
-	.none {
-		padding: 14px 16px;
-		font-size: 12px;
-	}
-</style>

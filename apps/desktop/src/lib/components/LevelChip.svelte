@@ -31,89 +31,48 @@
 		type="button"
 		{onclick}
 		{title}
-		class="chip"
-		class:on={active}
+		class="inline-flex h-5 cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[11px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms] hover:border-hair-strong hover:text-base-content {active
+			? 'border-[color-mix(in_oklch,var(--lvl)_55%,transparent)] bg-[color-mix(in_oklch,var(--lvl)_12%,transparent)] text-base-content'
+			: 'border-hair bg-transparent text-meta'}"
 		data-level={level}
 		aria-pressed={active ?? undefined}
 	>
-		<span class="dot"></span>
+		<span class="h-1.5 w-1.5 flex-none rounded-[1px] bg-[var(--lvl)]"></span>
 		<span>{shortLabel[level]}</span>
-		{#if count !== null}<span class="tnum n">{count}</span>{/if}
+		{#if count !== null}<span
+				class="tnum font-medium {active ? 'text-base-content' : 'text-meta'}">{count}</span
+			>{/if}
 	</button>
 {:else}
-	<span class="chip static" data-level={level} {title}>
-		<span class="dot"></span>
+	<span
+		class="inline-flex h-5 items-center gap-[5px] rounded-[2px] border border-[color-mix(in_oklch,var(--lvl)_38%,transparent)] bg-transparent px-[7px] text-[11px] leading-none whitespace-nowrap text-[var(--lvl)]"
+		data-level={level}
+		{title}
+	>
+		<span class="h-1.5 w-1.5 flex-none rounded-[1px] bg-[var(--lvl)]"></span>
 		<span>{shortLabel[level]}</span>
-		{#if count !== null}<span class="tnum n">{count}</span>{/if}
+		{#if count !== null}<span class="tnum font-medium text-base-content">{count}</span>{/if}
 	</span>
 {/if}
 
 <style>
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		height: 20px;
-		padding: 0 7px;
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		font-size: 11px;
-		line-height: 1;
-		color: var(--rl-meta);
-		background: transparent;
-		white-space: nowrap;
-		transition:
-			border-color 120ms,
-			color 120ms,
-			background-color 120ms;
-	}
-	button.chip {
-		cursor: pointer;
-	}
-	button.chip:hover {
-		border-color: var(--rl-hair-strong);
-		color: var(--color-base-content);
-	}
-	.chip.on {
-		border-color: color-mix(in oklch, var(--lvl) 55%, transparent);
-		background: color-mix(in oklch, var(--lvl) 12%, transparent);
-		color: var(--color-base-content);
-	}
-	.chip.static {
-		color: var(--lvl);
-		border-color: color-mix(in oklch, var(--lvl) 38%, transparent);
-	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 1px;
-		background: var(--lvl);
-		flex: none;
-	}
-	.n {
-		color: var(--color-base-content);
-		font-weight: 500;
-	}
-	.chip:not(.on):not(.static) .n {
-		color: var(--rl-meta);
-	}
-
+	/* Attribute-driven custom property mapping: not expressible as a utility. */
 	[data-level='error'] {
-		--lvl: var(--rl-lvl-error);
+		--lvl: var(--color-lvl-error);
 	}
 	[data-level='warn'] {
-		--lvl: var(--rl-lvl-warn);
+		--lvl: var(--color-lvl-warn);
 	}
 	[data-level='info'] {
-		--lvl: var(--rl-lvl-info);
+		--lvl: var(--color-lvl-info);
 	}
 	[data-level='debug'] {
-		--lvl: var(--rl-lvl-debug);
+		--lvl: var(--color-lvl-debug);
 	}
 	[data-level='trace'] {
-		--lvl: var(--rl-lvl-trace);
+		--lvl: var(--color-lvl-trace);
 	}
 	[data-level='unknown'] {
-		--lvl: var(--rl-lvl-unknown);
+		--lvl: var(--color-lvl-unknown);
 	}
 </style>

@@ -132,7 +132,7 @@
 >
 	{#snippet actions()}
 		<input
-			class="filter"
+			class="w-[230px] rounded-[2px] border border-hair bg-transparent px-[8px] py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
 			type="search"
 			placeholder="Filter by command, branch, SHA…"
 			bind:value={filter}
@@ -140,8 +140,12 @@
 		/>
 		<button
 			type="button"
-			class="pill"
-			class:on={onlyFailed}
+			class={[
+				'cursor-pointer rounded-[2px] border px-[8px] py-[4px] text-[10px] tracking-[0.16em] uppercase',
+				onlyFailed
+					? 'border-base-content bg-base-content text-base-100'
+					: 'border-hair bg-transparent text-meta'
+			]}
 			aria-pressed={onlyFailed}
 			onclick={() => (onlyFailed = !onlyFailed)}>failed only</button
 		>
@@ -149,11 +153,11 @@
 </PageHeader>
 
 {#if loadError}
-	<div class="pad"><ErrorNote what="Could not read the run history." detail={loadError} /></div>
+	<div class="p-4"><ErrorNote what="Could not read the run history." detail={loadError} /></div>
 {:else if loading}
-	<p class="pad meta">Reading run history…</p>
+	<p class="meta p-4">Reading run history…</p>
 {:else if runs.length === 0}
-	<div class="pad">
+	<div class="p-4">
 		<EmptyState
 			title="No runs stored for this project"
 			body="Every command you run through runlog lands here with its output, its exit code, and the git state that produced it."
@@ -162,46 +166,85 @@
 	</div>
 {:else}
 	{#if withNew > 0}
-		<p class="banner">
-			<span class="dot"></span>
+		<p
+			class="rule-b m-0 flex flex-none items-center gap-[8px] bg-[color-mix(in_oklch,var(--color-flare)_8%,transparent)] px-4 py-[7px] text-[12px]"
+		>
+			<span class="h-[6px] w-[6px] flex-none rounded-[1px] bg-flare"></span>
 			{withNew}
 			{withNew === 1 ? 'run' : 'runs'} below produced an error signature this project had never seen before.
 		</p>
 	{/if}
 
-	<div class="pane tablewrap">
-		<table>
+	<div class="pane min-h-0 flex-1">
+		<table class="w-full min-w-[940px] border-collapse text-[12px]">
 			<thead>
 				<tr>
-					<th class="c-sel" scope="col"><span class="sr">Compare</span></th>
-					<th class="c-when" scope="col">Started</th>
-					<th class="c-cmd" scope="col">Command</th>
-					<th class="c-git" scope="col">Commit</th>
-					<th class="c-dur" scope="col">Duration</th>
-					<th class="c-exit" scope="col">Exit</th>
-					<th class="c-err" scope="col">Errors</th>
-					<th class="c-warn" scope="col">Warn</th>
+					<th
+						class="sticky top-0 z-[2] w-[30px] border-b border-hair-strong bg-base-100 py-[7px] pr-0 pl-[8px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col"><span class="sr-only">Compare</span></th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[108px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Started</th
+					>
+					<th
+						class="sticky top-0 z-[2] max-w-[320px] overflow-hidden border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-ellipsis text-meta uppercase whitespace-nowrap"
+						scope="col">Command</th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[230px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Commit</th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[82px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Duration</th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[62px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Exit</th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[148px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Errors</th
+					>
+					<th
+						class="sticky top-0 z-[2] w-[56px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						scope="col">Warn</th
+					>
 				</tr>
 			</thead>
 			<tbody>
 				{#each shown as r (r.id)}
 					{@const err = errorsByRun[r.id] ?? { total: r.counters.n_error, neu: 0 }}
 					<tr
-						class:selected={selected.includes(r.id)}
-						class:failed={r.exit_code !== null && r.exit_code !== 0}
-						class:live={r.ended_at === null}
-						class:has-new={err.neu > 0}
+						class={[
+							'cursor-pointer border-b border-b-hair border-l-2',
+							r.ended_at === null
+								? 'border-l-success'
+								: err.neu > 0
+									? 'border-l-flare'
+									: r.exit_code !== null && r.exit_code !== 0
+										? 'border-l-[color-mix(in_oklch,var(--color-flare)_55%,transparent)]'
+										: 'border-l-transparent',
+							selected.includes(r.id)
+								? 'bg-[color-mix(in_oklch,var(--color-base-content)_9%,transparent)]'
+								: 'hover:bg-[color-mix(in_oklch,var(--color-base-content)_5%,transparent)]'
+						]}
 						onclick={() => open(r)}
 						onkeydown={(e) => {
 							if (e.key === 'Enter') open(r);
 						}}
 						tabindex="0"
 					>
-						<td class="c-sel">
+						<td class="w-[30px] py-[5px] pr-0 pl-[8px] align-middle whitespace-nowrap">
 							<button
 								type="button"
-								class="sel"
-								class:on={selected.includes(r.id)}
+								class={[
+									'grid h-[17px] w-[17px] cursor-pointer place-items-center rounded-[2px] border text-[10px] leading-none font-semibold text-base-100',
+									selected.includes(r.id)
+										? 'border-base-content bg-base-content'
+										: 'border-hair-strong bg-transparent'
+								]}
 								aria-pressed={selected.includes(r.id)}
 								aria-label="Select run {r.id} for comparison"
 								title="Select two runs to diff them"
@@ -213,301 +256,81 @@
 								{#if selected.includes(r.id)}{selected.indexOf(r.id) === 0 ? 'A' : 'B'}{/if}
 							</button>
 						</td>
-						<td class="c-when tnum meta" title={fmtStamp(r.started_at)}>{fmtStamp(r.started_at)}</td
+						<td
+							class="meta tnum w-[108px] px-[10px] py-[5px] align-middle whitespace-nowrap"
+							title={fmtStamp(r.started_at)}>{fmtStamp(r.started_at)}</td
 						>
-						<td class="c-cmd"><code>{fmtCommand(r.command)}</code></td>
-						<td class="c-git tnum">
-							<span class="sha">{shortSha(r.git_sha)}</span>
-							<span class="branch meta">{r.git_branch ?? '—'}</span>
-							{#if r.git_dirty_hash}<span class="dirty" title="Working tree was dirty at run time"
-									>dirty</span
+						<td
+							class="max-w-[320px] overflow-hidden px-[10px] py-[5px] align-middle text-ellipsis whitespace-nowrap"
+							><code class="text-[12px]">{fmtCommand(r.command)}</code></td
+						>
+						<td class="tnum w-[230px] px-[10px] py-[5px] align-middle whitespace-nowrap">
+							<span class="text-base-content">{shortSha(r.git_sha)}</span>
+							<span class="meta ml-[7px] text-[11px]">{r.git_branch ?? '—'}</span>
+							{#if r.git_dirty_hash}<span
+									class="ml-[6px] text-[9px] tracking-[0.16em] text-warning uppercase"
+									title="Working tree was dirty at run time">dirty</span
 								>{/if}
 						</td>
-						<td class="c-dur tnum meta">
+						<td
+							class="meta tnum w-[82px] px-[10px] py-[5px] text-right align-middle whitespace-nowrap"
+						>
 							{r.ended_at === null
 								? fmtDuration(runElapsed(r, now))
 								: fmtDuration(runDuration(r))}
 						</td>
-						<td class="c-exit"><ExitBadge run={r} showLabel={false} /></td>
-						<td class="c-err"><ErrorCount total={err.total} neu={err.neu} size="sm" /></td>
-						<td class="c-warn tnum meta">{r.counters.n_warn || '—'}</td>
+						<td class="w-[62px] px-[10px] py-[5px] align-middle whitespace-nowrap"
+							><ExitBadge run={r} showLabel={false} /></td
+						>
+						<td class="w-[148px] px-[10px] py-[5px] align-middle whitespace-nowrap"
+							><ErrorCount total={err.total} neu={err.neu} size="sm" /></td
+						>
+						<td
+							class="meta tnum w-[56px] px-[10px] py-[5px] text-right align-middle whitespace-nowrap"
+							>{r.counters.n_warn || '—'}</td
+						>
 					</tr>
 				{/each}
 			</tbody>
 		</table>
 		{#if shown.length === 0}
-			<p class="none meta">No runs match this filter.</p>
+			<p class="meta p-4 text-[12px]">No runs match this filter.</p>
 		{/if}
 	</div>
 
 	{#if selected.length > 0}
-		<div class="compare">
-			<span class="ctext">
+		<div
+			class="flex flex-none items-center gap-[12px] border-t border-hair-strong bg-base-200 px-4 py-[8px] text-[12px]"
+		>
+			<span class="text-meta">
 				{#if selected.length === 1}
 					Pick a second run to compare against.
 				{:else}
 					Comparing two runs.
 				{/if}
 			</span>
-			<span class="picked tnum">
+			<span class="tnum flex min-w-0 gap-[8px] overflow-hidden">
 				{#each selected as id, i (id)}
 					{@const r = runs.find((x) => x.id === id)}
-					<span class="chip"
-						><b>{i === 0 ? 'A' : 'B'}</b>#{id} · {r ? fmtCommand(r.command) : ''}</span
+					<span
+						class="max-w-[260px] overflow-hidden rounded-[2px] border border-hair px-[7px] py-[2px] text-[11px] text-ellipsis whitespace-nowrap"
+						><b class="mr-[6px] font-semibold">{i === 0 ? 'A' : 'B'}</b>#{id} · {r
+							? fmtCommand(r.command)
+							: ''}</span
 					>
 				{/each}
 			</span>
-			<button type="button" class="ghost" onclick={() => (selected = [])}>clear</button>
-			<button type="button" class="go" disabled={selected.length !== 2} onclick={openDiff}
-				>Diff these two runs →</button
+			<button
+				type="button"
+				class="ml-auto cursor-pointer text-[10px] tracking-[0.16em] text-meta uppercase hover:text-base-content"
+				onclick={() => (selected = [])}>clear</button
+			>
+			<button
+				type="button"
+				class="cursor-pointer rounded-[2px] bg-base-content px-[12px] py-[5px] text-[11.5px] font-medium text-base-100 disabled:cursor-not-allowed disabled:opacity-40"
+				disabled={selected.length !== 2}
+				onclick={openDiff}>Diff these two runs →</button
 			>
 		</div>
 	{/if}
 {/if}
-
-<style>
-	.pad {
-		padding: 16px;
-	}
-	.sr {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		overflow: hidden;
-		clip-path: inset(50%);
-	}
-	.filter {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-content);
-		font: inherit;
-		font-size: 11.5px;
-		padding: 3px 8px;
-		width: 230px;
-		outline: none;
-	}
-	.filter:focus {
-		border-color: var(--rl-hair-strong);
-	}
-	.pill {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--rl-meta);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		padding: 4px 8px;
-		cursor: pointer;
-	}
-	.pill.on {
-		background: var(--color-base-content);
-		color: var(--color-base-100);
-		border-color: var(--color-base-content);
-	}
-
-	.banner {
-		flex: none;
-		margin: 0;
-		padding: 7px 16px;
-		font-size: 12px;
-		border-bottom: 1px solid var(--rl-hair);
-		background: color-mix(in oklch, var(--color-flare) 8%, transparent);
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-	.banner .dot {
-		width: 6px;
-		height: 6px;
-		background: var(--color-flare);
-		border-radius: 1px;
-		flex: none;
-	}
-
-	.tablewrap {
-		flex: 1;
-		min-height: 0;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 12px;
-		min-width: 940px;
-	}
-	thead th {
-		position: sticky;
-		top: 0;
-		z-index: 2;
-		background: var(--color-base-100);
-		text-align: left;
-		font-size: 10px;
-		font-weight: 500;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--rl-meta);
-		padding: 7px 10px;
-		border-bottom: 1px solid var(--rl-hair-strong);
-		white-space: nowrap;
-	}
-	tbody tr {
-		border-bottom: 1px solid var(--rl-hair);
-		cursor: pointer;
-		border-left: 2px solid transparent;
-	}
-	tbody tr:hover {
-		background: color-mix(in oklch, var(--color-base-content) 5%, transparent);
-	}
-	tbody tr.failed {
-		border-left-color: color-mix(in oklch, var(--color-flare) 55%, transparent);
-	}
-	tbody tr.has-new {
-		border-left-color: var(--color-flare);
-	}
-	tbody tr.live {
-		border-left-color: var(--color-success);
-	}
-	tbody tr.selected {
-		background: color-mix(in oklch, var(--color-base-content) 9%, transparent);
-	}
-	td {
-		padding: 5px 10px;
-		vertical-align: middle;
-		white-space: nowrap;
-	}
-	.c-sel {
-		width: 30px;
-		padding-left: 8px;
-		padding-right: 0;
-	}
-	.sel {
-		width: 17px;
-		height: 17px;
-		border: 1px solid var(--rl-hair-strong);
-		border-radius: 2px;
-		background: transparent;
-		color: var(--color-base-100);
-		font: inherit;
-		font-size: 10px;
-		font-weight: 600;
-		line-height: 1;
-		cursor: pointer;
-		display: grid;
-		place-items: center;
-	}
-	.sel.on {
-		background: var(--color-base-content);
-		border-color: var(--color-base-content);
-	}
-	.c-when {
-		width: 108px;
-	}
-	.c-cmd {
-		max-width: 320px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.c-cmd code {
-		font-size: 12px;
-	}
-	.c-git {
-		width: 230px;
-	}
-	.sha {
-		color: var(--color-base-content);
-	}
-	.branch {
-		margin-left: 7px;
-		font-size: 11px;
-	}
-	.dirty {
-		margin-left: 6px;
-		font-size: 9px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--color-warning);
-	}
-	.c-dur {
-		width: 82px;
-		text-align: right;
-	}
-	.c-exit {
-		width: 62px;
-	}
-	.c-err {
-		width: 148px;
-	}
-	.c-warn {
-		width: 56px;
-		text-align: right;
-	}
-	.none {
-		padding: 16px;
-		font-size: 12px;
-	}
-
-	.compare {
-		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 8px 16px;
-		border-top: 1px solid var(--rl-hair-strong);
-		background: var(--color-base-200);
-		font-size: 12px;
-	}
-	.ctext {
-		color: var(--rl-meta);
-	}
-	.picked {
-		display: flex;
-		gap: 8px;
-		min-width: 0;
-		overflow: hidden;
-	}
-	.picked .chip {
-		border: 1px solid var(--rl-hair);
-		border-radius: 2px;
-		padding: 2px 7px;
-		font-size: 11px;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 260px;
-	}
-	.picked b {
-		margin-right: 6px;
-		font-weight: 600;
-	}
-	.ghost {
-		margin-left: auto;
-		border: 0;
-		background: none;
-		color: var(--rl-meta);
-		font: inherit;
-		font-size: 10px;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		cursor: pointer;
-	}
-	.ghost:hover {
-		color: var(--color-base-content);
-	}
-	.go {
-		border: 0;
-		border-radius: 2px;
-		background: var(--color-base-content);
-		color: var(--color-base-100);
-		font: inherit;
-		font-size: 11.5px;
-		font-weight: 500;
-		padding: 5px 12px;
-		cursor: pointer;
-	}
-	.go:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
-</style>

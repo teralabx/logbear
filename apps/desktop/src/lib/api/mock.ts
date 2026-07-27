@@ -14,6 +14,7 @@ import type {
 	DiffSignature,
 	EntryFilter,
 	EntryView,
+	Evidence,
 	Fingerprint,
 	FingerprintHistoryPoint,
 	GitCommit,
@@ -547,6 +548,9 @@ function bump(c: Counters, level: Level) {
 /** Fingerprint ids already emitted, per project — drives is_new_signature. */
 const seenFingerprints: Record<number, Set<number>> = { 1: new Set(), 2: new Set() };
 
+/** Runtime exception banners, matching the backend's structural rung closely enough. */
+const EXCEPTION_BANNER = /^(\*\* \(|Traceback \(most recent call last\):|panic: |thread ')/m;
+
 function makeEntry(
 	run: Run,
 	level: Level,
@@ -557,6 +561,8 @@ function makeEntry(
 ): EntryView {
 	const lines = text.split('\n').length;
 	const isNew = fpId !== null && !seenFingerprints[run.project_id].has(fpId);
+	const evidence: Evidence =
+		level === 'unknown' ? 'unknown' : EXCEPTION_BANNER.test(text) ? 'structural' : 'declared';
 	if (fpId !== null) {
 		seenFingerprints[run.project_id].add(fpId);
 		fingerprints[fpId - 1].total_count++;
@@ -568,13 +574,17 @@ function makeEntry(
 		end_line: line + lines - 1,
 		captured_at: capturedAt,
 		level,
-		is_error: level === 'error',
+		// Mirrors the backend ladder: a level tag is a declaration, an exception banner
+		// with no tag is structural, and everything else declared nothing. A mock whose
+		// shape differs from the backend's is a bug generator.
+		evidence,
+		is_error: evidence === 'structural' || (evidence === 'declared' && level === 'error'),
 		error_reason:
-			level === 'error'
-				? fpId !== null
-					? 'matched known signature'
-					: 'stderr + non-zero exit'
-				: null,
+			evidence === 'declared'
+				? `declared:level_token`
+				: evidence === 'structural'
+					? 'structural:exception_banner'
+					: null,
 		fingerprint_id: fpId,
 		boundaries: lines > 1 ? 'inferred' : 'exact',
 		text,
@@ -939,6 +949,7 @@ export const mock = {
 
 		if (filter.level) all = all.filter((e) => e.level === filter.level);
 		if (filter.errors_only) all = all.filter((e) => e.is_error);
+		if (filter.novel_only) all = all.filter((e) => e.is_new_signature);
 		if (filter.since != null) all = all.filter((e) => e.captured_at >= filter.since!);
 		if (filter.after_entry != null) all = all.filter((e) => e.id > filter.after_entry!);
 		if (filter.search) {

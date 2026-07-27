@@ -118,58 +118,86 @@
   /* Warning amber: derived by rotating flare toward yellow and dropping
      chroma, so it never gets mistaken for the delta colour. */
   --color-amber: #d9932b;
+  /* Foreground for text sitting on flare. Fixed in both themes because flare
+     itself is: daisyUI's `error-content` inverts with the theme and would drop
+     to bone-on-flare in light mode, which fails contrast. */
+  --color-flare-content: #180703;
+
+  /* Surface and severity tokens daisyUI does not model. Declared here, in the
+     `--color-*` namespace, so Tailwind generates real utilities for them —
+     `border-hair`, `text-meta`, `bg-code-bg`, `text-lvl-error`. The values
+     below are the light theme; the blocks that follow override the same
+     variables per theme, which the utilities pick up through `var()`.
+
+     Anything that is a colour belongs in here. A brand colour left outside the
+     theme has no utility, and every component then hand-rolls its own CSS to
+     reach it — which is exactly how this file's tokens got duplicated across
+     21 scoped stylesheets. */
+  --color-hair: #dedbd3;
+  --color-hair-strong: #c8c4ba;
+  --color-meta: #6b7178;
+  --color-code-bg: #eceae5;
+  --color-lvl-error: #c4402b;
+  --color-lvl-warn: #9a6508;
+  --color-lvl-info: #3f6e88;
+  --color-lvl-debug: #6b7178;
+  --color-lvl-trace: #8a9199;
+  --color-lvl-unknown: #8a9199;
+  --color-term-bg: #0f1214;
+  --color-term-fg: #e6e8e9;
+  --color-grid: rgb(15 18 20 / 0.06);
 }
 
 /* Per-theme surface + level tokens that daisyUI does not model. */
 :root,
 [data-theme="runlog-light"] {
-  --rl-hair: #dedbd3;
-  --rl-hair-strong: #c8c4ba;
-  --rl-meta: #6b7178;
-  --rl-code-bg: #eceae5;
-  --rl-lvl-error: #c4402b;
-  --rl-lvl-warn: #9a6508;
-  --rl-lvl-info: #3f6e88;
-  --rl-lvl-debug: #6b7178;
-  --rl-lvl-trace: #8a9199;
-  --rl-lvl-unknown: #8a9199;
-  --rl-term-bg: #0f1214;
-  --rl-term-fg: #e6e8e9;
-  --rl-grid: rgb(15 18 20 / 0.06);
+  --color-hair: #dedbd3;
+  --color-hair-strong: #c8c4ba;
+  --color-meta: #6b7178;
+  --color-code-bg: #eceae5;
+  --color-lvl-error: #c4402b;
+  --color-lvl-warn: #9a6508;
+  --color-lvl-info: #3f6e88;
+  --color-lvl-debug: #6b7178;
+  --color-lvl-trace: #8a9199;
+  --color-lvl-unknown: #8a9199;
+  --color-term-bg: #0f1214;
+  --color-term-fg: #e6e8e9;
+  --color-grid: rgb(15 18 20 / 0.06);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --rl-hair: #1f262b;
-    --rl-hair-strong: #2c353b;
-    --rl-meta: #8a9199;
-    --rl-code-bg: #15191d;
-    --rl-lvl-error: #e5533d;
-    --rl-lvl-warn: #d9932b;
-    --rl-lvl-info: #6e93a8;
-    --rl-lvl-debug: #78818a;
-    --rl-lvl-trace: #5d666e;
-    --rl-lvl-unknown: #5d666e;
-    --rl-term-bg: #0b0e10;
-    --rl-term-fg: #e6e8e9;
-    --rl-grid: rgb(245 244 241 / 0.05);
+    --color-hair: #1f262b;
+    --color-hair-strong: #2c353b;
+    --color-meta: #8a9199;
+    --color-code-bg: #15191d;
+    --color-lvl-error: #e5533d;
+    --color-lvl-warn: #d9932b;
+    --color-lvl-info: #6e93a8;
+    --color-lvl-debug: #78818a;
+    --color-lvl-trace: #5d666e;
+    --color-lvl-unknown: #5d666e;
+    --color-term-bg: #0b0e10;
+    --color-term-fg: #e6e8e9;
+    --color-grid: rgb(245 244 241 / 0.05);
   }
 }
 
 [data-theme="runlog-dark"] {
-  --rl-hair: #1f262b;
-  --rl-hair-strong: #2c353b;
-  --rl-meta: #8a9199;
-  --rl-code-bg: #15191d;
-  --rl-lvl-error: #e5533d;
-  --rl-lvl-warn: #d9932b;
-  --rl-lvl-info: #6e93a8;
-  --rl-lvl-debug: #78818a;
-  --rl-lvl-trace: #5d666e;
-  --rl-lvl-unknown: #5d666e;
-  --rl-term-bg: #0b0e10;
-  --rl-term-fg: #e6e8e9;
-  --rl-grid: rgb(245 244 241 / 0.05);
+  --color-hair: #1f262b;
+  --color-hair-strong: #2c353b;
+  --color-meta: #8a9199;
+  --color-code-bg: #15191d;
+  --color-lvl-error: #e5533d;
+  --color-lvl-warn: #d9932b;
+  --color-lvl-info: #6e93a8;
+  --color-lvl-debug: #78818a;
+  --color-lvl-trace: #5d666e;
+  --color-lvl-unknown: #5d666e;
+  --color-term-bg: #0b0e10;
+  --color-term-fg: #e6e8e9;
+  --color-grid: rgb(245 244 241 / 0.05);
 }
 
 /* ---------------------------------------------------------------------------
@@ -283,29 +311,29 @@
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  color: var(--rl-meta);
+  color: var(--color-meta);
 }
 
 @utility meta {
-  color: var(--rl-meta);
+  color: var(--color-meta);
 }
 
 @utility hair {
-  border-color: var(--rl-hair);
+  border-color: var(--color-hair);
 }
 
 /* A 1px rule that reads as a hairline at any DPI. */
 @utility rule-t {
-  border-top: 1px solid var(--rl-hair);
+  border-top: 1px solid var(--color-hair);
 }
 @utility rule-b {
-  border-bottom: 1px solid var(--rl-hair);
+  border-bottom: 1px solid var(--color-hair);
 }
 @utility rule-r {
-  border-right: 1px solid var(--rl-hair);
+  border-right: 1px solid var(--color-hair);
 }
 @utility rule-l {
-  border-left: 1px solid var(--rl-hair);
+  border-left: 1px solid var(--color-hair);
 }
 
 /* The only scroll containers in the app. */
@@ -318,7 +346,7 @@
 
 @utility surface {
   background: var(--color-base-200);
-  border: 1px solid var(--rl-hair);
+  border: 1px solid var(--color-hair);
   border-radius: 3px;
 }
 
@@ -374,7 +402,7 @@
 /* xterm.js: force it onto the ink ground in both themes. Terminal output is
    ink territory regardless of the surrounding chrome. */
 .xterm .xterm-viewport {
-  background-color: var(--rl-term-bg) !important;
+  background-color: var(--color-term-bg) !important;
   overscroll-behavior: contain;
 }
 .xterm-viewport::-webkit-scrollbar-thumb {
