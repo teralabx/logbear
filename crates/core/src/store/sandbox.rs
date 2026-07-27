@@ -382,24 +382,36 @@ mod tests {
     #[test]
     fn a_trivial_query_does_not_pay_for_the_timeout_machinery() {
         let (_t, path) = fixture();
-        let started = Instant::now();
-        for _ in 0..20 {
-            q(&path, "SELECT 1").unwrap();
-        }
-        let each = started.elapsed() / 20;
-        // Generous: the point is to catch the watchdog being *polled* rather than signalled,
-        // which costs a scheduler round trip per query and shows up as tens of milliseconds.
+        // The fastest of many, not the mean: a polled watchdog puts a scheduler round trip
+        // under *every* query, so it raises the floor. A mean or a single sample measures
+        // whatever else the machine was doing, and fails when the suite runs in parallel.
+        let best = (0..20)
+            .map(|_| {
+                let started = Instant::now();
+                q(&path, "SELECT 1").unwrap();
+                started.elapsed()
+            })
+            .min()
+            .unwrap();
         assert!(
-            each < Duration::from_millis(5),
-            "a trivial query cost {each:?}; the cancellation timer is being waited on"
+            best < Duration::from_millis(5),
+            "the cheapest of 20 trivial queries still cost {best:?}; \
+             the cancellation timer is being waited on rather than signalled"
         );
     }
 
     #[test]
     fn elapsed_ms_reports_the_statement_not_the_bookkeeping() {
         let (_t, path) = fixture();
-        let r = q(&path, "SELECT 1").unwrap();
-        assert!(r.elapsed_ms < 5, "elapsed_ms was {}", r.elapsed_ms);
+        let best = (0..20)
+            .map(|_| q(&path, "SELECT 1").unwrap().elapsed_ms)
+            .min()
+            .unwrap();
+        assert!(
+            best < 5,
+            "the cheapest of 20 trivial queries reported {best}ms; \
+             elapsed_ms is measuring the timeout bookkeeping, not the statement"
+        );
     }
 
     #[test]
