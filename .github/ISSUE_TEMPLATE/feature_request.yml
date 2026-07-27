@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest something runlog should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things are settled and will not change, so proposals that depend on them will be
+        declined: runlog never injects anything into the process it wraps, and the shim never
+        blocks or degrades that process. See
+        [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What were you trying to find out or do when runlog got in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried
+      description: >
+        Existing commands, a `runlog query` you wrote, another tool. If a SQL query already
+        answers this, that is useful to know — it may be a documentation gap rather than a
+        missing feature.

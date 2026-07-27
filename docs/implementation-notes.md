@@ -1,7 +1,8 @@
 # Implementation notes
 
-Where the build diverged from `superpowers/specs/2026-07-26-runlog-design.md`, and why.
-The spec is the design; this is what happened when it met a compiler.
+Where the build diverged from the original design, and why. Each entry records a decision
+that is not recoverable from the code alone — what was planned, what shipped instead, and
+what the tradeoff was.
 
 ---
 

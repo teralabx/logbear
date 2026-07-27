@@ -1,5 +1,10 @@
 # runlog
 
+[![CI](https://github.com/teralabx/runlog/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/runlog/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/runlog.svg)](https://crates.io/crates/runlog)
+[![Licence: FSL-1.1-MIT](https://img.shields.io/badge/licence-FSL--1.1--MIT-blue.svg)](LICENSE.md)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
+
 **It worked two days ago. What changed?**
 
 runlog wraps a development process, records everything it emits, and tells your coding
@@ -12,6 +17,19 @@ runlog mix phx.server
 That is the whole interface. Your terminal behaves exactly as it did before — colours,
 `IEx.pry`, Ctrl-C, resize — and everything the process prints is now queryable, diffable,
 and visible to an agent that would otherwise have no idea it happened.
+
+## Contents
+
+- [The problem it solves](#the-problem-it-solves)
+- [What you get](#what-you-get)
+- [Install](#install) · [Platform support](#platform-support)
+- [Using it](#using-it)
+- [How it works](#how-it-works) — [constraints](#four-constraints-everything-defers-to),
+  [capture](#the-capture-pipeline), [storage](#storage), [MCP](#the-mcp-surface),
+  [loop safety](#loop-safety), [privacy](#privacy)
+- [Repository layout](#repository-layout)
+- [Building from source](#building-from-source)
+- [Contributing](#contributing) · [Security](#security) · [Licence](#licence)
 
 ---
 
@@ -58,7 +76,25 @@ and the diff view.
 
 ## Install
 
-Download the app and open it. On first launch it offers, with confirmation for each step:
+**Homebrew** — CLI, daemon, MCP server and hook:
+
+```sh
+brew install teralabx/tap/runlog
+brew services start runlog
+runlog doctor            # register the MCP server and the agent hook
+```
+
+runlog is source-available rather than OSI open source, so it is not eligible for
+`homebrew-core` and lives in its own tap. See [`packaging/homebrew`](packaging/homebrew).
+
+**Cargo** — the same four binaries, built from source:
+
+```sh
+cargo install runlog runlogd runlog-mcp runlog-hook
+```
+
+**The desktop app** is the easiest path, because it is also the installer. On first launch
+it offers, with confirmation for each step:
 
 1. `runlog` on your PATH
 2. `runlogd` as a background service that survives reboots
@@ -69,6 +105,13 @@ Every config file is backed up before it is touched, every write **merges** rath
 overwrites, and each step can be reverted individually. Nothing is done without asking.
 
 `runlog doctor` reports the state of all four and tells you how to fix whatever is broken.
+
+### Platform support
+
+macOS is what runlog is developed and tested on, and the desktop installer is macOS-only
+— it registers `runlogd` with launchd. The CLI, daemon, MCP server and hook are ordinary
+Unix programs (PTYs, unix sockets, SQLite) and should build on Linux, but that is
+unverified. Windows is not supported.
 
 ---
 
@@ -244,17 +287,20 @@ crates/daemon    `runlogd`
 crates/mcp       `runlog-mcp`, the stdio MCP server
 crates/hook      `runlog-hook`, one binary for both harnesses
 apps/desktop     Tauri v2 + SvelteKit
-brand/           the Delta mark and the Signal palette
-docs/            the design spec and product docs
+packaging/       the Homebrew formula
+docs/            implementation notes
 ```
 
 `runlog-core` has zero coupling to the CLI, MCP or UI. Everything else is a thin adapter
 over it.
 
-## Building
+## Building from source
+
+Requires Rust 1.82+ and [Bun](https://bun.sh).
 
 ```sh
 cargo test --workspace          # Rust
+cargo test --workspace -- --ignored   # integration tests that spawn real processes
 cd apps/desktop && bun install && bun run check && bun run build
 ./scripts/sidecars.sh           # stage the binaries as Tauri sidecars
 cd apps/desktop && bun run tauri build
@@ -263,6 +309,35 @@ cd apps/desktop && bun run tauri build
 `RUNLOG_HOME` redirects all state, which is how the test suite avoids touching your real
 history.
 
+## Contributing
+
+Issues and pull requests are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md) for
+the workflow and the two constraints that get PRs declined. Participation is governed by
+our [Code of Conduct](CODE_OF_CONDUCT.md). Released versions are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+## Security
+
+runlog stores your development output on disk, so a parsing or redaction bug is a privacy
+bug. Please report vulnerabilities privately rather than in a public issue — see
+[SECURITY.md](SECURITY.md).
+
 ## Licence
 
-MIT.
+**FSL-1.1-MIT** — the [Functional Source License](https://fsl.software), MIT Future
+License. The full text is in [`LICENSE.md`](LICENSE.md).
+
+In plain terms: use it, modify it, redistribute it, run it commercially inside your
+company, build on it, fork it. The single restriction is *Competing Use* — you may not
+use runlog to offer a commercial product or service that substitutes for runlog. Two
+years after each version is published, that version becomes plain **MIT**, permanently
+and irrevocably.
+
+This is source-available, not OSI open source, and calling it otherwise would be
+inaccurate. The restriction exists so runlog can be funded without a rug-pull: revenue
+pays for hosted sync infrastructure and the cost of running it, not for locking away
+what already works locally. Everything you install from this repository runs entirely on
+your machine, forever, with no account and no network calls.
+
+The **runlog** name and the Delta mark are not covered by the licence grant. Fork the
+code freely; ship it under your own name.
