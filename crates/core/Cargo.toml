@@ -3,7 +3,10 @@ name = "runlog-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 description = "Capture, storage, parsing and query core for runlog"
 
 [dependencies]

@@ -13,12 +13,17 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-license = "MIT"
+# FSL-1.1-MIT is not an SPDX identifier, so the file is the licence of record.
+license-file = "LICENSE.md"
 repository = "https://github.com/teralabx/runlog"
 homepage = "https://runlog.sh"
+readme = "README.md"
+keywords = ["logging", "observability", "mcp", "cli", "developer-tools"]
+categories = ["command-line-utilities", "development-tools", "development-tools::debugging"]
 
 [workspace.dependencies]
-runlog-core = { path = "crates/core" }
+# The version is what lets the dependent crates publish; the path is what builds them here.
+runlog-core = { path = "crates/core", version = "0.1.0" }
 
 anyhow = "1"
 blake3 = "1.8"
