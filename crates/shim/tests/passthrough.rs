@@ -7,10 +7,10 @@
 //! ```
 //!
 //! Every case runs the daemon-absent path: `RUNLOG_HOME` and `RUNLOG_SOCKET` point into a
-//! temporary directory, and the binary is copied somewhere with no `runlogd` beside it and
-//! a `PATH` containing only that directory, so the shim's auto-start finds nothing to
-//! start. Otherwise these tests would silently spawn a real daemon. For the same reason
-//! every wrapped command is an absolute path or a `/bin/sh` builtin.
+//! temporary directory, the binary is copied somewhere with no `runlogd` beside it, `PATH`
+//! contains only that directory, and `RUNLOG_DAEMON` names a file that does not exist.
+//! Otherwise these tests would silently spawn a real daemon. For the same reason every
+//! wrapped command is an absolute path or a `/bin/sh` builtin.
 
 use std::path::Path;
 use std::process::Command;
@@ -24,7 +24,10 @@ fn runlog(dir: &Path) -> Command {
     cmd.env("RUNLOG_HOME", dir);
     cmd.env("RUNLOG_SOCKET", dir.join("no-daemon.sock"));
     cmd.env("PATH", dir);
-    cmd.env_remove("RUNLOG_DAEMON");
+    // Naming a daemon that does not exist, rather than unsetting: discovery also looks
+    // beside the executable and inside an installed app bundle, so on a developer's own
+    // machine an empty PATH is not enough to guarantee the no-daemon path.
+    cmd.env("RUNLOG_DAEMON", dir.join("no-such-runlogd"));
     cmd
 }
 
@@ -32,6 +35,27 @@ fn spool_files(dir: &Path) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(dir.join("spool"))
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default()
+}
+
+#[test]
+#[ignore = "spawns the real binary"]
+fn a_command_that_cannot_start_is_not_recorded_as_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    // One argument holding a whole command line, which is what a shell that does not
+    // word-split a variable hands over. There is no such executable.
+    let out = runlog(dir.path()).arg("logs -n 50").output().expect("runlog runs");
+
+    assert_eq!(out.status.code(), Some(127), "shells report a missing command as 127");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("command not found"),
+        "stderr was {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        spool_files(dir.path()).is_empty(),
+        "a command that never started left a run behind: {:?}",
+        spool_files(dir.path())
+    );
 }
 
 #[test]

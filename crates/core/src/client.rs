@@ -267,10 +267,11 @@ impl Subscription {
 /// Locates `runlogd`, preferring the copy beside the current executable so a bundled app
 /// finds its own daemon rather than one on `PATH`.
 pub fn daemon_binary() -> Option<PathBuf> {
+    // An explicit override is authoritative, including when it names nothing: falling back
+    // to a discovered daemon would turn a typo into a silently different binary, and leaves
+    // a test no way to say "there is no daemon here".
     if let Some(p) = std::env::var_os("RUNLOG_DAEMON").map(PathBuf::from) {
-        if p.exists() {
-            return Some(p);
-        }
+        return p.exists().then_some(p);
     }
     // Canonicalise before looking for a sibling: on macOS `current_exe()` reports the
     // launch path, so reaching `runlog` through the installer's `~/.local/bin` symlink
