@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust
+    # macOS is the supported platform, and the PTY and launchd paths only exist here.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # No `cargo fmt --check`: this codebase is hand-formatted wider than rustfmt's
+      # defaults, and adopting them is a 36-file mechanical diff nobody has asked for.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - run: cargo test --workspace
+
+      # These spawn the real binary under a PTY, so they are ignored by default.
+      - run: cargo test --workspace -- --ignored
+
+  frontend:
+    name: Desktop frontend
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run check
+
+      - run: bun run build
+
+  manifest:
+    name: Packaging metadata
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Catches a manifest that cannot be published — a missing description, a licence
+      # file that does not resolve — before a release depends on it.
+      #
+      # Only `runlog-core` for now: `cargo package` resolves dependencies against the
+      # real index, so the four crates that depend on it cannot be packaged until it has
+      # been published once. Add them to this list after the first release.
+      - run: cargo package -p runlog-core --no-verify
