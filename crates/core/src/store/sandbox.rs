@@ -22,6 +22,7 @@ use crate::store::{register_functions, ALLOWED_FUNCTIONS};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_MAX_ROWS: usize = 200;
@@ -51,18 +52,24 @@ pub fn query(
 
     // Cancelled from another thread rather than trusting the query to finish: a recursive
     // CTE or a cartesian join can otherwise run unbounded.
+    //
+    // The timer is *signalled* when the statement finishes, not polled. A poll loop makes
+    // every query — including the trivial ones the UI issues by the dozen — wait for a
+    // sleeping thread to be rescheduled, which costs far more than the query itself.
     let handle = conn.get_interrupt_handle();
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watch_done = done.clone();
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    let watch = done.clone();
     let watchdog = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_millis(QUERY_BUDGET_MS);
-        while Instant::now() < deadline {
-            if watch_done.load(std::sync::atomic::Ordering::Relaxed) {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if !watch_done.load(std::sync::atomic::Ordering::Relaxed) {
+        let (lock, signal) = &*watch;
+        let Ok(guard) = lock.lock() else { return false };
+        let Ok((finished, timeout)) = signal.wait_timeout_while(
+            guard,
+            Duration::from_millis(QUERY_BUDGET_MS),
+            |finished| !*finished,
+        ) else {
+            return false;
+        };
+        if timeout.timed_out() && !*finished {
             handle.interrupt();
             return true;
         }
@@ -71,12 +78,19 @@ pub fn query(
 
     let started = Instant::now();
     let outcome = run_statement(&conn, sql, params, max_rows);
-    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let elapsed = started.elapsed();
+    {
+        let (lock, signal) = &*done;
+        if let Ok(mut finished) = lock.lock() {
+            *finished = true;
+        }
+        signal.notify_all();
+    }
     let interrupted = watchdog.join().unwrap_or(false);
 
     match outcome {
         Ok(mut r) => {
-            r.elapsed_ms = started.elapsed().as_millis() as u64;
+            r.elapsed_ms = elapsed.as_millis() as u64;
             Ok(r)
         }
         Err(_) if interrupted => Err(Error::QueryTimeout(QUERY_BUDGET_MS)),
@@ -363,6 +377,29 @@ mod tests {
             Some(2000),
         );
         assert!(matches!(r, Err(Error::QueryTimeout(_))), "{r:?}");
+    }
+
+    #[test]
+    fn a_trivial_query_does_not_pay_for_the_timeout_machinery() {
+        let (_t, path) = fixture();
+        let started = Instant::now();
+        for _ in 0..20 {
+            q(&path, "SELECT 1").unwrap();
+        }
+        let each = started.elapsed() / 20;
+        // Generous: the point is to catch the watchdog being *polled* rather than signalled,
+        // which costs a scheduler round trip per query and shows up as tens of milliseconds.
+        assert!(
+            each < Duration::from_millis(5),
+            "a trivial query cost {each:?}; the cancellation timer is being waited on"
+        );
+    }
+
+    #[test]
+    fn elapsed_ms_reports_the_statement_not_the_bookkeeping() {
+        let (_t, path) = fixture();
+        let r = q(&path, "SELECT 1").unwrap();
+        assert!(r.elapsed_ms < 5, "elapsed_ms was {}", r.elapsed_ms);
     }
 
     #[test]
