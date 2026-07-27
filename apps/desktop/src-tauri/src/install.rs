@@ -498,17 +498,17 @@ fn daemon_status() -> StepState {
     }
 }
 
-fn install_daemon() -> Result<StepState, String> {
+/// The service definition this build wants on disk.
+fn service_body() -> Result<String, String> {
     let exe = bin("runlogd");
     if !exe.exists() {
         return Err(format!("runlogd is missing from {}", bin_dir().display()));
     }
-    let path = service_file();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
     let log = runlog_core::paths::daemon_log();
 
+    // `Adaptive` rather than `Background`: the daemon idles most of the time but the app
+    // blocks on its replies, and a Background-class job is scheduled on the efficiency
+    // cores with throttled I/O.
     #[cfg(target_os = "macos")]
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -522,7 +522,7 @@ fn install_daemon() -> Result<StepState, String> {
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>{log}</string>
   <key>StandardErrorPath</key><string>{log}</string>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Adaptive</string>
 </dict>
 </plist>
 "#,
@@ -538,9 +538,41 @@ fn install_daemon() -> Result<StepState, String> {
         exe = exe.display()
     );
 
+    Ok(body)
+}
+
+fn install_daemon() -> Result<StepState, String> {
+    let body = service_body()?;
+    let path = service_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
     std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
     load_service(&path);
     Ok(daemon_status())
+}
+
+/// Rewrites the service definition when it differs from what this build wants, reporting
+/// whether it did.
+///
+/// Registration happens once, guarded by `.setup-done`, so a changed service file would
+/// otherwise never reach a machine that installed an earlier version.
+pub fn refresh_service() -> bool {
+    let path = service_file();
+    if !path.exists() {
+        return false;
+    }
+    let Ok(wanted) = service_body() else {
+        return false;
+    };
+    if std::fs::read_to_string(&path).is_ok_and(|on_disk| on_disk == wanted) {
+        return false;
+    }
+    if std::fs::write(&path, wanted).is_err() {
+        return false;
+    }
+    load_service(&path);
+    true
 }
 
 fn uninstall_daemon() -> Result<StepState, String> {

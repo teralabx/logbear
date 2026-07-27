@@ -425,6 +425,8 @@ pub fn run() {
                         }
                     }
                     let _ = handle.emit("runlog://first-run", install::status());
+                } else if install::refresh_service() {
+                    eprintln!("runlog: background service definition updated for this build");
                 }
             });
             spawn_event_bridge(app.handle().clone());
