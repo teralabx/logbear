@@ -330,7 +330,7 @@
 	</div>
 {:else}
 	<div
-		class="grid min-h-0 flex-1 grid-rows-[var(--term-h)_auto_1fr] data-[view=entries]:grid-rows-[0_1fr] data-[view=raw]:grid-rows-[1fr]"
+		class="grid min-h-0 flex-1 grid-rows-[var(--term-h)_auto_1fr] data-[view=entries]:grid-rows-[1fr] data-[view=raw]:grid-rows-[1fr]"
 		bind:this={splitEl}
 		style="--term-h: {view === 'split' ? termHeightPct : view === 'raw' ? 100 : 0}%"
 		data-view={view}
