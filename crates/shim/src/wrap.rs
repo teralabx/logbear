@@ -43,6 +43,11 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
     if args.command.is_empty() {
         return Err("no command given".into());
     }
+    // Resolved before anything is recorded. A command that cannot start produces no output
+    // and no process, so it is not a run — and a history full of them buries the real ones.
+    if resolve_program(&args.command[0]).is_none() {
+        return Err(format!("cannot run {}: command not found", args.command[0]));
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (cols, rows) = term::size();
 
@@ -115,6 +120,30 @@ fn start_run(client: &mut Client, stamp: &runlog_core::model::RunStamp) -> Optio
         .as_i64()
         .or_else(|| value.get("run_id").and_then(|v| v.as_i64()))
         .or_else(|| value.get("id").and_then(|v| v.as_i64()))
+}
+
+/// Resolves `program` the way a shell would, returning the path that would be executed.
+///
+/// A name containing `/` is taken as a path; anything else is looked up on `PATH`. `None`
+/// means there is nothing to run.
+pub fn resolve_program(program: &str) -> Option<PathBuf> {
+    let is_executable = |p: &Path| {
+        std::fs::metadata(p).is_ok_and(|m| {
+            use std::os::unix::fs::PermissionsExt;
+            m.is_file() && m.permissions().mode() & 0o111 != 0
+        })
+    };
+
+    if program.contains('/') {
+        let path = PathBuf::from(program);
+        return is_executable(&path).then_some(path);
+    }
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| Path::new(dir).join(program))
+        .find(|candidate| is_executable(candidate))
 }
 
 /// Whether `program` is denylisted, matched on the basename so `/usr/bin/vim` and `vim`
@@ -476,6 +505,34 @@ fn spawn_pipe_signal_forwarder(child_pid: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_on_path_resolves() {
+        assert!(resolve_program("sh").is_some());
+        assert!(resolve_program("/bin/sh").is_some());
+    }
+
+    #[test]
+    fn a_program_that_does_not_exist_resolves_to_nothing() {
+        // What `runlog $c` produces in fish when `$c` is the string "logs -n 50": one
+        // argument, no such executable, and nothing worth recording as a run.
+        assert!(resolve_program("logs -n 50").is_none());
+        assert!(resolve_program("definitely-not-a-real-program").is_none());
+        assert!(resolve_program("/bin/definitely-not-a-real-program").is_none());
+    }
+
+    #[test]
+    fn a_directory_on_path_is_not_a_program() {
+        assert!(resolve_program("/tmp").is_none());
+    }
+
+    #[test]
+    fn a_file_without_the_execute_bit_is_not_a_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-executable");
+        std::fs::write(&file, b"#!/bin/sh\n").unwrap();
+        assert!(resolve_program(&file.to_string_lossy()).is_none());
+    }
 
     #[test]
     fn a_clean_exit_is_passed_through_verbatim() {
