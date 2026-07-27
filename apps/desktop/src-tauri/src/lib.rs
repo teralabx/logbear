@@ -78,18 +78,22 @@ fn fmt_daemon_error(e: runlog_core::Error) -> String {
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+//
+// `(async)` on everything that talks to the daemon: Tauri runs a plain `fn` on the main
+// thread, and these all block on a socket round trip, so one slow reply stops the window
+// painting. `reveal_path` is the exception — it drives AppKit and has to stay there.
 
-#[tauri::command]
+#[tauri::command(async)]
 fn daemon_status(backend: State<'_, Backend>) -> Result<DaemonStatus, String> {
     backend.with(|c| c.status())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_projects(backend: State<'_, Backend>) -> Result<Vec<Project>, String> {
     backend.with(|c| c.projects())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn project_status(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -97,7 +101,7 @@ fn project_status(
     backend.with(|c| c.project_status(project.clone()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_runs(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -108,7 +112,7 @@ fn list_runs(
     backend.with(|c| c.runs(project.clone(), limit, offset))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_run(backend: State<'_, Backend>, project: ProjectRef, run_id: RunId) -> Result<Run, String> {
     backend.with(|c| {
         c.call(&Request::GetRun {
@@ -118,7 +122,7 @@ fn get_run(backend: State<'_, Backend>, project: ProjectRef, run_id: RunId) -> R
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn entries(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -128,7 +132,7 @@ fn entries(
     backend.with(|c| c.entries(project.clone(), filter.clone()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fingerprints(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -152,7 +156,7 @@ struct HistoryPoint {
     started_at: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn fingerprint_history(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -194,7 +198,7 @@ fn fingerprint_history(
     Ok(points)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn run_diff(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -204,7 +208,7 @@ fn run_diff(
     backend.with(|c| c.diff(project.clone(), a.clone(), b.clone()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn raw_stream(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -223,12 +227,12 @@ fn raw_stream(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_settings(backend: State<'_, Backend>) -> Result<Settings, String> {
     backend.with(|c| c.call(&Request::GetSettings))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn update_settings(backend: State<'_, Backend>, settings: Settings) -> Result<(), String> {
     backend.with(|c| {
         c.call::<serde_json::Value>(&Request::UpdateSettings {
@@ -238,7 +242,7 @@ fn update_settings(backend: State<'_, Backend>, settings: Settings) -> Result<()
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn update_project(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -257,7 +261,7 @@ fn update_project(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<RetentionState, String> {
     let status = backend.with(|c| c.project_status(project.clone()))?;
     let result = backend.with(|c| {
@@ -287,7 +291,7 @@ fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<Retenti
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reparse(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -301,7 +305,7 @@ fn reparse(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_run(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -316,7 +320,7 @@ fn delete_run(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn query(
     backend: State<'_, Backend>,
     project: ProjectRef,
@@ -328,18 +332,18 @@ fn query(
 
 // ---- install ----
 
-#[tauri::command]
+#[tauri::command(async)]
 fn install_status() -> install::InstallStatus {
     install::status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn install_step(step: String) -> Result<install::StepState, String> {
     let parsed = install::Step::parse(&step).ok_or_else(|| format!("unknown step {step:?}"))?;
     install::install(parsed)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn uninstall_step(step: String) -> Result<install::StepState, String> {
     let parsed = install::Step::parse(&step).ok_or_else(|| format!("unknown step {step:?}"))?;
     install::uninstall(parsed)
