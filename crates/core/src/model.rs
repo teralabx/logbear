@@ -1,5 +1,6 @@
 //! The shared vocabulary. Every binary and the frontend speak in these types.
 
+pub use crate::parse::severity::Evidence;
 use serde::{Deserialize, Serialize};
 
 pub type RunId = i64;
@@ -208,8 +209,12 @@ pub struct Entry {
     pub end_line: i64,
     pub captured_at: i64,
     pub level: Level,
+    /// Which rung of the severity ladder produced `level`. `Unknown` means the producer
+    /// declared nothing — it is an absence, not a default, and never becomes an error.
+    pub evidence: Evidence,
     pub is_error: bool,
-    /// Which detection signals fired, comma separated. Empty when `is_error` is false.
+    /// Which rule answered, as `rung:rule` — e.g. `declared:level_token`. `None` when the
+    /// severity is unknown.
     pub error_reason: Option<String>,
     pub fingerprint_id: Option<FingerprintId>,
     pub boundaries: Boundaries,

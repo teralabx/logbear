@@ -1,128 +1,63 @@
 //! Level assignment and error detection.
 //!
-//! Error detection is a **union of independent signals**, deliberately biased to
-//! over-catch, and it does not depend on grouping being right. Any signal firing is
-//! enough. The failure mode we accept is flagging something that was not an error; the
-//! failure mode we refuse is silently missing one, because the entire product is "tell the
-//! agent something broke".
+//! This used to be a **union of independent signals, deliberately biased to over-catch**,
+//! on the reasoning that flagging a non-error is cheaper than missing a real one. Pointed
+//! at a real Phoenix server, that bias produced 25 false errors out of 27, and the two
+//! real ones were the only two anything *declared*. Over-catching did not trade precision
+//! for recall; it drowned the recall it bought.
 //!
-//! Which signals fired is recorded on the entry, so a noisy rule can be found and tuned
-//! against real data instead of argued about.
+//! So the union is gone. There is one ladder, in [`super::severity`], and this module only
+//! decides what an entry's severity *means*:
+//!
+//! * an error is a **declared** error/fatal, or a **structural** exception banner;
+//! * an `unknown` severity is never an error, however alarming the text reads;
+//! * run-level failure (non-zero exit, fatal signal) is folded in separately by the
+//!   daemon, because it is a fact about the process rather than about any line.
+//!
+//! Everything the old heuristics used to catch is still *stored*, still searchable, and
+//! still surfaced — as novelty rather than as severity. See `store::write` for that half.
 
 use crate::model::Level;
-use regex::Regex;
-use std::sync::LazyLock;
-
-static LEVEL_TAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?xi)
-        (?:
-            \[\s*(?P<a>trace|debug|info|notice|warn|warning|error|err|fatal|critical|crit|alert|emerg)\s*\]
-          | \b(?:level|lvl|severity)\s*[=:]\s*\x22?(?P<b>trace|debug|info|notice|warn|warning|error|err|fatal|critical)\x22?
-          | ^\s*(?P<c>trace|debug|info|notice|warn|warning|error|fatal|critical|panic)\b\s*[:\-\x20]
-          | ^[\x20]*(?P<d>[DIWEF]),\x20\[            # Ruby Logger severity letter
-          | \b(?P<e>TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|FATAL|CRITICAL)\b\s+--
-        )",
-    )
-    .expect("LEVEL_TAG regex")
-});
-
-/// Shapes that are an error regardless of whether anything tagged them one.
-static EXCEPTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?xm)
-        (?:
-            ^\*\*\s\(\w                        # Elixir:  ** (RuntimeError)
-          | ^Traceback\s\(most\srecent\scall\slast\):
-          | ^panic:\s                          # Go
-          | ^fatal\serror:\s                   # Go runtime
-          | ^thread\s'.*'\spanicked\sat        # Rust
-          | \b[A-Z]\w*(?:Error|Exception)\b    # FooError / BarException anywhere
-          | \bunhandled\s(?:exception|rejection|error)\b
-          | \bsegmentation\sfault\b
-          | \bstack\soverflow\b
-          | \bcore\sdumped\b
-          | ^\s*Caused\sby:
-          | \[error\]                          # explicit, cheap, common
-          | \bERR!                             # npm
-          | \bCompilationError\b
-          | \bcommand\snot\sfound\b
-          | \bAddress\salready\sin\suse\b
-          | \bECONN(?:REFUSED|RESET)\b
-          | \bEADDRINUSE\b
-          | \bMODULE_NOT_FOUND\b
-        )",
-    )
-    .expect("EXCEPTION regex")
-});
-
-static WARNING_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?xm)(?:^\s*warning:|\bdeprecated\b|\bDeprecationWarning\b|\bWARN!\b)")
-        .expect("WARNING_SHAPE regex")
-});
+use crate::parse::severity::{self, Evidence};
 
 /// What the classifier concluded, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classification {
     pub level: Level,
+    pub evidence: Evidence,
     pub is_error: bool,
-    /// Comma-separated signal names. Empty when nothing fired.
-    pub reasons: Vec<&'static str>,
+    /// Which rule answered. `None` only when nothing declared anything.
+    pub signal: Option<&'static str>,
 }
 
 impl Classification {
+    /// Stored on the entry as `rung:rule`, e.g. `declared:level_token`.
     pub fn reason_string(&self) -> Option<String> {
-        if self.reasons.is_empty() {
-            None
-        } else {
-            Some(self.reasons.join(","))
-        }
+        self.signal
+            .map(|s| format!("{}:{}", self.evidence.as_str(), s))
     }
 }
 
 /// Classify one grouped entry from its rendered text.
 pub fn classify(text: &str) -> Classification {
-    let mut reasons = Vec::new();
-
-    let tagged = tagged_level(text);
-    let mut level = tagged.unwrap_or(Level::Unknown);
-
-    if tagged == Some(Level::Error) {
-        reasons.push("level_tag");
-    }
-    if EXCEPTION.is_match(text) {
-        reasons.push("exception_marker");
-    }
-    if stack_frames(text) >= 2 {
-        reasons.push("stack_frames");
-    }
-
-    // JSON logs carry their own level field and deserve to be believed.
-    if tagged.is_none() {
-        if let Some(l) = json_level(text) {
-            level = l;
-            if l == Level::Error {
-                reasons.push("level_tag");
-            }
-        }
-    }
-
-    let is_error = !reasons.is_empty();
-    if is_error {
-        level = Level::Error;
-    } else if level == Level::Unknown && WARNING_SHAPE.is_match(text) {
-        level = Level::Warn;
-    }
-
+    let s = severity::detect(text);
+    let is_error = match s.evidence {
+        // A structural banner *is* the runtime reporting a throw.
+        Evidence::Structural => true,
+        Evidence::Declared => s.level == Level::Error,
+        Evidence::Unknown => false,
+    };
     Classification {
-        level,
+        level: s.level,
+        evidence: s.evidence,
         is_error,
-        reasons,
+        signal: s.signal,
     }
 }
 
 /// Signals that belong to the run rather than to any one entry. Folded in by the daemon
-/// when the process ends, so a silent crash still registers as a failure.
+/// when the process ends, so a silent crash still registers as a failure even if it never
+/// printed a word.
 pub fn run_failed(exit_code: Option<i32>, signal: Option<&str>) -> Option<&'static str> {
     // Ctrl-C is how you stop a dev server, and it exits 130. Checking the signal first is
     // what stops every deliberate shutdown from being reported as a crash.
@@ -135,54 +70,6 @@ pub fn run_failed(exit_code: Option<i32>, signal: Option<&str>) -> Option<&'stat
         (None, None) => Some("unexpected_death"),
         _ => None,
     }
-}
-
-fn tagged_level(text: &str) -> Option<Level> {
-    let first = text.lines().next().unwrap_or("");
-    let caps = LEVEL_TAG.captures(first)?;
-    for name in ["a", "b", "c", "e"] {
-        if let Some(m) = caps.name(name) {
-            return Some(Level::parse(m.as_str()));
-        }
-    }
-    // Ruby's single-letter severity.
-    caps.name("d").map(|m| match m.as_str() {
-        "D" => Level::Debug,
-        "I" => Level::Info,
-        "W" => Level::Warn,
-        "E" | "F" => Level::Error,
-        _ => Level::Unknown,
-    })
-}
-
-fn json_level(text: &str) -> Option<Level> {
-    let first = text.lines().next()?.trim();
-    if !first.starts_with('{') {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(first).ok()?;
-    for key in ["level", "lvl", "severity", "levelname"] {
-        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
-            return Some(Level::parse(s));
-        }
-        // Bunyan and pino use numeric levels.
-        if let Some(n) = v.get(key).and_then(|x| x.as_i64()) {
-            return Some(match n {
-                0..=19 => Level::Trace,
-                20..=29 => Level::Debug,
-                30..=39 => Level::Info,
-                40..=49 => Level::Warn,
-                _ => Level::Error,
-            });
-        }
-    }
-    None
-}
-
-fn stack_frames(text: &str) -> usize {
-    text.lines()
-        .filter(|l| super::group::is_continuation(l))
-        .count()
 }
 
 #[cfg(test)]
@@ -214,9 +101,8 @@ mod tests {
             ("node", "Error: boom\n    at Object.<anonymous> (/app/s.js:1:1)\n    at Module._compile (node:internal:1:1)"),
             ("go", "panic: runtime error: index out of range [3]\n\tmain.main()"),
             ("rust", "thread 'main' panicked at src/main.rs:4:5:\nboom"),
-            ("ruby", "boom one\n-e:5:in '<main>'\n        from -e:2:in 'block'"),
             ("npm", "npm ERR! code ELIFECYCLE"),
-            ("port", "Address already in use - bind(2) for 127.0.0.1:4000"),
+            ("declared", "12:04:11 [error] Address already in use - bind(2) for 127.0.0.1:4000"),
         ] {
             assert!(is_err(text), "missed the {label} error:\n{text}");
             assert_eq!(classify(text).level, Level::Error, "{label}");
@@ -224,11 +110,11 @@ mod tests {
     }
 
     #[test]
-    fn a_detected_error_always_says_why() {
+    fn a_detected_error_always_says_which_rung_answered() {
         let c = classify("** (RuntimeError) boom\n    (my_app) lib/a.ex:1: A.b/0");
         assert!(c.is_error);
-        assert!(c.reason_string().is_some());
-        assert!(c.reasons.contains(&"exception_marker"), "{:?}", c.reasons);
+        assert_eq!(c.evidence, Evidence::Structural);
+        assert_eq!(c.reason_string().as_deref(), Some("structural:elixir_exception"));
     }
 
     #[test]
@@ -245,17 +131,41 @@ mod tests {
     }
 
     #[test]
+    fn a_phoenix_request_log_is_not_an_error() {
+        // The reported bug, at the level the daemon actually asks about.
+        let c = classify("[debug] Processing with EnlightenWeb.Page.HomeLive.__live__/2\n  Parameters: %{}\n  Pipelines: [:browser]");
+        assert!(!c.is_error);
+        assert_eq!(c.level, Level::Debug);
+        assert_eq!(c.evidence, Evidence::Declared);
+    }
+
+    #[test]
+    fn unknown_severity_is_never_an_error() {
+        for text in [
+            "%{user_id: 42}",
+            "HERE",
+            "some output with no level at all",
+            "  indented\n  more indented\n  even more",
+        ] {
+            let c = classify(text);
+            assert!(!c.is_error, "{text}");
+            assert_eq!(c.level, Level::Unknown, "{text}");
+            assert_eq!(c.evidence, Evidence::Unknown, "{text}");
+        }
+    }
+
+    #[test]
     fn json_logs_are_believed() {
         assert_eq!(lvl(r#"{"level":"warn","msg":"slow"}"#), Level::Warn);
         assert!(is_err(r#"{"level":"error","msg":"boom"}"#));
-        // pino numeric levels
+        // pino numeric levels, which share OTel's scale
         assert_eq!(lvl(r#"{"level":30,"msg":"hi"}"#), Level::Info);
         assert!(is_err(r#"{"level":50,"msg":"bad"}"#));
     }
 
     #[test]
     fn warnings_are_warnings_not_errors() {
-        let c = classify("warning: unused variable `x`");
+        let c = classify("[warning] unused variable `x`");
         assert_eq!(c.level, Level::Warn);
         assert!(!c.is_error);
     }

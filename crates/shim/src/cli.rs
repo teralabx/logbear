@@ -127,9 +127,13 @@ pub enum Cmd {
         /// error | warn | info | debug | trace
         #[arg(long)]
         level: Option<String>,
-        /// Errors only, whatever their level tag says.
+        /// Errors only: a declared error, or a runtime exception banner.
         #[arg(long)]
         errors: bool,
+        /// Only output never seen in this project before, at any level. Finds the
+        /// print/IO.inspect lines you just added, which declare no level to filter on.
+        #[arg(long)]
+        new: bool,
         /// Only entries newer than this: 30s, 10m, 2h, 1d.
         #[arg(long)]
         since: Option<String>,

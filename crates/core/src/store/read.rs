@@ -115,8 +115,8 @@ pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
 /// trace with the header missing.
 pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
     let mut sql = String::from(
-        "SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.is_error,
-                e.error_reason, e.fingerprint_id, e.boundaries, fp.template,
+        "SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.evidence,
+                e.is_error, e.error_reason, e.fingerprint_id, e.boundaries, fp.template,
                 (fp.first_seen = e.captured_at) AS is_new
            FROM entries e LEFT JOIN fingerprints fp ON fp.id = e.fingerprint_id",
     );
@@ -134,6 +134,12 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
     }
     if f.errors_only {
         wheres.push("e.is_error = 1".into());
+    }
+    if f.novel_only {
+        // The signature's first sighting anywhere in this project is this very entry.
+        // Independent of severity on purpose: a `print` a developer added five minutes ago
+        // has no level to filter on, and being new is the only true thing about it.
+        wheres.push("fp.first_seen = e.captured_at".into());
     }
     if let Some(level) = f.level {
         wheres.push("e.level = ?".into());
@@ -172,16 +178,17 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
                     end_line: r.get(3)?,
                     captured_at: r.get(4)?,
                     level: Level::parse(&r.get::<_, String>(5)?),
-                    is_error: r.get::<_, i64>(6)? != 0,
-                    error_reason: r.get(7)?,
-                    fingerprint_id: r.get(8)?,
-                    boundaries: match r.get::<_, String>(9)?.as_str() {
+                    evidence: Evidence::parse(&r.get::<_, String>(6)?),
+                    is_error: r.get::<_, i64>(7)? != 0,
+                    error_reason: r.get(8)?,
+                    fingerprint_id: r.get(9)?,
+                    boundaries: match r.get::<_, String>(10)?.as_str() {
                         "exact" => Boundaries::Exact,
                         _ => Boundaries::Inferred,
                     },
                 },
-                r.get::<_, Option<String>>(10)?,
-                r.get::<_, Option<i64>>(11)?.unwrap_or(0) != 0,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
             ))
         })?;
 

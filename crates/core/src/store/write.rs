@@ -253,14 +253,16 @@ impl Writer {
                 let (fp_id, is_new) = upsert_fingerprint(&tx, e)?;
                 tx.execute(
                     "INSERT INTO entries (run_id, start_line, end_line, captured_at, level,
-                                          is_error, error_reason, fingerprint_id, boundaries)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                          evidence, is_error, error_reason, fingerprint_id,
+                                          boundaries)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         run_id,
                         e.start_line,
                         e.end_line,
                         e.captured_at,
                         e.level.as_str(),
+                        e.evidence.as_str(),
                         e.is_error as i64,
                         e.error_reason,
                         fp_id,
@@ -283,6 +285,7 @@ impl Writer {
                         end_line: e.end_line,
                         captured_at: e.captured_at,
                         level: e.level,
+                        evidence: e.evidence,
                         is_error: e.is_error,
                         error_reason: e.error_reason.clone(),
                         fingerprint_id: Some(fp_id),

@@ -339,6 +339,7 @@ impl Daemon {
                         fingerprint_id: fp,
                         template: e.template.clone().unwrap_or_else(|| e.text.clone()),
                         level: e.entry.level,
+                        evidence: e.entry.evidence,
                         at: e.entry.captured_at,
                         is_new_signature: e.is_new_signature,
                         run_command: live.command.clone(),

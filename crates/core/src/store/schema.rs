@@ -12,7 +12,11 @@
 
 /// Bumped whenever the derived layer's meaning changes. On a bump the daemon rebuilds the
 /// index from chunks rather than migrating it, because it can.
-pub const DERIVED_VERSION: i64 = 1;
+///
+/// * 2 — severity is read, never inferred. Adds `entries.evidence`; the heuristics that
+///   promoted indented lines to errors are gone, so every existing entry's level is
+///   suspect and gets recomputed from the bytes.
+pub const DERIVED_VERSION: i64 = 2;
 /// Bumped when truth-layer tables change shape. Requires a real migration.
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -68,6 +72,10 @@ CREATE TABLE IF NOT EXISTS entries (
   end_line       INTEGER NOT NULL,
   captured_at    INTEGER NOT NULL,
   level          TEXT    NOT NULL DEFAULT 'unknown',
+  -- How `level` was arrived at: declared | structural | unknown. `unknown` means the
+  -- producer said nothing, which is an answer and not a missing value. Severity is never
+  -- inferred from the shape of the text, so there is no fourth value.
+  evidence       TEXT    NOT NULL DEFAULT 'unknown',
   is_error       INTEGER NOT NULL DEFAULT 0,
   error_reason   TEXT,
   fingerprint_id INTEGER REFERENCES fingerprints(id),
@@ -155,14 +163,26 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 pub const PROJECT_VIEWS: &str = r#"
 DROP VIEW IF EXISTS v_entries;
 DROP VIEW IF EXISTS v_errors;
+DROP VIEW IF EXISTS v_novel;
 DROP VIEW IF EXISTS v_runs;
 
 -- Rendered text, produced on demand from the bytes. This is why entries hold no text.
 CREATE VIEW v_entries AS
-SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.is_error,
-       e.error_reason, e.fingerprint_id, e.boundaries,
+SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.evidence,
+       e.is_error, e.error_reason, e.fingerprint_id, e.boundaries,
        runlog_render(e.run_id, e.start_line, e.end_line) AS text
   FROM entries e;
+
+-- Output that has never been seen in this project before, at any severity. This is where
+-- `IO.inspect` / `print` / `console.log` debugging surfaces: a line a developer added
+-- while chasing something has no severity to read, but its template being brand new is a
+-- fact rather than a guess. Deliberately not restricted to errors.
+CREATE VIEW v_novel AS
+SELECT v.*, f.template, f.first_seen, f.total_count
+  FROM v_entries v
+  JOIN fingerprints f ON f.id = v.fingerprint_id
+ WHERE f.first_seen >= (SELECT started_at FROM runs WHERE id = v.run_id)
+   AND f.total_count > 0;
 
 CREATE VIEW v_errors AS
 SELECT v.*, f.template, f.total_count, f.first_seen, f.last_seen
@@ -240,8 +260,28 @@ calls `runlog_render()` to produce the text on demand, with ANSI resolved.
 
   v_entries   every entry with its rendered `text`
   v_errors    v_entries restricted to errors, joined to its fingerprint template
+  v_novel     entries whose signature is being seen for the first time in this project,
+              at ANY severity — this is where print-debugging output shows up
   v_runs      runs with per-level counters, duration, and a `clean` flag
               (`clean` = exited 0 AND logged no errors — this is "it worked")
+
+## How severity works, so you can trust it
+
+`level` is **read from the output, never inferred from its shape**. `evidence` says how:
+
+  declared    the process emitted a severity token — `[error]`, `level=error`,
+              `{"level":"error"}` — and we read it verbatim
+  structural  no token, but the runtime printed a banner it only prints when something
+              threw: `** (`, `Traceback (most recent call last):`, `panic:`
+  unknown     the process said nothing about severity
+
+`unknown` is an answer, not a missing value, and it is **never** an error. A bare
+`print` / `IO.inspect` / `console.log` line is `unknown` by construction — no language
+attaches a severity to those. Do not read `level = 'unknown'` as "probably fine"; read it
+as "nobody said". Reach for `v_novel` and the surrounding entries instead.
+
+`is_error` is true only for a declared error/fatal or a structural banner. Nothing is an
+error because it looked scary.
 
 ## Worked examples
 
@@ -260,6 +300,18 @@ calls `runlog_render()` to produce the text on demand, with ANSI resolved.
   SELECT f.template, f.first_seen, f.total_count FROM fingerprints f
    WHERE f.level = 'error' AND f.first_seen > (SELECT started_at FROM runs
                                                 ORDER BY started_at DESC LIMIT 1 OFFSET 1);
+
+  -- output that appeared for the first time in this run, whatever its severity.
+  -- This is how you find the print statements someone just added.
+  SELECT captured_at, level, text FROM v_novel WHERE run_id = ?1 ORDER BY captured_at;
+
+  -- everything printed in the 5 seconds before a run died: the evidence window.
+  -- Use this instead of reading the whole log — the lines around a failure are the ones
+  -- that explain it, and they are usually `unknown` severity.
+  SELECT v.captured_at, v.level, v.text FROM v_entries v
+    JOIN runs r ON r.id = v.run_id
+   WHERE r.id = ?1 AND v.captured_at >= r.ended_at - 5000000
+   ORDER BY v.captured_at;
 
   -- signatures present in every failed run but no clean one
   SELECT f.template FROM fingerprints f

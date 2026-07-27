@@ -67,6 +67,11 @@ pub struct EntryFilter {
     pub level: Option<Level>,
     #[serde(default)]
     pub errors_only: bool,
+    /// Only entries whose signature is being seen for the first time in this project, at
+    /// any severity. This is the filter that finds freshly added `print` / `IO.inspect`
+    /// debugging, which by construction declares no level and so cannot be found by one.
+    #[serde(default)]
+    pub novel_only: bool,
     /// Unix micros; entries strictly newer than this.
     pub since: Option<i64>,
     /// Entries with an id strictly greater than this. How the live view tails.
@@ -94,6 +99,7 @@ impl Default for EntryFilter {
             run_id: None,
             level: None,
             errors_only: false,
+            novel_only: false,
             since: None,
             after_entry: None,
             search: None,

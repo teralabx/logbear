@@ -8,7 +8,7 @@
 //! behaviour is identical whether or not the app window is open, and so the policy can be
 //! tested without a notification centre.
 
-use crate::model::{FingerprintId, Level, ProjectId};
+use crate::model::{Evidence, FingerprintId, Level, ProjectId};
 use crate::proto::{Notice, QuietHours, Settings};
 use std::collections::HashMap;
 
@@ -39,6 +39,9 @@ pub struct Candidate {
     pub fingerprint_id: FingerprintId,
     pub template: String,
     pub level: Level,
+    /// How the level was arrived at. Only a declared or structural severity may interrupt
+    /// someone; see [`Notifier::consider`].
+    pub evidence: Evidence,
     pub at: i64,
     pub is_new_signature: bool,
     pub run_command: String,
@@ -81,6 +84,14 @@ impl Notifier {
         }
         if project_muted {
             return Decision::Suppress("this project is muted");
+        }
+        // The rule the whole redesign exists for: we interrupt someone only when the
+        // process *said* something was wrong. An `unknown` severity is stored, indexed,
+        // searchable and shown in the app — and it never posts a banner, however alarming
+        // the text reads. Novelty does not qualify either: new output is interesting, not
+        // urgent, and it arrives attached to a real failure rather than on its own.
+        if !c.evidence.may_notify() {
+            return Decision::Suppress("the process did not declare this a problem");
         }
         if in_quiet_hours(settings.quiet_hours, c.at) {
             return Decision::Suppress("quiet hours");
@@ -278,6 +289,7 @@ mod tests {
             fingerprint_id: fp,
             template: "** (RuntimeError) boom".into(),
             level: Level::Error,
+            evidence: Evidence::Structural,
             at,
             is_new_signature: false,
             run_command: "mix phx.server".into(),
@@ -410,6 +422,40 @@ mod tests {
         let q = Some(QuietHours { start_min: 22 * 60, end_min: 8 * 60 });
         // Exercised through the pure predicate: minute-of-day 23:00 is quiet, 12:00 is not.
         assert!(matches!(q, Some(qq) if qq.start_min > qq.end_min));
+    }
+
+    #[test]
+    fn an_undeclared_severity_never_interrupts_anyone() {
+        // The bug that produced eight banners for `[debug] Processing with …` reached the
+        // user through exactly this call. Whatever else changes, this must not.
+        let mut n = Notifier::new();
+        let s = settings();
+        let mut c = candidate(1, 0);
+        c.evidence = Evidence::Unknown;
+        assert!(matches!(n.consider(&c, &s, false), Decision::Suppress(_)));
+    }
+
+    #[test]
+    fn novelty_alone_is_not_grounds_for_a_banner() {
+        // A freshly added `IO.inspect` is new, and new is interesting — but it is not a
+        // reason to take over someone's screen. It reaches them as evidence attached to a
+        // real failure, or in the app, and not otherwise.
+        let mut n = Notifier::new();
+        let s = settings();
+        let mut c = candidate(2, 0);
+        c.evidence = Evidence::Unknown;
+        c.is_new_signature = true;
+        c.level = Level::Unknown;
+        assert!(matches!(n.consider(&c, &s, false), Decision::Suppress(_)));
+    }
+
+    #[test]
+    fn a_declared_error_still_gets_through() {
+        let mut n = Notifier::new();
+        let s = settings();
+        let mut c = candidate(3, 0);
+        c.evidence = Evidence::Declared;
+        assert!(matches!(n.consider(&c, &s, false), Decision::Post(_)));
     }
 
     #[test]

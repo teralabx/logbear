@@ -1,21 +1,25 @@
 //! The capture pipeline.
 //!
 //! ```text
-//! pty bytes → line split → vt emulation → mode detect → grouping → classify → fingerprint
-//!            deterministic  deterministic   sampled      inferential  union      normalised
+//! pty bytes → line split → vt emulation → mode detect → grouping → severity → fingerprint
+//!            deterministic  deterministic   sampled      inferential   read     normalised
 //! ```
 //!
-//! Exactly one stage is inferential, and it says so in what it stores. Everything else is
-//! reproducible from the bytes, which is what lets the whole derived index be dropped and
-//! rebuilt whenever a rule improves.
+//! Exactly one stage is inferential, and it says so in what it stores. Note that severity
+//! is **not** that stage: it reads what the producer declared and reports `unknown` when
+//! nothing was declared, rather than inferring a level from the shape of the text.
+//! Everything else is reproducible from the bytes, which is what lets the whole derived
+//! index be dropped and rebuilt whenever a rule improves.
 
 pub mod classify;
 pub mod fingerprint;
 pub mod group;
 pub mod mode;
+pub mod severity;
 pub mod vt;
 
 use crate::model::{Boundaries, DelimiterMode, Level, MAX_RAW_LINE};
+use crate::parse::severity::Evidence;
 
 /// One physical line of the captured stream, verbatim.
 #[derive(Debug, Clone)]
@@ -35,6 +39,8 @@ pub struct ParsedEntry {
     pub captured_at: i64,
     pub text: String,
     pub level: Level,
+    /// Which rung of the severity ladder answered. `Unknown` is a real answer.
+    pub evidence: Evidence,
     pub is_error: bool,
     pub error_reason: Option<String>,
     pub template: String,
@@ -298,6 +304,7 @@ impl Parser {
             captured_at: g.captured_at,
             text,
             level: c.level,
+            evidence: c.evidence,
             is_error: c.is_error,
             error_reason: c.reason_string(),
             template: sig.template,
