@@ -17,6 +17,20 @@ pub const DERIVED_VERSION: i64 = 2;
 /// Bumped when truth-layer tables change shape. Requires a migration.
 pub const SCHEMA_VERSION: i64 = 1;
 
+/// Drops the derived layer so it can be recreated at the current shape.
+///
+/// Run when the stored `derived_version` is behind [`DERIVED_VERSION`]. Truth — `runs`,
+/// `chunks`, `meta` — is untouched, so a rebuild reproduces the index from the captured
+/// bytes. `CREATE TABLE IF NOT EXISTS` cannot add a column to an existing table, so
+/// dropping is what makes a shape change possible at all.
+pub const DROP_DERIVED: &str = r#"
+DROP TABLE IF EXISTS entries;
+DROP TABLE IF EXISTS fingerprints;
+DROP TABLE IF EXISTS run_fingerprints;
+DROP TABLE IF EXISTS run_counters;
+DROP TABLE IF EXISTS entries_fts;
+"#;
+
 pub const PROJECT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,

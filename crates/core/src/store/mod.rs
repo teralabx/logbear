@@ -26,6 +26,7 @@ pub struct Db {
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
     project_id: ProjectId,
+    derived_stale: bool,
 }
 
 impl Db {
@@ -36,6 +37,26 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         apply_pragmas(&conn)?;
+
+        // The stored version has to be read before the schema is applied, and the derived
+        // tables dropped before they are recreated: `CREATE TABLE IF NOT EXISTS` leaves an
+        // existing table at its old shape, so without this a bump silently does nothing.
+        let existing: Option<i64> = conn
+            .query_row("SELECT value FROM meta WHERE key = 'derived_version'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()
+            .and_then(|v| v.parse().ok());
+        // The version stamp records intent; the table records reality. They diverge when a
+        // build writes the stamp without changing the shape, and then a correct build sees
+        // a current version over a stale table and rebuilds nothing. Only the shape is
+        // authoritative, so it is checked too.
+        let stale =
+            existing.is_some_and(|v| v != schema::DERIVED_VERSION) || !entries_shape_current(&conn);
+        if stale {
+            conn.execute_batch(schema::DROP_DERIVED)?;
+        }
+
         conn.execute_batch(schema::PROJECT_SCHEMA)?;
         register_functions(&conn, path)?;
         conn.execute_batch(schema::PROJECT_VIEWS)?;
@@ -46,7 +67,16 @@ impl Db {
             conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
             project_id,
+            derived_stale: stale,
         })
+    }
+
+    /// Whether the derived layer was dropped on open and needs rebuilding from `chunks`.
+    ///
+    /// The caller does the rebuild, because it can take seconds on a large project and
+    /// `open` is on the request path.
+    pub fn derived_stale(&self) -> bool {
+        self.derived_stale
     }
 
     pub fn path(&self) -> &Path {
@@ -102,6 +132,38 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
     }
     Ok(())
+}
+
+/// Columns `entries` must carry for the current code to read it.
+///
+/// Kept beside the open path rather than derived from the DDL: the point is to catch a
+/// table whose DDL was never applied, so reading the expectation out of the database would
+/// defeat it.
+const ENTRIES_COLUMNS: &[&str] = &[
+    "id",
+    "run_id",
+    "start_line",
+    "end_line",
+    "captured_at",
+    "level",
+    "evidence",
+    "is_error",
+    "error_reason",
+    "fingerprint_id",
+    "boundaries",
+];
+
+/// True when `entries` is absent (a fresh database) or has every expected column.
+fn entries_shape_current(conn: &Connection) -> bool {
+    let Ok(mut stmt) = conn.prepare("SELECT name FROM pragma_table_info('entries')") else {
+        return true;
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return true;
+    };
+    let found: std::collections::HashSet<String> = rows.filter_map(|r| r.ok()).collect();
+    // No rows means no table, which `PROJECT_SCHEMA` is about to create correctly.
+    found.is_empty() || ENTRIES_COLUMNS.iter().all(|c| found.contains(*c))
 }
 
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {

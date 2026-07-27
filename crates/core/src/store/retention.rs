@@ -194,15 +194,20 @@ pub fn reparse_run(db: &Db, run_id: RunId) -> Result<usize> {
             };
 
             tx.execute(
+                // Must stay column-for-column identical to the insert in `store::write`.
+                // A column present there and missing here silently degrades on reparse,
+                // which is the one path that is supposed to be lossless.
                 "INSERT INTO entries (run_id, start_line, end_line, captured_at, level,
-                                      is_error, error_reason, fingerprint_id, boundaries)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                      evidence, is_error, error_reason, fingerprint_id,
+                                      boundaries)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
                     run_id,
                     e.start_line,
                     e.end_line,
                     e.captured_at,
                     e.level.as_str(),
+                    e.evidence.as_str(),
                     e.is_error as i64,
                     e.error_reason,
                     fp_id,
@@ -278,6 +283,26 @@ pub fn reparse_all(db: &Db) -> Result<usize> {
     Ok(total)
 }
 
+/// Rebuilds the derived layer after [`Db::derived_stale`] reports a version bump.
+///
+/// Reparses every run whose chunks survive, then parks each agent session's watermark at
+/// the newest entry. Entry ids do not survive a rebuild, so a stale watermark would either
+/// replay the whole history as unread or skip past genuinely new errors.
+///
+/// [`Db::derived_stale`]: crate::store::Db::derived_stale
+pub fn rebuild_derived(db: &Db) -> Result<usize> {
+    let entries = reparse_all(db)?;
+    db.with(|conn| {
+        conn.execute(
+            "UPDATE session_cursors
+                SET last_entry_id = COALESCE((SELECT max(id) FROM entries), 0)",
+            [],
+        )?;
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
 fn load_lines(db: &Db, run_id: RunId) -> Result<Vec<RawLine>> {
     db.with(|conn| {
         let mut stmt = conn.prepare(
@@ -347,6 +372,102 @@ mod tests {
         w.push(output, crate::now_micros()).unwrap();
         w.finish(&h.index, Some(1), None).unwrap();
         w.run_id()
+    }
+
+    #[test]
+    fn a_derived_version_bump_rebuilds_the_index_from_chunks() {
+        // `derived_version` used to be written on every open and read on none, so bumping
+        // it did nothing at all: `CREATE TABLE IF NOT EXISTS` left the old columns in
+        // place and the daemon carried on serving entries built by the previous rules.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.db");
+        let index = IndexDb::open(&tmp.path().join("index.db")).unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = index.register(&root, "proj", &path).unwrap();
+
+        let h = H {
+            _tmp: tempfile::tempdir().unwrap(),
+            db: Db::open(&path, p.id).unwrap(),
+            index,
+        };
+        assert!(!h.db.derived_stale(), "a fresh database is already current");
+        let id = run(&h, b"[error] boom\n    at a (/app/x.js:1:1)\nplain output\n");
+        let before = read::entries(&h.db, &EntryFilter { run_id: Some(id), ..Default::default() })
+            .unwrap()
+            .len();
+        assert!(before > 0);
+        drop(h);
+
+        // Pretend the database was written by an older build.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            crate::store::set_meta(&conn, "derived_version", "0").unwrap();
+        }
+
+        let reopened = Db::open(&path, p.id).unwrap();
+        assert!(reopened.derived_stale(), "an older derived layer must be noticed");
+        let rebuilt = rebuild_derived(&reopened).unwrap();
+        assert_eq!(rebuilt, before, "the rebuild reproduces the same entries");
+
+        // The dropped table came back at the current shape, which is the whole point.
+        let n: i64 = reopened
+            .with(|conn| {
+                Ok(conn
+                    .query_row("SELECT count(*) FROM entries WHERE evidence = 'declared'", [], |r| {
+                        r.get(0)
+                    })?)
+            })
+            .unwrap();
+        assert!(n > 0, "the new column exists and is populated");
+
+        assert!(!Db::open(&path, p.id).unwrap().derived_stale(), "and it settles");
+    }
+
+    #[test]
+    fn a_current_version_stamp_over_a_stale_table_still_rebuilds() {
+        // How this failed in the field: a build wrote the new `derived_version` without
+        // dropping the table, so the stamp said 2 while `entries` still had the version-1
+        // columns. A later correct build then saw a matching version and rebuilt nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("p.db");
+        let index = IndexDb::open(&tmp.path().join("index.db")).unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = index.register(&root, "proj", &path).unwrap();
+
+        let h = H {
+            _tmp: tempfile::tempdir().unwrap(),
+            db: Db::open(&path, p.id).unwrap(),
+            index,
+        };
+        run(&h, b"[error] boom\n");
+        drop(h);
+
+        // Stamp stays current; the column disappears. The views are dropped first because
+        // they call `runlog_render`, which a bare connection has not registered — `Db::open`
+        // recreates them.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "DROP VIEW IF EXISTS v_novel;
+                 DROP VIEW IF EXISTS v_errors;
+                 DROP VIEW IF EXISTS v_entries;
+                 ALTER TABLE entries DROP COLUMN evidence;",
+            )
+            .unwrap();
+        }
+
+        let reopened = Db::open(&path, p.id).unwrap();
+        assert!(
+            reopened.derived_stale(),
+            "the shape is authoritative, not the version stamp"
+        );
+        rebuild_derived(&reopened).unwrap();
+        let n: i64 = reopened
+            .with(|conn| Ok(conn.query_row("SELECT count(*) FROM entries", [], |r| r.get(0))?))
+            .unwrap();
+        assert!(n > 0, "and the rebuild repopulated it");
     }
 
     #[test]

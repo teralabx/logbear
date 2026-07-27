@@ -156,6 +156,15 @@ impl Daemon {
             return Ok(h.clone());
         }
         let db = Db::open(Path::new(&project.db_path), project.id)?;
+        if db.derived_stale() {
+            match retention::rebuild_derived(&db) {
+                Ok(n) => eprintln!(
+                    "{}: rebuilt {n} entries from chunks after a derived-schema change",
+                    project.name
+                ),
+                Err(e) => eprintln!("{}: derived rebuild failed: {e}", project.name),
+            }
+        }
         let handle = Arc::new(ProjectHandle {
             project,
             db,
