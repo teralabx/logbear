@@ -51,10 +51,10 @@
 		<a
 			class="flex items-center gap-[9px] text-base-content no-underline [-webkit-app-region:no-drag]"
 			href="/"
-			title="logbear — all projects"
+			title="LogBear — all projects"
 		>
-			<Mark size={22} />
-			<span class="text-[15px] font-semibold tracking-normal">logbear</span>
+			<Mark size={22} animate />
+			<span class="text-[15px] font-semibold tracking-normal">LogBear</span>
 		</a>
 	</div>
 
