@@ -4,11 +4,13 @@
 //! Everything it does happens behind one unix socket.
 
 mod conn;
+mod lock;
 mod os_notify;
 mod spool;
 mod state;
 
 use clap::{Parser, Subcommand};
+use lock::InstanceLock;
 use logbear_core::client::Client;
 use logbear_core::paths;
 use logbear_core::proto::Request;
@@ -56,16 +58,29 @@ fn serve() -> i32 {
         return 1;
     }
 
-    // A stale socket file outlives an unclean shutdown, so probe it: that is what
-    // distinguishes "another daemon is running" from "the last one was killed".
-    let socket = paths::socket();
-    if socket.exists() {
-        if Client::connect_to(&socket).is_ok() {
-            eprintln!("logbeard: already running at {}", socket.display());
+    // Uniqueness is settled before anything is touched, and by the kernel rather than by
+    // inspecting files: everything below assumes no other daemon is alive, and the lock is
+    // what makes that true.
+    let lock_path = paths::pid_file();
+    let lock = match InstanceLock::acquire(&lock_path) {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            match InstanceLock::holder(&lock_path) {
+                Some(pid) => eprintln!("logbeard: already running (pid {pid})"),
+                None => eprintln!("logbeard: already running"),
+            }
             return 0;
         }
-        let _ = std::fs::remove_file(&socket);
-    }
+        Err(e) => {
+            eprintln!("logbeard: cannot lock {}: {e}", lock_path.display());
+            return 1;
+        }
+    };
+
+    // Holding the lock proves any socket still on disk was left by a daemon that is gone,
+    // so reclaiming it cannot strand a live one.
+    let socket = paths::socket();
+    let _ = std::fs::remove_file(&socket);
 
     let listener = match UnixListener::bind(&socket) {
         Ok(l) => l,
@@ -89,7 +104,10 @@ fn serve() -> i32 {
         }
     };
 
-    let _ = std::fs::write(paths::pid_file(), std::process::id().to_string());
+    // Registered only now: before the socket exists there is nothing to tear down, and a
+    // signal arriving mid-startup would leave the handler describing a daemon that never ran.
+    spawn_signal_handler(daemon.clone());
+
     log(&format!(
         "logbeard {} listening on {}",
         env!("CARGO_PKG_VERSION"),
@@ -118,10 +136,36 @@ fn serve() -> i32 {
     accept_loop(&listener, &daemon);
 
     daemon.close_active_runs();
+    // Ours to remove: nothing else could have bound it while the lock was held.
     let _ = std::fs::remove_file(&socket);
-    let _ = std::fs::remove_file(paths::pid_file());
     log("logbeard stopped");
+    // Last, so the door stays shut until the socket is gone: a daemon starting the instant
+    // this one lets go must not find a socket file with no listener behind it.
+    lock.release();
     0
+}
+
+/// Turns the signals that stop a daemon into the shutdown it already knows how to do.
+///
+/// Without this, `launchctl bootout`, `systemctl stop` and logout all kill the process
+/// outright, leaving the socket on disk and every live run open in the database.
+fn spawn_signal_handler(daemon: Arc<Daemon>) {
+    use signal_hook::consts::signal::*;
+    use signal_hook::iterator::Signals;
+
+    let Ok(mut signals) = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGQUIT]) else {
+        log("could not install signal handlers; a stop will not be clean");
+        return;
+    };
+    std::thread::Builder::new()
+        .name("logbeard-signals".into())
+        .spawn(move || {
+            if let Some(sig) = signals.forever().next() {
+                log(&format!("signal {sig}; shutting down"));
+                daemon.shutdown.store(true, Ordering::SeqCst);
+            }
+        })
+        .ok();
 }
 
 fn accept_loop(listener: &UnixListener, daemon: &Arc<Daemon>) {

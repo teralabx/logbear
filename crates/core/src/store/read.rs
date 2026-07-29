@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::*;
-use crate::proto::{EntryFilter, RunRef, UnreadState};
+use crate::proto::{AckKind, EntryFilter, RunRef, UnreadState};
 use crate::store::{render_range, Db};
 use rusqlite::{Connection, OptionalExtension};
 
@@ -324,12 +324,13 @@ pub fn unread(
     session_id: &str,
     harness: &str,
     block_budget: i64,
+    change_block_budget: i64,
     max_entries: usize,
 ) -> Result<UnreadState> {
     let cursor = ensure_cursor(db, session_id, harness)?;
     let filter = EntryFilter {
         errors_only: true,
-        after_entry: Some(cursor.0),
+        after_entry: Some(cursor.last_entry_id),
         limit: max_entries,
         ascending: true,
         ..Default::default()
@@ -340,7 +341,7 @@ pub fn unread(
         let row: (i64, Option<i64>, Option<i64>) = conn.query_row(
             "SELECT count(*), min(captured_at), max(id) FROM entries
               WHERE is_error = 1 AND id > ?1",
-            [cursor.0],
+            [cursor.last_entry_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         Ok(row)
@@ -352,8 +353,26 @@ pub fn unread(
               WHERE e.is_error = 1 AND e.id > ?1
                 AND e.fingerprint_id NOT IN (SELECT fingerprint_id FROM session_blocks
                                               WHERE session_id = ?2)",
-            rusqlite::params![cursor.0, session_id],
+            rusqlite::params![cursor.last_entry_id, session_id],
             |r| r.get::<_, i64>(0),
+        )?)
+    })?;
+
+    // Every level, not just errors: the nudge exists because a change can go wrong without
+    // logging anything the daemon would classify as an error.
+    let unseen_lines = db.with(|conn| {
+        Ok(conn.query_row(
+            "SELECT count(*) FROM entries WHERE id > ?1",
+            [cursor.nudge_entry_id],
+            |r| r.get::<_, i64>(0),
+        )?)
+    })?;
+
+    let server_running = db.with(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE ended_at IS NULL)",
+            [],
+            |r| r.get::<_, bool>(0),
         )?)
     })?;
 
@@ -362,24 +381,44 @@ pub fn unread(
         new_signatures,
         oldest_at: oldest,
         newest_entry_id: newest,
-        blocks_issued: cursor.1,
-        blocks_remaining: (block_budget - cursor.1).max(0),
+        blocks_issued: cursor.blocks_issued,
+        blocks_remaining: (block_budget - cursor.blocks_issued).max(0),
+        change_blocks_remaining: (change_block_budget - cursor.change_blocks_issued).max(0),
         push_enabled: true,
+        unseen_lines,
+        server_running,
         entries,
     })
 }
 
-/// Returns `(last_entry_id, blocks_issued)`, creating the cursor if this session is new.
+/// Everything a session's cursor row holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub last_entry_id: EntryId,
+    pub nudge_entry_id: EntryId,
+    pub blocks_issued: i64,
+    pub change_blocks_issued: i64,
+}
+
+/// Reads a session's cursor, creating it if this session is new.
 ///
-/// A new cursor starts at the current high-water mark rather than zero, so a fresh session
-/// is not handed the project's entire error history.
-pub fn ensure_cursor(db: &Db, session_id: &str, harness: &str) -> Result<(EntryId, i64)> {
+/// Both watermarks start at the current high-water mark rather than zero, so a fresh session
+/// is not handed the project's entire history as though it were new.
+pub fn ensure_cursor(db: &Db, session_id: &str, harness: &str) -> Result<Cursor> {
     db.with(|conn| {
-        let existing: Option<(i64, i64)> = conn
+        let existing: Option<Cursor> = conn
             .query_row(
-                "SELECT last_entry_id, blocks_issued FROM session_cursors WHERE session_id = ?1",
+                "SELECT last_entry_id, nudge_entry_id, blocks_issued, change_blocks_issued
+                   FROM session_cursors WHERE session_id = ?1",
                 [session_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| {
+                    Ok(Cursor {
+                        last_entry_id: r.get(0)?,
+                        nudge_entry_id: r.get(1)?,
+                        blocks_issued: r.get(2)?,
+                        change_blocks_issued: r.get(3)?,
+                    })
+                },
             )
             .optional()?;
         if let Some(v) = existing {
@@ -389,25 +428,31 @@ pub fn ensure_cursor(db: &Db, session_id: &str, harness: &str) -> Result<(EntryI
             .query_row("SELECT COALESCE(max(id), 0) FROM entries", [], |r| r.get(0))
             .unwrap_or(0);
         conn.execute(
-            "INSERT INTO session_cursors (session_id, harness, last_entry_id, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO session_cursors
+                 (session_id, harness, last_entry_id, nudge_entry_id, last_seen_at)
+             VALUES (?1, ?2, ?3, ?3, ?4)",
             rusqlite::params![session_id, harness, high, crate::now_micros()],
         )?;
-        Ok((high, 0))
+        Ok(Cursor {
+            last_entry_id: high,
+            nudge_entry_id: high,
+            blocks_issued: 0,
+            change_blocks_issued: 0,
+        })
     })
 }
 
-/// Advances the watermark, optionally spending a block from the budget.
+/// Advances the watermark `kind` names, charging the budget that goes with it.
 ///
-/// The cursor advances when a block is issued rather than when the agent acknowledges it,
-/// so the same errors cannot block twice even if the agent ignores them.
+/// The error cursor advances when a block is issued rather than when the agent acknowledges
+/// it, so the same errors cannot block twice even if the agent ignores them.
 pub fn ack(
     db: &Db,
     session_id: &str,
     harness: &str,
     entry_id: Option<EntryId>,
-    record_block: bool,
-) -> Result<(EntryId, i64)> {
+    kind: AckKind,
+) -> Result<Cursor> {
     ensure_cursor(db, session_id, harness)?;
     db.with(|conn| {
         let target: i64 = match entry_id {
@@ -416,21 +461,30 @@ pub fn ack(
                 .query_row("SELECT COALESCE(max(id), 0) FROM entries", [], |r| r.get(0))
                 .unwrap_or(0),
         };
+        // `max(…)` on both watermarks: an ack that arrived out of order must never rewind a
+        // cursor and re-show the agent what it has already been told.
         conn.execute(
             "UPDATE session_cursors
-                SET last_entry_id = max(last_entry_id, ?2),
-                    last_seen_at = ?3,
-                    blocks_issued = blocks_issued + ?4
+                SET last_entry_id  = CASE WHEN ?5 = 1 THEN max(last_entry_id, ?2)
+                                          ELSE last_entry_id END,
+                    nudge_entry_id = CASE WHEN ?5 = 1 THEN nudge_entry_id
+                                          ELSE max(nudge_entry_id, ?2) END,
+                    last_seen_at   = ?3,
+                    blocks_issued        = blocks_issued + ?4,
+                    change_blocks_issued = change_blocks_issued + ?6
               WHERE session_id = ?1",
-            rusqlite::params![session_id, target, crate::now_micros(), record_block as i64],
+            rusqlite::params![
+                session_id,
+                target,
+                crate::now_micros(),
+                (kind == AckKind::StopBlock) as i64,
+                kind.advances_errors() as i64,
+                (kind == AckKind::ChangeBlock) as i64,
+            ],
         )?;
-        conn.query_row(
-            "SELECT last_entry_id, blocks_issued FROM session_cursors WHERE session_id = ?1",
-            [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(Into::into)
-    })
+        Ok(())
+    })?;
+    ensure_cursor(db, session_id, harness)
 }
 
 /// Whether this signature has already blocked this session.
@@ -553,15 +607,107 @@ mod tests {
         assert_eq!(found.len(), 1);
     }
 
+    /// The invariant the whole verify nudge rests on: telling the agent to go look must not
+    /// consume errors the Stop hook has yet to report.
+    #[test]
+    fn a_nudge_moves_its_own_cursor_and_leaves_the_error_cursor_alone() {
+        let h = h();
+        let before = ensure_cursor(&h.db, "s1", "claude_code").unwrap();
+
+        ack(&h.db, "s1", "claude_code", Some(500), AckKind::Nudge).unwrap();
+        let after = ensure_cursor(&h.db, "s1", "claude_code").unwrap();
+
+        assert_eq!(after.nudge_entry_id, 500, "the nudge cursor must advance");
+        assert_eq!(
+            after.last_entry_id, before.last_entry_id,
+            "a nudge must never advance the error cursor"
+        );
+        assert_eq!(after.blocks_issued, 0, "a nudge spends no budget");
+        assert_eq!(after.change_blocks_issued, 0);
+    }
+
+    #[test]
+    fn each_block_kind_charges_only_its_own_budget() {
+        let h = h();
+
+        ack(&h.db, "s1", "claude_code", Some(10), AckKind::StopBlock).unwrap();
+        let c = ensure_cursor(&h.db, "s1", "claude_code").unwrap();
+        assert_eq!((c.blocks_issued, c.change_blocks_issued), (1, 0));
+
+        ack(&h.db, "s1", "claude_code", Some(20), AckKind::ChangeBlock).unwrap();
+        let c = ensure_cursor(&h.db, "s1", "claude_code").unwrap();
+        assert_eq!(
+            (c.blocks_issued, c.change_blocks_issued),
+            (1, 1),
+            "a mid-turn block must not spend the Stop gate's budget"
+        );
+        assert_eq!(c.last_entry_id, 20, "both block kinds report errors");
+    }
+
+    #[test]
+    fn unseen_lines_counts_every_level_not_only_errors() {
+        let h = h();
+        // The cursor is created first, while the project is empty: a watermark never rewinds,
+        // so everything written after this counts as unseen.
+        unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap();
+        run(&h, b"compiled successfully\nError: boom\n", 0);
+
+        let state = unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap();
+        assert_eq!(state.new_errors, 1, "only one line is an error");
+        assert!(
+            state.unseen_lines >= 2,
+            "every line counts as unseen, got {}",
+            state.unseen_lines
+        );
+
+        ack(&h.db, "s1", "mcp", None, AckKind::Nudge).unwrap();
+        let after = unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap();
+        assert_eq!(after.unseen_lines, 0, "the nudge covered them");
+        assert_eq!(
+            after.new_errors, 1,
+            "and left the error for the Stop hook to report"
+        );
+    }
+
+    #[test]
+    fn server_running_follows_whether_a_run_is_still_open() {
+        let h = h();
+        assert!(
+            !unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap().server_running,
+            "nothing has been started"
+        );
+
+        run(&h, b"hello\n", 0);
+        assert!(
+            !unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap().server_running,
+            "a finished run is not a running server"
+        );
+
+        let _live = Writer::start(
+            &h.db,
+            &h.index,
+            &RunStamp {
+                command: vec!["mix".into(), "phx.server".into()],
+                ..Default::default()
+            },
+            Arc::new(Redactor::disabled()),
+        )
+        .unwrap();
+        assert!(
+            unread(&h.db, "s1", "mcp", 3, 2, 10).unwrap().server_running,
+            "an open run is a running server"
+        );
+    }
+
     #[test]
     fn a_new_session_starts_at_the_high_water_mark_not_at_zero() {
         let h = h();
         run(&h, b"Error: old news\n", 1);
-        let state = unread(&h.db, "session-a", "mcp", 3, 10).unwrap();
+        let state = unread(&h.db, "session-a", "mcp", 3, 2, 10).unwrap();
         assert_eq!(state.new_errors, 0, "a fresh session inherited history");
 
         run(&h, b"Error: brand new\n", 1);
-        let state = unread(&h.db, "session-a", "mcp", 3, 10).unwrap();
+        let state = unread(&h.db, "session-a", "mcp", 3, 2, 10).unwrap();
         assert_eq!(state.new_errors, 1);
         assert!(state.entries[0].text.contains("brand new"));
     }
@@ -569,15 +715,15 @@ mod tests {
     #[test]
     fn two_sessions_do_not_steal_each_others_notifications() {
         let h = h();
-        unread(&h.db, "a", "mcp", 3, 10).unwrap();
-        unread(&h.db, "b", "mcp", 3, 10).unwrap();
+        unread(&h.db, "a", "mcp", 3, 2, 10).unwrap();
+        unread(&h.db, "b", "mcp", 3, 2, 10).unwrap();
         run(&h, b"Error: shared\n", 1);
 
-        assert_eq!(unread(&h.db, "a", "mcp", 3, 10).unwrap().new_errors, 1);
-        ack(&h.db, "a", "mcp", None, false).unwrap();
-        assert_eq!(unread(&h.db, "a", "mcp", 3, 10).unwrap().new_errors, 0);
+        assert_eq!(unread(&h.db, "a", "mcp", 3, 2, 10).unwrap().new_errors, 1);
+        ack(&h.db, "a", "mcp", None, AckKind::Seen).unwrap();
+        assert_eq!(unread(&h.db, "a", "mcp", 3, 2, 10).unwrap().new_errors, 0);
         assert_eq!(
-            unread(&h.db, "b", "mcp", 3, 10).unwrap().new_errors,
+            unread(&h.db, "b", "mcp", 3, 2, 10).unwrap().new_errors,
             1,
             "session b lost a notification session a consumed"
         );
@@ -586,14 +732,14 @@ mod tests {
     #[test]
     fn issuing_a_block_spends_budget_and_advances_the_cursor() {
         let h = h();
-        unread(&h.db, "s", "claude_code", 3, 10).unwrap();
+        unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
         run(&h, b"Error: boom\n", 1);
 
-        let before = unread(&h.db, "s", "claude_code", 3, 10).unwrap();
+        let before = unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
         assert_eq!(before.blocks_remaining, 3);
 
-        ack(&h.db, "s", "claude_code", before.newest_entry_id, true).unwrap();
-        let after = unread(&h.db, "s", "claude_code", 3, 10).unwrap();
+        ack(&h.db, "s", "claude_code", before.newest_entry_id, AckKind::StopBlock).unwrap();
+        let after = unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
         assert_eq!(after.blocks_issued, 1);
         assert_eq!(after.blocks_remaining, 2);
         assert_eq!(after.new_errors, 0, "blocking must consume the errors it reported");
@@ -602,7 +748,7 @@ mod tests {
     #[test]
     fn a_fingerprint_blocks_a_session_at_most_once() {
         let h = h();
-        unread(&h.db, "s", "codex", 3, 10).unwrap();
+        unread(&h.db, "s", "codex", 3, 2, 10).unwrap();
         run(&h, b"Error: boom\n", 1);
         let fp = entries(&h.db, &EntryFilter { errors_only: true, ..Default::default() })
             .unwrap()[0]

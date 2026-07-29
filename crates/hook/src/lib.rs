@@ -15,13 +15,14 @@
 
 pub mod config;
 pub mod decide;
+pub mod intent;
 pub mod payload;
 
 use decide::Decision;
 use payload::Payload;
 use logbear_core::client::Client;
 use logbear_core::model::EntryId;
-use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::proto::{AckKind, ProjectRef, UnreadState};
 use logbear_core::Result;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -40,7 +41,7 @@ pub trait Daemon {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState>;
 }
 
@@ -60,9 +61,9 @@ impl Daemon for Client {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
-        Client::ack(self, project, session_id, harness, entry_id, record_block)
+        Client::ack(self, project, session_id, harness, entry_id, kind)
     }
 }
 
@@ -91,25 +92,45 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
         }
     };
 
-    let mut decision = decide::decide(&payload.event, &unread);
+    let mut decision = decide::decide(
+        &decide::Input {
+            event: &payload.event,
+            tool: payload.tool_name.as_deref(),
+            command: payload.command.as_deref(),
+        },
+        &unread,
+    );
 
-    if let Decision::Block { .. } = decision {
-        let watermark = decide::watermark(&unread);
-        if let Err(e) = daemon.ack(
-            project,
-            &payload.session_id,
-            harness,
-            watermark,
-            /* record_block */ true,
-        ) {
-            eprintln!("logbear-hook: could not spend the block budget ({e}); degrading");
-            decision = Decision::Context {
-                text: match &decision {
-                    Decision::Block { reason } => reason.clone(),
-                    _ => unreachable!("checked immediately above"),
-                },
+    match &decision {
+        Decision::Block { budget, .. } => {
+            let kind = match budget {
+                decide::Budget::Stop => AckKind::StopBlock,
+                decide::Budget::Change => AckKind::ChangeBlock,
             };
+            let watermark = decide::watermark(&unread);
+            if let Err(e) = daemon.ack(project, &payload.session_id, harness, watermark, kind) {
+                eprintln!("logbear-hook: could not spend the block budget ({e}); degrading");
+                decision = Decision::Context {
+                    text: match &decision {
+                        Decision::Block { reason, .. } => reason.clone(),
+                        _ => unreachable!("checked immediately above"),
+                    },
+                    ack_nudge: false,
+                };
+            }
         }
+        // A nudge that does not move its cursor fires again on every later change, so the
+        // agent learns to ignore it.
+        Decision::Context {
+            ack_nudge: true, ..
+        } => {
+            if let Err(e) = daemon.ack(project, &payload.session_id, harness, None, AckKind::Nudge)
+            {
+                // Advisory only: the agent still gets told, it may just get told twice.
+                eprintln!("logbear-hook: could not advance the nudge cursor ({e})");
+            }
+        }
+        _ => {}
     }
 
     decide::render(payload.harness, &payload.event, &decision)

@@ -107,6 +107,44 @@ impl Default for EntryFilter {
     }
 }
 
+/// Two mid-turn interruptions per session. Enough to catch the change that just broke
+/// something; few enough that a flapping server cannot hold the agent hostage.
+fn default_change_block_budget() -> i64 {
+    2
+}
+
+/// What an [`Request::Ack`] is acknowledging.
+///
+/// A session keeps two watermarks because it is asked two different questions. "Which errors
+/// are new?" may only advance when errors are reported to the agent; "which lines has the
+/// agent not looked at yet?" advances whenever it is told to go look. One watermark serving
+/// both would let a nudge silently consume errors the Stop hook exists to surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AckKind {
+    /// The agent read these entries. Advances the error cursor, charges nothing.
+    #[default]
+    Seen,
+    /// A Stop block: advance the error cursor and charge the Stop budget.
+    StopBlock,
+    /// A PostToolUse block: advance the error cursor and charge the change budget.
+    ChangeBlock,
+    /// A verify nudge: advance the nudge cursor only.
+    Nudge,
+}
+
+impl AckKind {
+    /// Whether this reports errors to the agent, and so must advance the error cursor.
+    /// A block whose watermark did not move re-fires on the same errors forever.
+    pub fn advances_errors(self) -> bool {
+        !matches!(self, AckKind::Nudge)
+    }
+
+    pub fn is_block(self) -> bool {
+        matches!(self, AckKind::StopBlock | AckKind::ChangeBlock)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "op")]
 pub enum Request {
@@ -202,15 +240,15 @@ pub enum Request {
         session_id: String,
         harness: String,
     },
-    /// Advances the session watermark.
+    /// Advances one of the session's watermarks.
     Ack {
         project: ProjectRef,
         session_id: String,
         harness: String,
         entry_id: Option<EntryId>,
-        /// Set by the hook when it issues a block, so the block budget is charged.
+        /// Which watermark to move, and which budget to charge.
         #[serde(default)]
-        record_block: bool,
+        kind: AckKind,
     },
 
     // ---- settings ----
@@ -340,7 +378,20 @@ pub struct UnreadState {
     pub newest_entry_id: Option<EntryId>,
     pub blocks_issued: i64,
     pub blocks_remaining: i64,
+    /// PostToolUse blocks left, on their own allowance. Kept apart from `blocks_remaining`
+    /// so a noisy turn cannot leave the Stop gate unable to block when it matters most.
+    #[serde(default)]
+    pub change_blocks_remaining: i64,
     pub push_enabled: bool,
+    /// Entries of any level after the nudge cursor. The verify nudge fires on this rather
+    /// than on `new_errors`: a change that logged only a clean reload still deserves a look,
+    /// and one that logged nothing at all deserves silence.
+    #[serde(default)]
+    pub unseen_lines: i64,
+    /// Whether a run is open for this project. Nothing is worth checking if nothing is
+    /// running to produce it.
+    #[serde(default)]
+    pub server_running: bool,
     /// Ready-to-inject entries, newest last. Capped by the caller's budget.
     pub entries: Vec<EntryView>,
 }
@@ -395,6 +446,10 @@ pub struct Settings {
     pub quiet_hours: Option<QuietHours>,
     /// Blocks issued per agent session before push degrades to advisory context.
     pub block_budget: i64,
+    /// PostToolUse blocks per session. Deliberately smaller than `block_budget` and charged
+    /// separately: interrupting mid-turn is a bigger imposition than interrupting a stop.
+    #[serde(default = "default_change_block_budget")]
+    pub change_block_budget: i64,
     pub push_enabled: bool,
     /// Commands never captured, being interactive sessions rather than runs.
     pub denylist: Vec<String>,
@@ -409,6 +464,7 @@ impl Default for Settings {
             notifications_enabled: true,
             quiet_hours: None,
             block_budget: 3,
+            change_block_budget: default_change_block_budget(),
             push_enabled: true,
             denylist: [
                 "psql", "mysql", "sqlite3", "redis-cli", "ssh", "vim", "nvim", "vi", "nano",

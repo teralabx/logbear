@@ -4,7 +4,7 @@
 //! generated schemas, so a wire-format change fails here rather than silently.
 
 use logbear_core::model::{Boundaries, Entry, EntryId, EntryView, Level};
-use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::proto::{AckKind, ProjectRef, UnreadState};
 use logbear_core::{Error, Result};
 use logbear_hook::payload::{self, Event, Harness};
 use logbear_hook::{respond, Daemon};
@@ -49,7 +49,10 @@ fn unread() -> UnreadState {
         newest_entry_id: Some(1002),
         blocks_issued: 0,
         blocks_remaining: 3,
+        change_blocks_remaining: 2,
         push_enabled: true,
+        unseen_lines: 0,
+        server_running: false,
         entries: vec![
             entry(
                 1001,
@@ -72,7 +75,7 @@ struct FakeDaemon {
     state: UnreadState,
     unread_fails: bool,
     ack_fails: bool,
-    acks: Vec<(Option<EntryId>, bool)>,
+    acks: Vec<(Option<EntryId>, AckKind)>,
     seen: Vec<(String, String, String)>,
 }
 
@@ -103,9 +106,9 @@ impl Daemon for FakeDaemon {
         _s: &str,
         _h: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
-        self.acks.push((entry_id, record_block));
+        self.acks.push((entry_id, kind));
         if self.ack_fails {
             return Err(Error::other("write refused"));
         }
@@ -237,7 +240,7 @@ fn subagent_stop_blocks_too() {
 fn issuing_a_block_spends_the_budget_and_advances_the_cursor() {
     let mut d = FakeDaemon::with(unread());
     run("claude_stop", None, &mut d);
-    assert_eq!(d.acks, vec![(Some(1002), true)]);
+    assert_eq!(d.acks, vec![(Some(1002), AckKind::StopBlock)]);
 }
 
 #[test]
@@ -303,16 +306,21 @@ fn a_failed_ack_downgrades_the_block_instead_of_looping() {
 
 // --------------------------------------------------------------------------- drip
 
+/// A recurring error was already there before this edit, so it is worth mentioning and not
+/// worth interrupting for.
 #[test]
-fn post_tool_use_never_blocks_and_never_moves_the_cursor() {
+fn post_tool_use_with_only_recurring_errors_stays_a_short_advisory() {
     for (name, harness) in [
         ("claude_post_tool_use", Harness::ClaudeCode),
         ("codex_post_tool_use", Harness::Codex),
     ] {
-        let mut d = FakeDaemon::with(unread());
+        let mut d = FakeDaemon::with(UnreadState {
+            new_signatures: 0,
+            ..unread()
+        });
         let out = run(name, Some(harness), &mut d);
 
-        assert!(out.get("decision").is_none(), "{name} must never block: {out}");
+        assert!(out.get("decision").is_none(), "{name} must not block: {out}");
         assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PostToolUse");
         let ctx = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -320,7 +328,146 @@ fn post_tool_use_never_blocks_and_never_moves_the_cursor() {
         // Fires after every edit, so it must stay a line rather than a stack trace.
         assert!(ctx.len() < 400, "{name}: {} chars", ctx.len());
         assert!(ctx.contains("2 new errors"), "{name}: {ctx}");
-        assert!(d.acks.is_empty(), "{name} must not advance the cursor");
+        assert!(
+            d.acks.is_empty(),
+            "{name}: an advisory must not advance the error cursor, or the Stop hook \
+             loses the errors it exists to surface"
+        );
+    }
+}
+
+/// The escalation: a signature this project has never produced, arriving immediately after
+/// an edit, is almost certainly that edit.
+#[test]
+fn post_tool_use_escalates_for_a_signature_the_project_has_never_seen() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    assert_eq!(out["decision"], "block", "a new signature should interrupt");
+    let reason = out["reason"].as_str().expect("a reason");
+    assert!(reason.contains("NEW SIGNATURE"), "{reason}");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::ChangeBlock)],
+        "it must charge the change budget, never the Stop gate's"
+    );
+}
+
+/// Once the change budget is gone the same errors must still be reported, just without
+/// interrupting: a cap that turned into silence would hide them entirely.
+#[test]
+fn an_exhausted_change_budget_degrades_to_advisory() {
+    let mut d = FakeDaemon::with(UnreadState {
+        change_blocks_remaining: 0,
+        ..unread()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    assert!(out.get("decision").is_none(), "must not block: {out}");
+    assert!(out["hookSpecificOutput"]["additionalContext"].is_string());
+    assert!(d.acks.is_empty());
+}
+
+// --------------------------------------------------------------------------- verify loop
+
+#[test]
+fn an_edit_with_unseen_server_output_asks_the_agent_to_look() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: true,
+        unseen_lines: 4,
+        ..Default::default()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a nudge: {out}"));
+    assert!(ctx.contains('4'), "the count belongs in the message: {ctx}");
+    assert!(ctx.contains("logbear logs"), "it must say how to look: {ctx}");
+    assert_eq!(
+        d.acks,
+        vec![(None, AckKind::Nudge)],
+        "the nudge cursor must advance, or this repeats after every later edit"
+    );
+}
+
+#[test]
+fn an_edit_with_a_silent_server_says_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: true,
+        unseen_lines: 0,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({})
+    );
+    assert!(d.acks.is_empty());
+}
+
+#[test]
+fn an_edit_with_nothing_running_says_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: false,
+        unseen_lines: 12,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({}),
+        "nothing is running, so there is nothing to verify against"
+    );
+}
+
+// --------------------------------------------------------------------------- intent
+
+#[test]
+fn an_uncaptured_dev_server_is_named_with_its_wrapped_form() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    let out = run("claude_bash_dev_server", Some(Harness::ClaudeCode), &mut d);
+
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a nudge: {out}"));
+    assert!(ctx.contains("logbear npm run dev"), "must show the fix: {ctx}");
+    assert!(d.acks.is_empty(), "an intent nudge reads no entries");
+}
+
+/// Codex sends argv, and wraps the real command in `bash -lc`. `mix compile` finishes, so
+/// nothing should be said about it either way.
+#[test]
+fn a_codex_argv_command_is_understood_rather_than_ignored() {
+    let p = payload::parse(&golden("codex_post_tool_use"), Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("mix compile"));
+}
+
+#[test]
+fn a_claude_bash_command_is_read_as_a_string() {
+    let p = payload::parse(&golden("claude_bash_dev_server"), Some(Harness::ClaudeCode)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("npm run dev"));
+}
+
+// --------------------------------------------------------------------------- session start
+
+#[test]
+fn session_start_teaches_the_agent_to_wrap_long_running_commands() {
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        let mut d = FakeDaemon::with(UnreadState {
+            push_enabled: true,
+            ..Default::default()
+        });
+        let out = run("claude_session_start", Some(harness), &mut d);
+        let ctx = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{harness:?}: {out}"));
+        assert!(ctx.contains("logbear npm run dev"), "{ctx}");
+        assert!(d.acks.is_empty(), "saying hello writes nothing");
     }
 }
 

@@ -4,6 +4,7 @@
 //! is a pure function of the decision and the harness. Both are kept free of I/O so the
 //! loop-safety rules are testable without a socket.
 
+use crate::intent::{self, Intent};
 use crate::payload::{Event, Harness};
 use logbear_core::model::EntryView;
 use logbear_core::proto::UnreadState;
@@ -14,39 +15,146 @@ const MAX_ENTRIES: usize = 5;
 /// Per-entry character cap. A single Elixir stack trace can run to several KB.
 const MAX_ENTRY_CHARS: usize = 1_200;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
-    /// Say nothing. The common case.
-    Allow,
-    /// Stop events only: the agent is forced to continue with `reason` in front of it.
-    Block { reason: String },
-    /// Advisory text. Never interrupts the turn.
-    Context { text: String },
+/// Which allowance a block spends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Budget {
+    /// The Stop gate: the last thing standing between a broken change and "done".
+    Stop,
+    /// A mid-turn interruption, on its own smaller allowance.
+    Change,
 }
 
-pub fn decide(event: &Event, unread: &UnreadState) -> Decision {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Say nothing. The common case, and the one most rules end at.
+    Allow,
+    /// The agent is forced to continue with `reason` in front of it.
+    Block { reason: String, budget: Budget },
+    /// Advisory text. Never interrupts the turn.
+    ///
+    /// `ack_nudge` advances the nudge cursor. Set only by the verify nudge: every other
+    /// advisory reports errors the Stop hook still needs to see.
+    Context { text: String, ack_nudge: bool },
+}
+
+/// Everything the rules read, so the signature does not grow a parameter per rule.
+pub struct Input<'a> {
+    pub event: &'a Event,
+    pub tool: Option<&'a str>,
+    pub command: Option<&'a str>,
+}
+
+impl Input<'_> {
+    /// Tools that change code. Both harnesses' names, since one binary serves both.
+    fn is_change(&self) -> bool {
+        matches!(
+            self.tool,
+            Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch" | "edit_file")
+        )
+    }
+}
+
+pub fn decide(input: &Input, unread: &UnreadState) -> Decision {
     // Push is off for this project; nothing else applies.
     if !unread.push_enabled {
         return Decision::Allow;
     }
-    if unread.is_empty() {
-        return Decision::Allow;
-    }
 
-    match event {
+    match input.event {
+        // Said once, up front, so the agent gets it right the first time rather than being
+        // corrected after the first server's output is already lost.
+        Event::SessionStart => Decision::Context {
+            text: STANDING_RULE.to_string(),
+            ack_nudge: false,
+        },
+
+        Event::Stop | Event::SubagentStop if unread.is_empty() => Decision::Allow,
         // Past the block budget, errors degrade to advisory context: blocking without a cap
         // traps the agent forever.
         Event::Stop | Event::SubagentStop if unread.blocks_remaining > 0 => Decision::Block {
             reason: block_reason(unread),
+            budget: Budget::Stop,
         },
         Event::Stop | Event::SubagentStop => Decision::Context {
             text: summary(unread),
+            ack_nudge: false,
         },
-        Event::PostToolUse => Decision::Context {
-            text: summary(unread),
-        },
+
+        Event::PostToolUse => post_tool_use(input, unread),
         Event::Other(_) => Decision::Allow,
     }
+}
+
+/// One message per event, and an error is always the more useful one.
+fn post_tool_use(input: &Input, unread: &UnreadState) -> Decision {
+    if !unread.is_empty() {
+        // A signature this project has never produced, arriving right after a change, is
+        // almost certainly that change — and is cheapest to fix while the agent still has
+        // the context for it. A recurring one is not: it was already there.
+        if input.is_change() && unread.new_signatures > 0 && unread.change_blocks_remaining > 0 {
+            return Decision::Block {
+                reason: block_reason(unread),
+                budget: Budget::Change,
+            };
+        }
+        return Decision::Context {
+            text: summary(unread),
+            ack_nudge: false,
+        };
+    }
+
+    // Nothing has gone wrong that logbear can see. The change may still be wrong, and the
+    // running process is the only thing that knows.
+    if input.is_change() && unread.server_running && unread.unseen_lines > 0 {
+        return Decision::Context {
+            text: verify_nudge(unread.unseen_lines),
+            ack_nudge: true,
+        };
+    }
+
+    if let Some(command) = input.command {
+        return match intent::classify(command) {
+            Intent::StartsServer { suggested } => Decision::Context {
+                text: format!(
+                    "logbear: that process is running uncaptured, so nothing is recording its \
+                     output and its errors will not reach you. Stop it and start it again as \
+                     `{suggested}`.",
+                ),
+                ack_nudge: false,
+            },
+            // Only worth saying when there is something to redirect to; on a project with
+            // nothing captured the advice points at an empty database.
+            Intent::ChasesBug if unread.server_running => Decision::Context {
+                text: "logbear: this project's output is already captured. \
+                       `logbear logs --level error`, or the logbear MCP tools, cover the whole \
+                       run rather than whatever happened to reach that file."
+                    .to_string(),
+                ack_nudge: false,
+            },
+            _ => Decision::Allow,
+        };
+    }
+
+    Decision::Allow
+}
+
+/// What the agent needs to know before it starts anything.
+const STANDING_RULE: &str = "\
+logbear is recording this project. Start long-running processes — dev servers, watchers, \
+anything that runs until you kill it — with `logbear` in front, for example \
+`logbear npm run dev` or `logbear mix phx.server`. Their output is then captured and their \
+errors are surfaced to you automatically. One-off commands like tests and builds do not need \
+it, since you already see their output.";
+
+/// The change landed and the process reacted. Whether it reacted *well* is the part the agent
+/// cannot know without looking, and a clean compile is not an answer.
+fn verify_nudge(lines: i64) -> String {
+    format!(
+        "logbear: the running process logged {lines} new line{} after your change. Read them \
+         with `logbear logs` or the logbear MCP tools to confirm it did what you intended — \
+         a change that compiles can still be wrong.",
+        plural(lines),
+    )
 }
 
 /// The JSON a harness expects on stdout.
@@ -66,8 +174,8 @@ pub fn decide(event: &Event, unread: &UnreadState) -> Decision {
 pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({}),
-        Decision::Block { reason } => json!({ "decision": "block", "reason": reason }),
-        Decision::Context { text } => {
+        Decision::Block { reason, .. } => json!({ "decision": "block", "reason": reason }),
+        Decision::Context { text, .. } => {
             if harness == Harness::Codex && event.is_stop() {
                 json!({ "systemMessage": text })
             } else {

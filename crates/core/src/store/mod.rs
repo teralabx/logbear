@@ -58,6 +58,7 @@ impl Db {
         }
 
         conn.execute_batch(schema::PROJECT_SCHEMA)?;
+        schema::add_late_columns(&conn);
         register_functions(&conn, path)?;
         conn.execute_batch(schema::PROJECT_VIEWS)?;
         set_meta(&conn, "schema_version", &schema::SCHEMA_VERSION.to_string())?;

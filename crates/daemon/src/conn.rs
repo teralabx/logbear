@@ -284,9 +284,16 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             harness,
         } => {
             let h = daemon.resolve(&project)?;
-            let budget = daemon.settings().block_budget;
-            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
-            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            let s = daemon.settings();
+            let mut state = read::unread(
+                &h.db,
+                &session_id,
+                &harness,
+                s.block_budget,
+                s.change_block_budget,
+                20,
+            )?;
+            state.push_enabled = h.project.push_enabled && s.push_enabled;
             to_value(state)?
         }
 
@@ -295,14 +302,21 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             session_id,
             harness,
             entry_id,
-            record_block,
+            kind,
         } => {
             let h = daemon.resolve(&project)?;
-            let budget = daemon.settings().block_budget;
-            if record_block {
+            let s = daemon.settings();
+            if kind.is_block() {
                 // Record the reported signatures before advancing, so a repeat of the same
                 // one can never block this session twice.
-                let reported = read::unread(&h.db, &session_id, &harness, budget, 50)?;
+                let reported = read::unread(
+                    &h.db,
+                    &session_id,
+                    &harness,
+                    s.block_budget,
+                    s.change_block_budget,
+                    50,
+                )?;
                 let fps: Vec<FingerprintId> = reported
                     .entries
                     .iter()
@@ -310,9 +324,16 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                     .collect();
                 read::record_block(&h.db, &session_id, &fps)?;
             }
-            read::ack(&h.db, &session_id, &harness, entry_id, record_block)?;
-            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
-            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            read::ack(&h.db, &session_id, &harness, entry_id, kind)?;
+            let mut state = read::unread(
+                &h.db,
+                &session_id,
+                &harness,
+                s.block_budget,
+                s.change_block_budget,
+                20,
+            )?;
+            state.push_enabled = h.project.push_enabled && s.push_enabled;
             to_value(state)?
         }
 

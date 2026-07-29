@@ -6,7 +6,9 @@
 
 use logbear_core::client::Client;
 use logbear_core::model::{EntryId, EntryView, Level};
-use logbear_core::proto::{ProjectRef, QueryResult, Request, RunDiff, RunRef, UnreadState};
+use logbear_core::proto::{
+    AckKind, ProjectRef, QueryResult, Request, RunDiff, RunRef, UnreadState,
+};
 use logbear_core::Result;
 use serde_json::Value;
 
@@ -142,6 +144,15 @@ impl Backend for DaemonBackend {
         session_id: &str,
         entry_id: Option<EntryId>,
     ) -> Result<UnreadState> {
-        self.with_client(|c| c.ack(project.clone(), session_id, HARNESS, entry_id, false))
+        // The agent read these entries through a tool call; nothing was blocked.
+        self.with_client(|c| {
+            c.ack(
+                project.clone(),
+                session_id,
+                HARNESS,
+                entry_id,
+                AckKind::Seen,
+            )
+        })
     }
 }

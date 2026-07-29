@@ -175,14 +175,14 @@ impl Client {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
         self.call(&Request::Ack {
             project,
             session_id: session_id.to_string(),
             harness: harness.to_string(),
             entry_id,
-            record_block,
+            kind,
         })
     }
 
@@ -328,13 +328,24 @@ pub fn spawn_daemon() -> Result<()> {
         .map_err(|e| Error::io(paths::daemon_log(), e))?;
     let err = log.try_clone()?;
 
-    Command::new(bin)
-        .arg("serve")
+    let mut cmd = Command::new(bin);
+    cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(err))
-        .spawn()
-        .map_err(|e| Error::io(paths::home(), e))?;
+        .stderr(Stdio::from(err));
+
+    // Its own session, or it inherits the terminal's foreground process group and every
+    // Ctrl-C meant for the wrapped command takes the daemon down with it — which looks like
+    // a daemon that keeps dying, and leaves the next invocation to start another one.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+
+    cmd.spawn().map_err(|e| Error::io(paths::home(), e))?;
     Ok(())
 }
 

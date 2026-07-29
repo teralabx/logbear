@@ -34,6 +34,7 @@ pub enum Event {
     Stop,
     SubagentStop,
     PostToolUse,
+    SessionStart,
     /// A lifecycle event logbear does not register for. Always allowed.
     Other(String),
 }
@@ -44,6 +45,7 @@ impl Event {
             "Stop" => Event::Stop,
             "SubagentStop" => Event::SubagentStop,
             "PostToolUse" => Event::PostToolUse,
+            "SessionStart" => Event::SessionStart,
             other => Event::Other(other.to_string()),
         }
     }
@@ -55,6 +57,7 @@ impl Event {
             Event::Stop => "Stop",
             Event::SubagentStop => "SubagentStop",
             Event::PostToolUse => "PostToolUse",
+            Event::SessionStart => "SessionStart",
             Event::Other(s) => s,
         }
     }
@@ -74,6 +77,11 @@ pub struct Payload {
     /// blocks themselves (Claude Code at eight), underneath logbear's own block budget.
     pub stop_hook_active: bool,
     pub tool_name: Option<String>,
+    /// The shell command, for shell-running tools only.
+    ///
+    /// Read from `tool_input.command` rather than gated on the tool name: the two harnesses
+    /// call their shell tool different things but agree on the field.
+    pub command: Option<String>,
 }
 
 /// Parse a harness payload. `forced` comes from `--harness` and always wins.
@@ -112,7 +120,29 @@ pub fn parse(input: &str, forced: Option<Harness>) -> Option<Payload> {
             .get("tool_name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        command: obj.get("tool_input").and_then(|v| command_of(v.get("command")?)),
     })
+}
+
+/// The shell command a tool call ran, from either harness's spelling of it.
+///
+/// Claude Code sends a string. Codex sends an argv array, and wraps what the model actually
+/// asked for in `["bash", "-lc", "…"]` — so the meaningful command is the script argument,
+/// not the joined array, which would otherwise read as a `bash` invocation and match nothing.
+fn command_of(value: &Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    let argv: Vec<&str> = value.as_array()?.iter().filter_map(|v| v.as_str()).collect();
+    match argv.as_slice() {
+        [shell, flag, script]
+            if matches!(*shell, "bash" | "sh" | "zsh" | "fish") && flag.starts_with('-') =>
+        {
+            Some(script.to_string())
+        }
+        [] => None,
+        _ => Some(argv.join(" ")),
+    }
 }
 
 /// Guess the harness from a vendor-specific extension field: `turn_id` is Codex-only.

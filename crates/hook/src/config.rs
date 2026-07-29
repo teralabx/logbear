@@ -50,6 +50,7 @@ fn claude(command: &str) -> Value {
         "hooks": {
             // An empty matcher is Claude Code's "every invocation".
             "Stop": [{ "matcher": "", "hooks": [h] }],
+            "SessionStart": [{ "matcher": "", "hooks": [h] }],
             "PostToolUse": [{ "matcher": CLAUDE_POST_TOOL_MATCHER, "hooks": [h] }],
         }
     })
@@ -62,6 +63,7 @@ fn codex(command: &str) -> Value {
             // Codex ignores `matcher` on Stop entirely.
             "Stop": [{ "hooks": [h] }],
             "SubagentStop": [{ "hooks": [h] }],
+            "SessionStart": [{ "hooks": [h] }],
             // No matcher on PostToolUse either: a Codex matcher made only of [A-Za-z0-9_|]
             // is exact alternation rather than a regex, so a guessed tool name would
             // produce a hook that never fires and never says why. Omitting it matches
@@ -115,7 +117,7 @@ mod tests {
         // The Codex hooks file denies unknown fields at the top level.
         let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
         assert_eq!(keys, vec!["hooks"]);
-        for event in ["Stop", "SubagentStop", "PostToolUse"] {
+        for event in ["Stop", "SubagentStop", "SessionStart", "PostToolUse"] {
             let entry = &v["hooks"][event][0];
             assert!(
                 entry.get("matcher").is_none(),
@@ -127,6 +129,19 @@ mod tests {
             assert_eq!(h["timeout"], 10);
             let handler_keys: Vec<&String> = h.as_object().unwrap().keys().collect();
             assert_eq!(handler_keys, vec!["command", "timeout", "type"]);
+        }
+    }
+
+    /// The standing rule is only worth writing if it is actually delivered, and it is the one
+    /// hook that has to fire before the agent does anything.
+    #[test]
+    fn both_harnesses_register_session_start() {
+        for harness in [Harness::ClaudeCode, Harness::Codex] {
+            let v = emit(harness, "/usr/local/bin/logbear-hook");
+            assert!(
+                v["hooks"]["SessionStart"][0]["hooks"][0]["command"].is_string(),
+                "{harness:?} must register SessionStart"
+            );
         }
     }
 
