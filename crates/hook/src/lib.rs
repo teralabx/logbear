@@ -19,7 +19,7 @@ pub mod intent;
 pub mod payload;
 
 use decide::Decision;
-use payload::Payload;
+use payload::{Event, Payload};
 use logbear_core::client::Client;
 use logbear_core::model::EntryId;
 use logbear_core::proto::{AckKind, ProjectRef, UnreadState};
@@ -84,7 +84,29 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
     let project = ProjectRef::Path(payload.cwd.clone());
     let harness = payload.harness.as_str();
 
-    let unread = match daemon.unread(project.clone(), &payload.session_id, harness) {
+    let state = daemon.unread(project.clone(), &payload.session_id, harness);
+
+    // The standing rule is advice about how to start processes, not a report about this
+    // project — and the moment it matters most is a project logbear has never captured,
+    // which is exactly the case where `unread` fails. Falling back to a blank state keeps
+    // the rule working there, while an explicit opt-out still silences it.
+    if payload.event == Event::SessionStart {
+        let state = state.unwrap_or(UnreadState {
+            push_enabled: true,
+            ..Default::default()
+        });
+        let decision = decide::decide(
+            &decide::Input {
+                event: &payload.event,
+                tool: None,
+                command: None,
+            },
+            &state,
+        );
+        return decide::render(payload.harness, &payload.event, &decision);
+    }
+
+    let unread = match state {
         Ok(u) => u,
         Err(e) => {
             eprintln!("logbear-hook: unread failed ({e}); allowing");

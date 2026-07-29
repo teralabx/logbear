@@ -77,6 +77,20 @@ fn serve() -> i32 {
         }
     };
 
+    let daemon = match Daemon::open() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("logbeard: cannot open storage: {e}");
+            return 1;
+        }
+    };
+
+    // Before the socket exists, not after: the socket becoming connectable is what announces
+    // this daemon, and a stop arriving between the two would find the default disposition
+    // still in place and kill the process outright — leaving behind the socket and the open
+    // runs this handler exists to clean up.
+    spawn_signal_handler(daemon.clone());
+
     // Holding the lock proves any socket still on disk was left by a daemon that is gone,
     // so reclaiming it cannot strand a live one.
     let socket = paths::socket();
@@ -94,19 +108,6 @@ fn serve() -> i32 {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
     }
-
-    let daemon = match Daemon::open() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("logbeard: cannot open storage: {e}");
-            let _ = std::fs::remove_file(&socket);
-            return 1;
-        }
-    };
-
-    // Registered only now: before the socket exists there is nothing to tear down, and a
-    // signal arriving mid-startup would leave the handler describing a daemon that never ran.
-    spawn_signal_handler(daemon.clone());
 
     log(&format!(
         "logbeard {} listening on {}",

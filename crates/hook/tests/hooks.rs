@@ -455,6 +455,35 @@ fn a_claude_bash_command_is_read_as_a_string() {
 
 // --------------------------------------------------------------------------- session start
 
+/// The case the rule exists for: a project logbear has never captured. The daemon answers
+/// that it knows nothing about it, and that must not swallow the one piece of advice that
+/// would get the next server captured.
+#[test]
+fn session_start_still_speaks_on_a_project_the_daemon_has_never_seen() {
+    let mut d = FakeDaemon {
+        unread_fails: true,
+        ..FakeDaemon::with(UnreadState::default())
+    };
+    let out = run("claude_session_start", Some(Harness::ClaudeCode), &mut d);
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected the standing rule: {out}"));
+    assert!(ctx.contains("logbear"), "{ctx}");
+}
+
+#[test]
+fn session_start_respects_an_explicit_opt_out() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: false,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_session_start", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({}),
+        "push off means silence, including the standing rule"
+    );
+}
+
 #[test]
 fn session_start_teaches_the_agent_to_wrap_long_running_commands() {
     for harness in [Harness::ClaudeCode, Harness::Codex] {

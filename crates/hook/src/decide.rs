@@ -139,12 +139,15 @@ fn post_tool_use(input: &Input, unread: &UnreadState) -> Decision {
 }
 
 /// What the agent needs to know before it starts anything.
+///
+/// Deliberately does not claim this project is already being captured: the rule fires in
+/// every session, and the one where it matters most is a project logbear has never seen.
 const STANDING_RULE: &str = "\
-logbear is recording this project. Start long-running processes — dev servers, watchers, \
-anything that runs until you kill it — with `logbear` in front, for example \
-`logbear npm run dev` or `logbear mix phx.server`. Their output is then captured and their \
-errors are surfaced to you automatically. One-off commands like tests and builds do not need \
-it, since you already see their output.";
+logbear captures long-running processes and surfaces their errors to you. Start dev servers, \
+watchers — anything that runs until you kill it — with `logbear` in front, for example \
+`logbear npm run dev` or `logbear mix phx.server`. Once one is running you can read its \
+output with `logbear logs`. One-off commands like tests and builds do not need it, since you \
+already see their output.";
 
 /// The change landed and the process reacted. Whether it reacted *well* is the part the agent
 /// cannot know without looking, and a clean compile is not an answer.
