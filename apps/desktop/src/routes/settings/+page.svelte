@@ -42,6 +42,9 @@
 	let saving = $state(false);
 	let stepBusy = $state<InstallStep | null>(null);
 	let justSaved = $state(false);
+	let installingAll = $state(false);
+	let allProgress = $state<{ done: number; total: number } | null>(null);
+	let allFailures = $state<string[]>([]);
 
 	const MB = 1024 * 1024;
 
@@ -140,6 +143,51 @@
 			saveError = apiError(err);
 		} finally {
 			stepBusy = null;
+		}
+	}
+
+	/** Steps that could be installed right now: available, and not already done. */
+	const pending = $derived(
+		install ? INSTALL_STEPS.filter((s) => install![s].available && !install![s].installed) : []
+	);
+
+	/**
+	 * Install every outstanding step in one go.
+	 *
+	 * Sequential rather than parallel: several steps write to the same shell profiles and
+	 * harness configs, and two of them racing would interleave their edits. One failure does
+	 * not stop the rest — the steps are independent, and a machine missing Codex should still
+	 * get its Claude Code integration.
+	 */
+	async function installAll() {
+		const steps = pending;
+		if (steps.length === 0) return;
+
+		installingAll = true;
+		saveError = null;
+		allFailures = [];
+		allProgress = { done: 0, total: steps.length };
+
+		for (const step of steps) {
+			stepBusy = step;
+			try {
+				const next = await installStep(step);
+				if (install) install = { ...install, [step]: next };
+			} catch (err) {
+				allFailures = [...allFailures, `${STEP_COPY[step].title}: ${apiError(err)}`];
+			}
+			allProgress = { done: allProgress.done + 1, total: steps.length };
+		}
+
+		stepBusy = null;
+		installingAll = false;
+		allProgress = null;
+		// Re-read rather than trust the per-step replies: installing the PATH shims changes
+		// what the later steps can see about themselves.
+		try {
+			install = await installStatus();
+		} catch {
+			// The individual replies already updated the rows; a failed refresh is cosmetic.
 		}
 	}
 
@@ -514,9 +562,38 @@
 				Each step is independent and reversible. Anything logbear edits is backed up first, and the
 				backup path is shown here.
 			</p>
+			{#if install && pending.length > 0}
+				<button
+					type="button"
+					class="btn btn-primary btn-sm mt-3 h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+					disabled={stepBusy !== null || installingAll}
+					onclick={() => void installAll()}
+				>
+					{#if allProgress}
+						Installing… {allProgress.done}/{allProgress.total}
+					{:else}
+						Install all {pending.length} remaining
+					{/if}
+				</button>
+				<p class="meta mt-1.5 text-[11px] leading-[1.6]">
+					Sets up everything below in one go, including the Claude Code and Codex integrations.
+				</p>
+			{/if}
 		</div>
 
 		<div class="min-w-0">
+			{#if allFailures.length > 0}
+				<div class="mb-3 rounded border border-warning/40 px-3 py-2">
+					<p class="text-[11.5px] font-medium text-warning">
+						{pluralise(allFailures.length, 'step')} could not be installed
+					</p>
+					<ul class="mt-1 flex flex-col gap-0.5">
+						{#each allFailures as failure (failure)}
+							<li class="meta text-[10.5px] leading-[1.6]">{failure}</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 			{#if install}
 				<div class="flex flex-col">
 					{#each INSTALL_STEPS as step (step)}
