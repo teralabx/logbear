@@ -22,7 +22,7 @@ import type {
 	Project,
 	ProjectStatus,
 	Run,
-	RunlogEvent
+	LogbearEvent
 } from '$lib/api/types';
 
 const POLL_MS = 10_000;
@@ -39,7 +39,7 @@ class AppState {
 	loaded = $state(false);
 	readonly mock = usingMockData();
 
-	#listeners = new Set<(e: RunlogEvent) => void>();
+	#listeners = new Set<(e: LogbearEvent) => void>();
 	#dispose: (() => void) | null = null;
 	#poll: ReturnType<typeof setInterval> | null = null;
 
@@ -107,7 +107,7 @@ class AppState {
 	}
 
 	/** Attach a listener to the raw event stream. Returns a disposer. */
-	onEvent(fn: (e: RunlogEvent) => void): () => void {
+	onEvent(fn: (e: LogbearEvent) => void): () => void {
 		this.#listeners.add(fn);
 		return () => this.#listeners.delete(fn);
 	}
@@ -120,7 +120,7 @@ class AppState {
 		this.notices = [];
 	}
 
-	#handle(e: RunlogEvent) {
+	#handle(e: LogbearEvent) {
 		switch (e.event) {
 			case 'counters':
 				this.counters[e.run_id] = e.counters;

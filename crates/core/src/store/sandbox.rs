@@ -177,7 +177,7 @@ fn reject_obvious(sql: &str) -> Result<()> {
     if !(lower.starts_with("select") || lower.starts_with("with") || lower.starts_with("explain")) {
         return Err(Error::QueryRejected(format!(
             "only SELECT (or WITH … SELECT) is allowed here; this statement starts with {:?}. \
-             runlog_query is read-only — use runlog_ack to advance your cursor.",
+             logbear_query is read-only — use logbear_ack to advance your cursor.",
             trimmed.split_whitespace().next().unwrap_or("")
         )));
     }
@@ -202,9 +202,9 @@ fn explain(e: Error, sql: &str) -> Error {
     let msg = e.to_string();
     let hint = if msg.contains("not authorized") {
         "This query touched something the sandbox denies (a write, ATTACH, PRAGMA, or an \
-         unlisted function). Call runlog_schema() for the allowed surface."
+         unlisted function). Call logbear_schema() for the allowed surface."
     } else if msg.contains("no such table") || msg.contains("no such column") {
-        "Call runlog_schema() for the current tables, views and columns."
+        "Call logbear_schema() for the current tables, views and columns."
     } else {
         "Fix the statement and retry."
     };
@@ -234,7 +234,7 @@ fn sql_to_json(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
         ValueRef::Real(f) => serde_json::Value::from(f),
         ValueRef::Text(t) => serde_json::Value::from(String::from_utf8_lossy(t).into_owned()),
         // Blobs are chunk payloads; report their size and let the caller use
-        // runlog_render.
+        // logbear_render.
         ValueRef::Blob(b) => serde_json::Value::from(format!("<{} bytes>", b.len())),
     }
 }
@@ -303,8 +303,8 @@ mod tests {
             "SELECT count(*) FROM v_entries",
             "SELECT count(*) FROM v_errors",
             "SELECT count(*) FROM v_runs WHERE clean = 0",
-            "SELECT runlog_render(1, 0, 1)",
-            "SELECT runlog_raw(1, 0, 0)",
+            "SELECT logbear_render(1, 0, 1)",
+            "SELECT logbear_raw(1, 0, 0)",
         ] {
             assert!(q(&path, sql).is_ok(), "documented surface failed: {sql}");
         }
@@ -418,7 +418,7 @@ mod tests {
     fn rejections_tell_the_agent_how_to_repair_the_query() {
         let (_t, path) = fixture();
         let err = q(&path, "SELECT * FROM no_such_table").unwrap_err().to_string();
-        assert!(err.contains("runlog_schema"), "unhelpful rejection: {err}");
+        assert!(err.contains("logbear_schema"), "unhelpful rejection: {err}");
         assert!(err.contains("SQL was:"), "the failing SQL was not echoed: {err}");
     }
 

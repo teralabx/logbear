@@ -11,17 +11,17 @@
 use crate::backend::Backend;
 use crate::jsonrpc::{self, Id, Incoming};
 use crate::tools;
-use runlog_core::proto::ProjectRef;
+use logbear_core::proto::ProjectRef;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
-pub const SERVER_NAME: &str = "runlog";
+pub const SERVER_NAME: &str = "logbear";
 
 /// Standing context sent with `initialize`. Without it a model reaches for `entries`, which
 /// holds no text, instead of `v_entries`.
-const INSTRUCTIONS: &str = "runlog captures this project's dev-server output. Call \
-    runlog_schema() once, then answer questions with runlog_query(). Tool results are \
+const INSTRUCTIONS: &str = "logbear captures this project's dev-server output. Call \
+    logbear_schema() once, then answer questions with logbear_query(). Tool results are \
     prefixed with a warning when errors have appeared that you have not seen yet.";
 
 pub struct Server<B: Backend> {
@@ -138,7 +138,7 @@ impl<B: Backend> Server<B> {
                 (Some(r), _) => self.set_roots(&r),
                 (None, Some(e)) => {
                     // A client may advertise roots and still refuse to list them.
-                    eprintln!("runlog-mcp: roots/list refused ({e}); falling back to cwd");
+                    eprintln!("logbear-mcp: roots/list refused ({e}); falling back to cwd");
                 }
                 _ => {}
             }
@@ -164,7 +164,7 @@ impl<B: Backend> Server<B> {
             .filter_map(|r| r.get("uri").and_then(|u| u.as_str()))
             .filter_map(file_uri_to_path)
             .collect();
-        eprintln!("runlog-mcp: {} workspace root(s) from the client", self.roots.len());
+        eprintln!("logbear-mcp: {} workspace root(s) from the client", self.roots.len());
     }
 
     fn initialize(&mut self, params: &Value) -> Value {
@@ -234,7 +234,7 @@ impl<B: Backend> Server<B> {
         match self.backend.unread(self.project(), &self.session_id) {
             Ok(state) => state.banner(),
             Err(e) => {
-                eprintln!("runlog-mcp: unread state unavailable ({e})");
+                eprintln!("logbear-mcp: unread state unavailable ({e})");
                 None
             }
         }
@@ -270,7 +270,7 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
 }
 
 /// A session identity, stable for the life of this process and distinct from every other
-/// runlog-mcp on the machine.
+/// logbear-mcp on the machine.
 ///
 /// Hashes pid, start time and cwd together: a pid alone is reused by the OS, and a reused
 /// pid would inherit a stale watermark and swallow another session's errors.
@@ -278,7 +278,7 @@ pub fn derive_session_id() -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let seed = format!("{}:{}:{cwd}", std::process::id(), runlog_core::now_micros());
+    let seed = format!("{}:{}:{cwd}", std::process::id(), logbear_core::now_micros());
     format!("mcp-{}", &blake3::hash(seed.as_bytes()).to_hex()[..16])
 }
 

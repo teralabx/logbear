@@ -51,10 +51,10 @@
 		<a
 			class="flex items-center gap-[9px] text-base-content no-underline [-webkit-app-region:no-drag]"
 			href="/"
-			title="runlog — all projects"
+			title="logbear — all projects"
 		>
 			<Mark size={22} />
-			<span class="text-[15px] font-semibold tracking-normal">runlog</span>
+			<span class="text-[15px] font-semibold tracking-normal">logbear</span>
 		</a>
 	</div>
 
@@ -135,7 +135,7 @@
 			class="group flex items-center gap-[7px] pt-0.5 pb-1.5 text-[11px] text-meta no-underline"
 			href="/settings"
 			title={app.connected
-				? `runlog daemon ${app.daemon?.version} · pid ${app.daemon?.pid} · ${fmtBytes(app.daemon?.total_db_bytes ?? 0)} stored`
+				? `logbear daemon ${app.daemon?.version} · pid ${app.daemon?.pid} · ${fmtBytes(app.daemon?.total_db_bytes ?? 0)} stored`
 				: (app.daemonError ?? 'Daemon not reachable')}
 		>
 			<span

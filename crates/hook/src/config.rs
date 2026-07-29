@@ -1,6 +1,6 @@
 //! The config blocks that register this binary with each harness.
 //!
-//! One source of truth, shared by the installer and `runlog doctor`. Both fragments are
+//! One source of truth, shared by the installer and `logbear doctor`. Both fragments are
 //! top-level objects containing only a `hooks` key, so they merge into an existing config
 //! without disturbing it.
 
@@ -17,13 +17,13 @@ const CLAUDE_POST_TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";
 /// up as a slow hook rather than a stalled agent.
 const TIMEOUT_SECS: u64 = 10;
 
-/// A note the installer and `runlog doctor` show alongside the Codex block.
+/// A note the installer and `logbear doctor` show alongside the Codex block.
 ///
 /// Codex will not run a non-managed command hook until the user trusts it, and an untrusted
 /// hook fails by silently never firing.
 pub const CODEX_TRUST_NOTE: &str =
     "Codex will not run a non-managed command hook until you trust it. \
-     Run `/hooks` inside Codex to review and trust the runlog hook, or start Codex with \
+     Run `/hooks` inside Codex to review and trust the logbear hook, or start Codex with \
      --dangerously-bypass-hook-trust in automation.";
 
 pub fn emit(harness: Harness, command: &str) -> Value {
@@ -78,7 +78,7 @@ fn codex(command: &str) -> Value {
 pub fn self_command() -> String {
     let path = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "runlog-hook".into());
+        .unwrap_or_else(|_| "logbear-hook".into());
     shell_quote(&path)
 }
 
@@ -98,10 +98,10 @@ mod tests {
 
     #[test]
     fn claude_block_has_both_events_and_a_command() {
-        let v = emit(Harness::ClaudeCode, "/usr/local/bin/runlog-hook");
+        let v = emit(Harness::ClaudeCode, "/usr/local/bin/logbear-hook");
         let stop = &v["hooks"]["Stop"][0]["hooks"][0];
         assert_eq!(stop["type"], "command");
-        assert_eq!(stop["command"], "/usr/local/bin/runlog-hook --harness claude");
+        assert_eq!(stop["command"], "/usr/local/bin/logbear-hook --harness claude");
         assert_eq!(v["hooks"]["Stop"][0]["matcher"], "");
         assert!(v["hooks"]["PostToolUse"][0]["matcher"]
             .as_str()
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn codex_block_carries_only_the_keys_codex_allows() {
-        let v = emit(Harness::Codex, "/usr/local/bin/runlog-hook");
+        let v = emit(Harness::Codex, "/usr/local/bin/logbear-hook");
         // The Codex hooks file denies unknown fields at the top level.
         let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
         assert_eq!(keys, vec!["hooks"]);
@@ -122,7 +122,7 @@ mod tests {
                 "{event} must not carry a matcher"
             );
             let h = &entry["hooks"][0];
-            assert_eq!(h["command"], "/usr/local/bin/runlog-hook --harness codex");
+            assert_eq!(h["command"], "/usr/local/bin/logbear-hook --harness codex");
             // `timeout`, in seconds — not `timeoutSec`.
             assert_eq!(h["timeout"], 10);
             let handler_keys: Vec<&String> = h.as_object().unwrap().keys().collect();

@@ -21,9 +21,9 @@ pub fn is_tty(fd: i32) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
 
-/// Honours `NO_COLOR` and `RUNLOG_COLOR=always|never` before falling back to the tty test.
+/// Honours `NO_COLOR` and `LOGBEAR_COLOR=always|never` before falling back to the tty test.
 pub fn colour_enabled() -> bool {
-    *COLOUR.get_or_init(|| match std::env::var("RUNLOG_COLOR").ok().as_deref() {
+    *COLOUR.get_or_init(|| match std::env::var("LOGBEAR_COLOR").ok().as_deref() {
         Some("always") => true,
         Some("never") => false,
         _ => std::env::var_os("NO_COLOR").is_none() && is_tty(libc::STDOUT_FILENO),
@@ -51,8 +51,8 @@ pub fn bold(t: &str) -> String {
     paint(BOLD, t)
 }
 
-pub fn level_colour(level: runlog_core::Level) -> &'static str {
-    use runlog_core::Level::*;
+pub fn level_colour(level: logbear_core::Level) -> &'static str {
+    use logbear_core::Level::*;
     match level {
         Error => FLARE,
         Warn => EMBER,
@@ -67,7 +67,7 @@ pub fn level_colour(level: runlog_core::Level) -> &'static str {
 
 /// A relative time, like "4m ago".
 pub fn rel_time(micros: i64) -> String {
-    rel_time_from(runlog_core::now_micros(), micros)
+    rel_time_from(logbear_core::now_micros(), micros)
 }
 
 pub fn rel_time_from(now: i64, then: i64) -> String {
@@ -257,7 +257,7 @@ pub fn table(headers: &[&str], rows: &[Vec<Cell>]) -> String {
 /// The message every subcommand prints when the daemon is not running.
 pub fn daemon_down(socket: &std::path::Path) -> String {
     format!(
-        "runlog: the daemon is not running (no socket at {}).\n       start it with `runlogd serve`, or open the runlog app.",
+        "logbear: the daemon is not running (no socket at {}).\n       start it with `logbeard serve`, or open the logbear app.",
         socket.display()
     )
 }

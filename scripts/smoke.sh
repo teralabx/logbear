@@ -3,9 +3,9 @@
 #
 # The unit tests prove each piece in isolation. This proves the pieces are actually wired
 # to each other — which is the failure that unit tests structurally cannot catch, and the
-# one that matters when a user types `runlog mix phx.server` for the first time.
+# one that matters when a user types `logbear mix phx.server` for the first time.
 #
-# Everything happens inside a throwaway RUNLOG_HOME, so running this cannot touch your
+# Everything happens inside a throwaway LOGBEAR_HOME, so running this cannot touch your
 # real history.
 set -uo pipefail
 
@@ -13,19 +13,19 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 BIN="$ROOT/target/debug"
 
-RUNLOG_HOME="$(mktemp -d)"
+LOGBEAR_HOME="$(mktemp -d)"
 WORK="$(mktemp -d)"
-export RUNLOG_HOME
+export LOGBEAR_HOME
 trap 'cleanup' EXIT
 
 PASS=0
 FAIL=0
 
 cleanup() {
-  "$BIN/runlogd" stop >/dev/null 2>&1 || true
+  "$BIN/logbeard" stop >/dev/null 2>&1 || true
   sleep 0.3
-  pkill -f "runlogd serve" 2>/dev/null || true
-  rm -rf "$RUNLOG_HOME" "$WORK"
+  pkill -f "logbeard serve" 2>/dev/null || true
+  rm -rf "$LOGBEAR_HOME" "$WORK"
 }
 
 ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -41,19 +41,19 @@ not_contains() {
 }
 
 step "Building"
-cargo build -p runlog -p runlogd -p runlog-mcp -p runlog-hook 2>&1 | tail -3
-for b in runlog runlogd runlog-mcp runlog-hook; do
+cargo build -p logbear -p logbeard -p logbear-mcp -p logbear-hook 2>&1 | tail -3
+for b in logbear logbeard logbear-mcp logbear-hook; do
   [ -x "$BIN/$b" ] || { echo "missing binary: $BIN/$b"; exit 1; }
 done
 
 step "Daemon starts and answers"
-"$BIN/runlogd" serve >"$RUNLOG_HOME/daemon.out" 2>&1 &
+"$BIN/logbeard" serve >"$LOGBEAR_HOME/daemon.out" 2>&1 &
 for _ in $(seq 1 100); do
-  [ -S "$RUNLOG_HOME/runlogd.sock" ] && break
+  [ -S "$LOGBEAR_HOME/logbeard.sock" ] && break
   sleep 0.1
 done
-STATUS="$("$BIN/runlogd" status 2>&1)"
-contains "runlogd reports status" "$STATUS" '"pid"'
+STATUS="$("$BIN/logbeard" status 2>&1)"
+contains "logbeard reports status" "$STATUS" '"pid"'
 
 step "Capturing a run through a real pty"
 cd "$WORK"
@@ -61,13 +61,13 @@ git init -q . 2>/dev/null
 git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "first" 2>/dev/null
 
 # A clean run first, so there is a last-known-good to diff against.
-"$BIN/runlog" /bin/sh -c 'echo "GET /users"; echo "compiled 41 files"' >/tmp/rl-clean.out 2>&1
+"$BIN/logbear" /bin/sh -c 'echo "GET /users"; echo "compiled 41 files"' >/tmp/rl-clean.out 2>&1
 CLEAN_RC=$?
 [ "$CLEAN_RC" = "0" ] && ok "exit code propagated for a clean run" || bad "exit code propagated for a clean run" "got $CLEAN_RC"
 contains "passthrough reached the terminal" "$(cat /tmp/rl-clean.out)" "GET /users"
 
 # Then a failing run with a multi-line stack trace and a secret in it.
-"$BIN/runlog" /bin/sh -c '
+"$BIN/logbear" /bin/sh -c '
 printf "GET /posts\n"
 printf "connecting to postgres://admin:hunter2@db:5432/app\n"
 printf "Error: connection refused\n"
@@ -81,25 +81,25 @@ sleep 1
 
 step "The run is queryable"
 # The JSON is pretty-printed, so match on the field rather than on a byte sequence.
-RUNS="$("$BIN/runlog" runs --json 2>&1 | tr -d ' \n')"
+RUNS="$("$BIN/logbear" runs --json 2>&1 | tr -d ' \n')"
 contains "the failing run recorded its exit code" "$RUNS" '"exit_code":3'
 contains "the clean run recorded its exit code" "$RUNS" '"exit_code":0'
 
-LOGS="$("$BIN/runlog" logs --errors -n 5 --json 2>&1)"
+LOGS="$("$BIN/logbear" logs --errors -n 5 --json 2>&1)"
 contains "the error was detected" "$LOGS" "connection refused"
 contains "the whole stack trace came back as one entry" "$LOGS" "Module._compile"
 not_contains "the secret never reached the database" "$LOGS" "hunter2"
 
 step "Diff answers 'what changed'"
-DIFF="$("$BIN/runlog" diff --json 2>&1)"
+DIFF="$("$BIN/logbear" diff --json 2>&1)"
 contains "the new signature is reported" "$DIFF" "connection refused"
 
 step "Agent SQL is sandboxed"
-Q="$("$BIN/runlog" query "SELECT count(*) AS n FROM v_errors" --json 2>&1)"
+Q="$("$BIN/logbear" query "SELECT count(*) AS n FROM v_errors" --json 2>&1)"
 contains "a legitimate query works" "$Q" '"n"'
 
 for evil in "DELETE FROM entries" "ATTACH DATABASE '/etc/passwd' AS e" "PRAGMA table_info(runs)"; do
-  OUT="$("$BIN/runlog" query "$evil" 2>&1)"
+  OUT="$("$BIN/logbear" query "$evil" 2>&1)"
   if [ $? -eq 0 ] && ! printf '%s' "$OUT" | grep -qiE "reject|not permitted|denied|error"; then
     bad "sandbox refuses: $evil" "$OUT"
   else
@@ -111,57 +111,57 @@ step "MCP server speaks JSON-RPC"
 MCP_OUT="$(printf '%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  | "$BIN/runlog-mcp" 2>/dev/null)"
+  | "$BIN/logbear-mcp" 2>/dev/null)"
 contains "initialize is answered" "$MCP_OUT" '"protocolVersion"'
-for tool in runlog_schema runlog_query runlog_wait runlog_diff runlog_ack; do
+for tool in logbear_schema logbear_query logbear_wait logbear_diff logbear_ack; do
   contains "tools/list advertises $tool" "$MCP_OUT" "$tool"
 done
 
 step "The hook blocks when there are new errors"
 HOOK_IN="$(printf '{"session_id":"smoke-session","cwd":"%s","hook_event_name":"Stop"}' "$WORK")"
-HOOK_OUT="$(printf '%s' "$HOOK_IN" | "$BIN/runlog-hook" 2>/dev/null)"
+HOOK_OUT="$(printf '%s' "$HOOK_IN" | "$BIN/logbear-hook" 2>/dev/null)"
 HOOK_RC=$?
 [ "$HOOK_RC" = "0" ] && ok "hook exits 0" || bad "hook exits 0" "got $HOOK_RC"
 
 # A brand-new session starts at the high-water mark, so the first Stop is silent by
 # design. Produce an error *after* the session exists, then the hook must interrupt.
-"$BIN/runlog" /bin/sh -c 'printf "Error: something new broke\n"; exit 1' >/dev/null 2>&1
+"$BIN/logbear" /bin/sh -c 'printf "Error: something new broke\n"; exit 1' >/dev/null 2>&1
 sleep 1
-HOOK_OUT2="$(printf '%s' "$HOOK_IN" | "$BIN/runlog-hook" 2>/dev/null)"
+HOOK_OUT2="$(printf '%s' "$HOOK_IN" | "$BIN/logbear-hook" 2>/dev/null)"
 contains "the hook blocks on a new error" "$HOOK_OUT2" "block"
 contains "the block carries the actual error" "$HOOK_OUT2" "something new broke"
 
 # Loop safety: the same error must not block the same session twice.
-HOOK_OUT3="$(printf '%s' "$HOOK_IN" | "$BIN/runlog-hook" 2>/dev/null)"
+HOOK_OUT3="$(printf '%s' "$HOOK_IN" | "$BIN/logbear-hook" 2>/dev/null)"
 not_contains "the same error does not block twice" "$HOOK_OUT3" '"decision":"block"'
 
 step "Reparse is safe and idempotent"
-BEFORE="$("$BIN/runlog" logs -n 100 --json 2>&1 | grep -c "captured_at")"
-"$BIN/runlog" query "SELECT 1" >/dev/null 2>&1
-AFTER="$("$BIN/runlog" logs -n 100 --json 2>&1 | grep -c "captured_at")"
+BEFORE="$("$BIN/logbear" logs -n 100 --json 2>&1 | grep -c "captured_at")"
+"$BIN/logbear" query "SELECT 1" >/dev/null 2>&1
+AFTER="$("$BIN/logbear" logs -n 100 --json 2>&1 | grep -c "captured_at")"
 [ "$BEFORE" = "$AFTER" ] && ok "entry count is stable" || bad "entry count is stable" "$BEFORE then $AFTER"
 
 step "A run abandoned by a dead daemon does not stay 'running'"
 # Start something long-lived, then kill the daemon underneath it. On restart the run must
 # be closed: the home screen claiming a dead run is live is worse than a missing exit code.
-"$BIN/runlog" /bin/sh -c 'echo "listening on 4000"; sleep 60' >/dev/null 2>&1 &
+"$BIN/logbear" /bin/sh -c 'echo "listening on 4000"; sleep 60' >/dev/null 2>&1 &
 WRAPPED=$!
 sleep 1.5
-OPEN_BEFORE="$("$BIN/runlog" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
+OPEN_BEFORE="$("$BIN/logbear" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
 contains "the run is live while it runs" "$OPEN_BEFORE" '"n"'
 
-pkill -f "runlogd serve" 2>/dev/null
+pkill -f "logbeard serve" 2>/dev/null
 kill "$WRAPPED" 2>/dev/null
 wait "$WRAPPED" 2>/dev/null
 sleep 0.5
 
-"$BIN/runlogd" serve >>"$RUNLOG_HOME/daemon.out" 2>&1 &
+"$BIN/logbeard" serve >>"$LOGBEAR_HOME/daemon.out" 2>&1 &
 for _ in $(seq 1 100); do
-  [ -S "$RUNLOG_HOME/runlogd.sock" ] && break
+  [ -S "$LOGBEAR_HOME/logbeard.sock" ] && break
   sleep 0.1
 done
 sleep 0.5
-STILL_OPEN="$("$BIN/runlog" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
+STILL_OPEN="$("$BIN/logbear" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
 if printf '%s' "$STILL_OPEN" | grep -qF '"rows":[[0]]'; then
   ok "the abandoned run was closed on the next daemon start"
 else
@@ -169,7 +169,7 @@ else
 fi
 
 step "Doctor reports the world"
-DOC="$("$BIN/runlog" doctor 2>&1)"
+DOC="$("$BIN/logbear" doctor 2>&1)"
 contains "doctor mentions the daemon" "$DOC" "daemon"
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"

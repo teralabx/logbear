@@ -1,8 +1,8 @@
 // Theme state.
 //
 // Wiring, end to end:
-//   1. app.css declares runlog-light as daisyUI's `default` (emitted at
-//      `:where(:root)`) and runlog-dark as `prefersdark` (emitted inside
+//   1. app.css declares logbear-light as daisyUI's `default` (emitted at
+//      `:where(:root)`) and logbear-dark as `prefersdark` (emitted inside
 //      `@media (prefers-color-scheme: dark)`), so the OS preference already
 //      picks correctly with no JavaScript at all.
 //   2. Both themes also emit a `[data-theme="..."]` selector, which outranks
@@ -12,25 +12,25 @@
 //
 // With nothing stored we keep following the OS, including live changes.
 
-export type ThemeName = 'runlog-dark' | 'runlog-light';
+export type ThemeName = 'logbear-dark' | 'logbear-light';
 
-const KEY = 'runlog:theme';
+const KEY = 'logbear:theme';
 
 function systemTheme(): ThemeName {
-	if (typeof window === 'undefined') return 'runlog-dark';
+	if (typeof window === 'undefined') return 'logbear-dark';
 	return window.matchMedia('(prefers-color-scheme: light)').matches
-		? 'runlog-light'
-		: 'runlog-dark';
+		? 'logbear-light'
+		: 'logbear-dark';
 }
 
 function stored(): ThemeName | null {
 	if (typeof localStorage === 'undefined') return null;
 	const v = localStorage.getItem(KEY);
-	return v === 'runlog-dark' || v === 'runlog-light' ? v : null;
+	return v === 'logbear-dark' || v === 'logbear-light' ? v : null;
 }
 
 class Theme {
-	current = $state<ThemeName>('runlog-dark');
+	current = $state<ThemeName>('logbear-dark');
 	/** True while the theme is inherited from the OS rather than chosen. */
 	followingSystem = $state(true);
 
@@ -63,7 +63,7 @@ class Theme {
 	}
 
 	toggle() {
-		this.set(this.current === 'runlog-dark' ? 'runlog-light' : 'runlog-dark');
+		this.set(this.current === 'logbear-dark' ? 'logbear-light' : 'logbear-dark');
 	}
 
 	/** Drop the stored override and go back to tracking the OS. */
@@ -79,7 +79,7 @@ class Theme {
 	}
 
 	get isDark(): boolean {
-		return this.current === 'runlog-dark';
+		return this.current === 'logbear-dark';
 	}
 
 	#apply() {

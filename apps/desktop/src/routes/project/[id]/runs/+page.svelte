@@ -160,8 +160,8 @@
 	<div class="p-4">
 		<EmptyState
 			title="No runs stored for this project"
-			body="Every command you run through runlog lands here with its output, its exit code, and the git state that produced it."
-			command="runlog npm test"
+			body="Every command you run through logbear lands here with its output, its exit code, and the git state that produced it."
+			command="logbear npm test"
 		/>
 	</div>
 {:else}

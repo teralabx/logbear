@@ -160,8 +160,8 @@
 	<div class="p-4">
 		<EmptyState
 			title={errorsOnly ? 'No error signatures recorded' : 'No signatures recorded'}
-			body="runlog fingerprints failures as it captures them. Once something fails, its signature appears here with a count and a first-seen date."
-			command="runlog mix test"
+			body="logbear fingerprints failures as it captures them. Once something fails, its signature appears here with a count and a first-seen date."
+			command="logbear mix test"
 		/>
 	</div>
 {:else}

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    runlog_desktop_lib::run()
+    logbear_desktop_lib::run()
 }

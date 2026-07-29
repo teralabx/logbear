@@ -26,7 +26,7 @@ pub enum Error {
     #[error("no project registered for {0}")]
     NoSuchProject(String),
 
-    /// A `runlog_query` call the sandbox refused. The message names the offending
+    /// A `logbear_query` call the sandbox refused. The message names the offending
     /// construct so an agent can repair its own SQL.
     #[error("query rejected: {0}")]
     QueryRejected(String),
@@ -34,7 +34,7 @@ pub enum Error {
     #[error("query exceeded its {0}ms budget and was cancelled")]
     QueryTimeout(u64),
 
-    #[error("the runlog daemon is not running (expected socket at {0})")]
+    #[error("the logbear daemon is not running (expected socket at {0})")]
     DaemonUnreachable(PathBuf),
 
     #[error("protocol error: {0}")]

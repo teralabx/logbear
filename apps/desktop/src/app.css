@@ -8,14 +8,14 @@
 
    Two themes, both declared here so the tokens live in one place.
 
-   - runlog-light is `default`, so daisyUI emits it at `:where(:root)` (zero
+   - logbear-light is `default`, so daisyUI emits it at `:where(:root)` (zero
      specificity) — it is the no-attribute fallback.
-   - runlog-dark is `prefersdark`, so daisyUI emits it inside
+   - logbear-dark is `prefersdark`, so daisyUI emits it inside
      `@media (prefers-color-scheme: dark) { :root:not([data-theme]) }` — the OS
      preference picks without any JavaScript.
    - Either theme's `[data-theme="..."]` selector beats both of the above, which
      is how the in-app toggle overrides. app.html carries
-     data-theme="runlog-dark" in static markup (dark is the product default) and
+     data-theme="logbear-dark" in static markup (dark is the product default) and
      the inline script in <head> replaces it with the stored choice, or with the
      OS preference when nothing is stored.
 
@@ -25,7 +25,7 @@
    --------------------------------------------------------------------------- */
 
 @plugin "daisyui/theme" {
-  name: "runlog-light";
+  name: "logbear-light";
   default: true;
   color-scheme: light;
 
@@ -63,7 +63,7 @@
 }
 
 @plugin "daisyui/theme" {
-  name: "runlog-dark";
+  name: "logbear-dark";
   prefersdark: true;
   color-scheme: dark;
 
@@ -150,7 +150,7 @@
 
 /* Per-theme surface + level tokens that daisyUI does not model. */
 :root,
-[data-theme="runlog-light"] {
+[data-theme="logbear-light"] {
   --color-hair: #dedbd3;
   --color-hair-strong: #c8c4ba;
   --color-meta: #6b7178;
@@ -184,7 +184,7 @@
   }
 }
 
-[data-theme="runlog-dark"] {
+[data-theme="logbear-dark"] {
   --color-hair: #1f262b;
   --color-hair-strong: #2c353b;
   --color-meta: #8a9199;

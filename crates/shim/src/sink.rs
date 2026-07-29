@@ -12,10 +12,10 @@
 //! recorded in the spool header rather than silent.
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
-use runlog_core::client::Client;
-use runlog_core::model::{RunId, RunStamp};
-use runlog_core::paths;
-use runlog_core::proto::{Frame, Request, SpoolHeader};
+use logbear_core::client::Client;
+use logbear_core::model::{RunId, RunStamp};
+use logbear_core::paths;
+use logbear_core::proto::{Frame, Request, SpoolHeader};
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -80,7 +80,7 @@ impl Sink {
         };
 
         std::thread::Builder::new()
-            .name("runlog-sink".into())
+            .name("logbear-sink".into())
             .spawn(move || {
                 state.run(rx);
                 let _ = done_tx.send(());
@@ -289,7 +289,7 @@ impl SenderState {
 // Spool files
 // ---------------------------------------------------------------------------
 
-/// `~/.runlog/spool/<token>.spool`
+/// `~/.logbear/spool/<token>.spool`
 ///
 /// ```text
 /// <SpoolHeader as JSON><padding spaces>\n
@@ -439,7 +439,7 @@ fn is_unlocked(path: &Path) -> bool {
 /// A run identifier that does not need the daemon: time, pid and address-space entropy,
 /// enough to be unique among the spool files on one machine.
 pub fn local_token() -> String {
-    let now = runlog_core::now_micros() as u128;
+    let now = logbear_core::now_micros() as u128;
     let pid = std::process::id() as u128;
     let addr = &now as *const u128 as usize as u128;
     format!("{:016x}{:08x}{:08x}", now, pid as u32, addr as u32)
@@ -448,7 +448,7 @@ pub fn local_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runlog_core::proto::Frame;
+    use logbear_core::proto::Frame;
     use std::io::{BufRead, BufReader, Read};
 
     fn sample_header() -> SpoolHeader {
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn a_sink_with_no_daemon_spools_and_never_blocks() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("RUNLOG_HOME", dir.path());
+        std::env::set_var("LOGBEAR_HOME", dir.path());
 
         let token = local_token();
         let sink = Sink::start(None, None, token.clone(), RunStamp::default(), 1);
@@ -575,6 +575,6 @@ mod tests {
 
         let path = paths::spool_file(&token);
         assert!(path.exists(), "no spool file at {}", path.display());
-        std::env::remove_var("RUNLOG_HOME");
+        std::env::remove_var("LOGBEAR_HOME");
     }
 }

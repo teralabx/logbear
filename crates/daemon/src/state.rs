@@ -4,13 +4,13 @@
 //! local SQLite database, so a thread per connection is enough.
 
 use crossbeam_channel::{Receiver, Sender};
-use runlog_core::model::*;
-use runlog_core::notify::{Candidate, Decision, Notifier};
-use runlog_core::paths;
-use runlog_core::proto::*;
-use runlog_core::redact::Redactor;
-use runlog_core::store::{index::IndexDb, read, retention, Db, Writer};
-use runlog_core::{Error, Result};
+use logbear_core::model::*;
+use logbear_core::notify::{Candidate, Decision, Notifier};
+use logbear_core::paths;
+use logbear_core::proto::*;
+use logbear_core::redact::Redactor;
+use logbear_core::store::{index::IndexDb, read, retention, Db, Writer};
+use logbear_core::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,7 +41,7 @@ pub struct Subscriber {
     pub tx: Sender<Event>,
 }
 
-/// A blocked `runlog_wait` call.
+/// A blocked `logbear_wait` call.
 struct Waiter {
     id: u64,
     project_id: ProjectId,
@@ -75,7 +75,7 @@ impl Daemon {
         Ok(Arc::new(Daemon {
             index,
             settings: RwLock::new(settings),
-            started_at: runlog_core::now_micros(),
+            started_at: logbear_core::now_micros(),
             shutdown: AtomicBool::new(false),
             projects: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
@@ -128,7 +128,7 @@ impl Daemon {
                 ProjectRef::Path(p) => p.clone(),
             };
             Error::NoSuchProject(format!(
-                "{what} — nothing has been captured there yet. Run `runlog <your dev command>` in that directory first."
+                "{what} — nothing has been captured there yet. Run `logbear <your dev command>` in that directory first."
             ))
         })?;
         self.handle_for(project)
@@ -139,7 +139,7 @@ impl Daemon {
         if let Some(p) = self.index.resolve_path(cwd)? {
             return self.handle_for(p);
         }
-        let root = runlog_core::project::project_root(cwd);
+        let root = logbear_core::project::project_root(cwd);
         let db_path = paths::project_db(&root);
         let project = self.index.register(&root, name, &db_path)?;
         let handle = self.handle_for(project)?;
@@ -297,7 +297,7 @@ impl Daemon {
             Ok(m) => m.values().cloned().collect(),
             Err(_) => return,
         };
-        let now = runlog_core::now_micros();
+        let now = logbear_core::now_micros();
         for run in live {
             let Ok(handle) = self.resolve(&ProjectRef::Id(run.project_id)) else {
                 continue;
@@ -313,7 +313,7 @@ impl Daemon {
     }
 
     /// Fans a flush out to subscribers, waiters and the notification policy.
-    fn publish(&self, handle: &ProjectHandle, live: &LiveRun, flushed: runlog_core::store::write::Flushed) {
+    fn publish(&self, handle: &ProjectHandle, live: &LiveRun, flushed: logbear_core::store::write::Flushed) {
         if flushed.entries.is_empty() {
             return;
         }
@@ -491,9 +491,9 @@ impl Daemon {
             let Ok(handle) = self.handle_for(project) else {
                 continue;
             };
-            match runlog_core::store::write::close_orphaned_runs(&handle.db) {
+            match logbear_core::store::write::close_orphaned_runs(&handle.db) {
                 Ok(n) => closed += n,
-                Err(e) => eprintln!("runlogd: could not reconcile {}: {e}", handle.project.name),
+                Err(e) => eprintln!("logbeard: could not reconcile {}: {e}", handle.project.name),
             }
         }
         closed
@@ -539,12 +539,12 @@ fn load_settings() -> Settings {
 pub(crate) mod tests {
     use super::*;
 
-    /// `RUNLOG_HOME` is process-global, so tests that point it at their own directory must
+    /// `LOGBEAR_HOME` is process-global, so tests that point it at their own directory must
     /// not overlap.
     pub(crate) static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn daemon(tmp: &tempfile::TempDir) -> Arc<Daemon> {
-        std::env::set_var("RUNLOG_HOME", tmp.path());
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
         Daemon::open().unwrap()
     }
 
@@ -566,7 +566,7 @@ pub(crate) mod tests {
         assert_eq!(handle.project.name, "work");
         assert_eq!(d.active_run_count(), 1);
 
-        d.ingest(&handle, &live, b"Error: boom\n", runlog_core::now_micros()).unwrap();
+        d.ingest(&handle, &live, b"Error: boom\n", logbear_core::now_micros()).unwrap();
         d.finish_run(&handle, &live, Some(1), None).unwrap();
         assert_eq!(d.active_run_count(), 0);
 
@@ -590,7 +590,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let (handle, live) = d.start_run(&stamp).unwrap();
-        d.ingest(&handle, &live, b"Error: boom\n", runlog_core::now_micros()).unwrap();
+        d.ingest(&handle, &live, b"Error: boom\n", logbear_core::now_micros()).unwrap();
         d.finish_run(&handle, &live, Some(1), None).unwrap();
 
         let mut saw_start = false;
@@ -617,7 +617,7 @@ pub(crate) mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("an unregistered directory should not resolve"),
         };
-        assert!(err.contains("runlog <your dev command>"), "unhelpful: {err}");
+        assert!(err.contains("logbear <your dev command>"), "unhelpful: {err}");
     }
 
     #[test]

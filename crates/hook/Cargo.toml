@@ -1,5 +1,5 @@
 [package]
-name = "runlog-hook"
+name = "logbear-hook"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,18 +7,18 @@ license-file.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Claude Code and Codex hook that pushes runlog errors into an agent's context"
+description = "Claude Code and Codex hook that pushes logbear errors into an agent's context"
 
 [lib]
-name = "runlog_hook"
+name = "logbear_hook"
 path = "src/lib.rs"
 
 [[bin]]
-name = "runlog-hook"
+name = "logbear-hook"
 path = "src/main.rs"
 
 [dependencies]
-runlog-core.workspace = true
+logbear-core.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -27,7 +27,7 @@
 	 *
 	 * Two views of the same bytes, side by side vertically: the terminal replay
 	 * (what you actually saw, ANSI intact) and the structured entry list (what
-	 * runlog made of it). Keeping both visible is the point — when the parse is
+	 * logbear made of it). Keeping both visible is the point — when the parse is
 	 * wrong you can see that it is wrong.
 	 */
 
@@ -324,8 +324,8 @@
 	<div class="p-4">
 		<EmptyState
 			title="No runs recorded for this project yet"
-			body="Start a command through runlog from {project ? tildePath(project.root) : 'the project root'} and its output will stream here."
-			command="runlog mix phx.server"
+			body="Start a command through logbear from {project ? tildePath(project.root) : 'the project root'} and its output will stream here."
+			command="logbear mix phx.server"
 		/>
 	</div>
 {:else}

@@ -9,9 +9,9 @@
 
 mod install;
 
-use runlog_core::client::Client;
-use runlog_core::model::*;
-use runlog_core::proto::*;
+use logbear_core::client::Client;
+use logbear_core::model::*;
+use logbear_core::proto::*;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -20,7 +20,7 @@ use tauri_plugin_notification::NotificationExt;
 /// The channel the frontend listens on. One event name carrying a tagged union, rather
 /// than a name per event: the union is already exhaustive in the type system, and one
 /// listener cannot fall out of sync with six.
-const EVENT: &str = "runlog://event";
+const EVENT: &str = "logbear://event";
 
 struct Backend {
     /// Serialised because a `Client` is one socket with request/response ordering.
@@ -37,7 +37,7 @@ impl Backend {
 
     /// Run something against the daemon, reconnecting once if the socket has gone away —
     /// which happens routinely when the daemon is upgraded or restarted underneath us.
-    fn with<T>(&self, f: impl Fn(&mut Client) -> runlog_core::Result<T>) -> Result<T, String> {
+    fn with<T>(&self, f: impl Fn(&mut Client) -> logbear_core::Result<T>) -> Result<T, String> {
         let mut guard = self
             .client
             .lock()
@@ -59,18 +59,18 @@ impl Backend {
     }
 }
 
-fn is_disconnect(e: &runlog_core::Error) -> bool {
+fn is_disconnect(e: &logbear_core::Error) -> bool {
     matches!(
         e,
-        runlog_core::Error::DaemonUnreachable(_)
-            | runlog_core::Error::Protocol(_)
-            | runlog_core::Error::Bare(_)
+        logbear_core::Error::DaemonUnreachable(_)
+            | logbear_core::Error::Protocol(_)
+            | logbear_core::Error::Bare(_)
     )
 }
 
-fn fmt_daemon_error(e: runlog_core::Error) -> String {
+fn fmt_daemon_error(e: logbear_core::Error) -> String {
     format!(
-        "The runlog daemon is not running and could not be started ({e}). \
+        "The logbear daemon is not running and could not be started ({e}). \
          Open Settings → Install and register the background service."
     )
 }
@@ -370,7 +370,7 @@ fn spawn_event_bridge(app: AppHandle) {
     std::thread::spawn(move || loop {
         match Client::connect_or_start().and_then(|c| c.subscribe(None)) {
             Ok(mut sub) => {
-                let _ = app.emit("runlog://connected", true);
+                let _ = app.emit("logbear://connected", true);
                 while let Ok(Some(event)) = sub.next() {
                     if let Event::Notice { notice } = &event {
                         post_notification(&app, notice);
@@ -379,10 +379,10 @@ fn spawn_event_bridge(app: AppHandle) {
                         return; // the window is gone
                     }
                 }
-                let _ = app.emit("runlog://connected", false);
+                let _ = app.emit("logbear://connected", false);
             }
             Err(_) => {
-                let _ = app.emit("runlog://connected", false);
+                let _ = app.emit("logbear://connected", false);
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -420,13 +420,13 @@ pub fn run() {
                 if let Some(done) = install::first_run_setup() {
                     for (what, outcome) in &done {
                         match outcome {
-                            Ok(state) => eprintln!("runlog: {what} — {}", state.detail),
-                            Err(e) => eprintln!("runlog: {what} failed — {e}"),
+                            Ok(state) => eprintln!("logbear: {what} — {}", state.detail),
+                            Err(e) => eprintln!("logbear: {what} failed — {e}"),
                         }
                     }
-                    let _ = handle.emit("runlog://first-run", install::status());
+                    let _ = handle.emit("logbear://first-run", install::status());
                 } else if install::refresh_service() {
-                    eprintln!("runlog: background service definition updated for this build");
+                    eprintln!("logbear: background service definition updated for this build");
                 }
             });
             spawn_event_bridge(app.handle().clone());
@@ -456,5 +456,5 @@ pub fn run() {
             reveal_path,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running runlog");
+        .expect("error while running logbear");
 }

@@ -67,7 +67,7 @@ jobs:
       # Catches a manifest that cannot be published — a missing description, a licence
       # file that does not resolve — before a release depends on it.
       #
-      # Only `runlog-core` for now: `cargo package` resolves dependencies against the
+      # Only `logbear-core` for now: `cargo package` resolves dependencies against the
       # real index, so the four crates that depend on it cannot be packaged until it has
       # been published once. Add them to this list after the first release.
-      - run: cargo package -p runlog-core --no-verify
+      - run: cargo package -p logbear-core --no-verify

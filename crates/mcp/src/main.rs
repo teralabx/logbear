@@ -1,9 +1,9 @@
-//! `runlog-mcp` — stdio MCP server.
+//! `logbear-mcp` — stdio MCP server.
 //!
 //! Read a line, answer it, flush. stdout carries protocol frames and nothing else: a stray
 //! byte desynchronises the client's parser, so every diagnostic goes to stderr.
 
-use runlog_mcp::{derive_session_id, DaemonBackend, Server};
+use logbear_mcp::{derive_session_id, DaemonBackend, Server};
 use std::io::{BufRead, Write};
 
 fn main() {
@@ -11,26 +11,26 @@ fn main() {
     if let Some(flag) = args.next() {
         match flag.as_str() {
             "--version" | "-V" => {
-                println!("runlog-mcp {}", env!("CARGO_PKG_VERSION"));
+                println!("logbear-mcp {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             "--help" | "-h" => {
                 println!(
-                    "runlog-mcp {}\n\nAn MCP (Model Context Protocol) server over stdio.\n\
+                    "logbear-mcp {}\n\nAn MCP (Model Context Protocol) server over stdio.\n\
                      It is started by your coding agent, not by hand.\n",
                     env!("CARGO_PKG_VERSION")
                 );
                 return;
             }
             other => {
-                eprintln!("runlog-mcp: unknown argument {other:?}");
+                eprintln!("logbear-mcp: unknown argument {other:?}");
                 std::process::exit(2);
             }
         }
     }
 
     let session_id = derive_session_id();
-    eprintln!("runlog-mcp {} session {session_id}", env!("CARGO_PKG_VERSION"));
+    eprintln!("logbear-mcp {} session {session_id}", env!("CARGO_PKG_VERSION"));
     let mut server = Server::new(DaemonBackend::new(), session_id);
 
     let stdin = std::io::stdin();
@@ -39,7 +39,7 @@ fn main() {
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("runlog-mcp: stdin read failed: {e}");
+                eprintln!("logbear-mcp: stdin read failed: {e}");
                 break;
             }
         };

@@ -40,7 +40,7 @@ open with the same line) was a correctness bug, not a quality one.
 
 ## 4. Vectors and `fastembed` are not in this build
 
-Spec §7.4 marks them v1.1 and they stayed there. `runlog_embed()` is therefore absent from
+Spec §7.4 marks them v1.1 and they stayed there. `logbear_embed()` is therefore absent from
 the SQL function list; FTS5 covers text search today. Nothing in the schema blocks adding
 `fingerprint_vec` later — it is a separate virtual table over `fingerprints`.
 
@@ -52,7 +52,7 @@ run would leave search hits whose text can no longer be produced.
 
 ## 6. SQL functions are `INNOCUOUS`, not `DIRECTONLY`
 
-`SQLITE_DIRECTONLY` forbids use inside a view, and `runlog_render()` exists specifically to
+`SQLITE_DIRECTONLY` forbids use inside a view, and `logbear_render()` exists specifically to
 be used inside `v_entries`. Under SQLite's default `trusted_schema = OFF`, a non-innocuous
 function in a view is rejected outright. These functions read the same database file and
 nothing else, so `SQLITE_INNOCUOUS | SQLITE_DETERMINISTIC` is the accurate classification.
@@ -109,7 +109,7 @@ Two other Codex details that changed the implementation:
   an invalid regex silently matches nothing. `--emit-config codex` therefore omits the
   matcher rather than guessing tool names into a hook that would never fire.
 - Codex refuses to run non-managed command hooks until they are trusted via `/hooks`, and
-  the failure mode is silence. `--emit-config` and `runlog doctor` both say so.
+  the failure mode is silence. `--emit-config` and `logbear doctor` both say so.
 
 ## 11. Severity is read, never inferred
 
@@ -150,7 +150,7 @@ Two deliberate deviations from Loki's detector:
 Output that declares nothing is still captured, indexed and searchable. It surfaces as
 **novelty** instead: a signature's first appearance in a project is a fact, which is what
 makes freshly added `print` / `IO.inspect` debugging findable when it has no level to
-filter on. `v_novel`, `EntryFilter::novel_only` and `runlog logs --new` expose it.
+filter on. `v_novel`, `EntryFilter::novel_only` and `logbear logs --new` expose it.
 Novelty never raises a notification on its own.
 
 Drain-style template mining (see §3) would improve the *identity* half of this and remains
@@ -181,5 +181,5 @@ Worth recording, because each one names a class of mistake rather than a typo.
   Block openers now start an entry in every mode.
 - **`\bERR!\b` never matched.** `!` is not a word character, so the trailing boundary
   required one after it. npm's errors were invisible.
-- **Daemon tests raced on `RUNLOG_HOME`.** Process-global state set by three parallel
+- **Daemon tests raced on `LOGBEAR_HOME`.** Process-global state set by three parallel
   tests; they passed or failed on scheduling. Serialised on a lock.

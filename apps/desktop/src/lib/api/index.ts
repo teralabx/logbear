@@ -25,7 +25,7 @@ import type {
 	Run,
 	RunDiff,
 	RunRef,
-	RunlogEvent,
+	LogbearEvent,
 	Settings,
 	StepState
 } from './types';
@@ -142,12 +142,12 @@ export const revealPath = (path: string): Promise<null> =>
  * Subscribe to the daemon's event channel. Returns a disposer.
  * Called once, from the root layout — everything else reads the store.
  */
-export function subscribeEvents(handler: (e: RunlogEvent) => void): () => void {
+export function subscribeEvents(handler: (e: LogbearEvent) => void): () => void {
 	if (!isTauri()) return mockSubscribe(handler);
 
 	let dispose: (() => void) | null = null;
 	let cancelled = false;
-	listen<RunlogEvent>('runlog://event', (msg) => handler(msg.payload)).then((un) => {
+	listen<LogbearEvent>('logbear://event', (msg) => handler(msg.payload)).then((un) => {
 		if (cancelled) un();
 		else dispose = un;
 	});

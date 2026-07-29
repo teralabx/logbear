@@ -267,30 +267,30 @@ impl Subscription {
     }
 }
 
-/// Locates `runlogd`, preferring the copy beside the current executable so a bundled app
+/// Locates `logbeard`, preferring the copy beside the current executable so a bundled app
 /// finds its own daemon rather than one on `PATH`.
 pub fn daemon_binary() -> Option<PathBuf> {
     // An explicit override is authoritative, including when it names nothing: falling back
     // to a discovered daemon would turn a typo into a silently different binary, and leaves
     // a test no way to say "there is no daemon here".
-    if let Some(p) = std::env::var_os("RUNLOG_DAEMON").map(PathBuf::from) {
+    if let Some(p) = std::env::var_os("LOGBEAR_DAEMON").map(PathBuf::from) {
         return p.exists().then_some(p);
     }
     // Canonicalise before looking for a sibling: on macOS `current_exe()` reports the
-    // launch path, so reaching `runlog` through the installer's `~/.local/bin` symlink
+    // launch path, so reaching `logbear` through the installer's `~/.local/bin` symlink
     // would search that directory instead of the bundle the daemon lives in.
     if let Ok(exe) = std::env::current_exe() {
         let resolved = exe.canonicalize().unwrap_or(exe);
         if let Some(dir) = resolved.parent() {
-            for candidate in [dir.join("runlogd"), dir.join("../runlogd")] {
+            for candidate in [dir.join("logbeard"), dir.join("../logbeard")] {
                 if candidate.exists() {
                     return Some(candidate);
                 }
             }
         }
     }
-    // The app bundle, for when `runlog` was copied rather than linked.
-    for bundle in ["/Applications/runlog.app", "~/Applications/runlog.app"] {
+    // The app bundle, for when `logbear` was copied rather than linked.
+    for bundle in ["/Applications/logbear.app", "~/Applications/logbear.app"] {
         let expanded = if let Some(rest) = bundle.strip_prefix("~/") {
             match std::env::var_os("HOME") {
                 Some(h) => PathBuf::from(h).join(rest),
@@ -299,12 +299,12 @@ pub fn daemon_binary() -> Option<PathBuf> {
         } else {
             PathBuf::from(bundle)
         };
-        let candidate = expanded.join("Contents/MacOS/runlogd");
+        let candidate = expanded.join("Contents/MacOS/logbeard");
         if candidate.exists() {
             return Some(candidate);
         }
     }
-    which("runlogd")
+    which("logbeard")
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -318,7 +318,7 @@ fn which(name: &str) -> Option<PathBuf> {
 pub fn spawn_daemon() -> Result<()> {
     use std::process::{Command, Stdio};
     let bin = daemon_binary()
-        .ok_or_else(|| Error::other("runlogd was not found next to runlog or on PATH"))?;
+        .ok_or_else(|| Error::other("logbeard was not found next to logbear or on PATH"))?;
     paths::ensure_home().map_err(|e| Error::io(paths::home(), e))?;
 
     let log = std::fs::OpenOptions::new()
@@ -345,24 +345,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let real_dir = tmp.path().join("Contents/MacOS");
         std::fs::create_dir_all(&real_dir).unwrap();
-        let real_exe = real_dir.join("runlog");
+        let real_exe = real_dir.join("logbear");
         std::fs::write(&real_exe, b"#!/bin/sh\n").unwrap();
-        std::fs::write(real_dir.join("runlogd"), b"#!/bin/sh\n").unwrap();
+        std::fs::write(real_dir.join("logbeard"), b"#!/bin/sh\n").unwrap();
 
         let link_dir = tmp.path().join("bin");
         std::fs::create_dir_all(&link_dir).unwrap();
-        let link = link_dir.join("runlog");
+        let link = link_dir.join("logbear");
         std::os::unix::fs::symlink(&real_exe, &link).unwrap();
 
         // Both sides are canonicalised: on macOS /var is itself a symlink to /private/var,
         // so comparing a resolved path against an unresolved one fails for the wrong reason.
         let resolved = link.canonicalize().unwrap();
         assert_eq!(
-            resolved.parent().unwrap().join("runlogd"),
-            real_dir.canonicalize().unwrap().join("runlogd")
+            resolved.parent().unwrap().join("logbeard"),
+            real_dir.canonicalize().unwrap().join("logbeard")
         );
         assert!(
-            !link_dir.join("runlogd").exists(),
+            !link_dir.join("logbeard").exists(),
             "the unresolved path must not find it, or this test proves nothing"
         );
     }

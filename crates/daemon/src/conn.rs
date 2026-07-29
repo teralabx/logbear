@@ -5,10 +5,10 @@
 //! becomes an event feed, and everything else is request/response.
 
 use crate::state::{Daemon, LiveRun, ProjectHandle};
-use runlog_core::model::*;
-use runlog_core::proto::*;
-use runlog_core::store::{read, retention, sandbox, schema};
-use runlog_core::{diff, Error, Result};
+use logbear_core::model::*;
+use logbear_core::proto::*;
+use logbear_core::store::{read, retention, sandbox, schema};
+use logbear_core::{diff, Error, Result};
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -159,7 +159,7 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 pid: std::process::id(),
                 started_at: daemon.started_at,
-                socket: runlog_core::paths::socket().to_string_lossy().into_owned(),
+                socket: logbear_core::paths::socket().to_string_lossy().into_owned(),
                 projects: projects.len(),
                 active_runs: daemon.active_run_count(),
                 total_db_bytes: total,
@@ -171,7 +171,7 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
 
         Request::ProjectStatus { project } => {
             let h = daemon.resolve(&project)?;
-            let hour_ago = runlog_core::now_micros() - 3_600_000_000;
+            let hour_ago = logbear_core::now_micros() - 3_600_000_000;
             to_value(ProjectStatus {
                 active_runs: read::active_runs(&h.db)?,
                 last_run: read::list_runs(&h.db, 1, 0)?.into_iter().next(),
@@ -401,7 +401,7 @@ fn stream_raw(
     let mut at = start;
     loop {
         let stop = at.saturating_add(PAGE).min(end);
-        let bytes = h.db.with(|c| runlog_core::store::raw_range(c, run_id, at, stop))?;
+        let bytes = h.db.with(|c| logbear_core::store::raw_range(c, run_id, at, stop))?;
         if bytes.is_empty() {
             break;
         }
@@ -456,7 +456,7 @@ fn stream_events(
 }
 
 fn count_spool() -> usize {
-    std::fs::read_dir(runlog_core::paths::spool_dir())
+    std::fs::read_dir(logbear_core::paths::spool_dir())
         .map(|d| d.filter_map(|e| e.ok()).count())
         .unwrap_or(0)
 }

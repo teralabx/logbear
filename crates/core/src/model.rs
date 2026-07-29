@@ -257,7 +257,7 @@ pub struct Project {
     pub notify_enabled: bool,
 }
 
-/// Snapshot of one project's activity, for the home screen and `runlog status`.
+/// Snapshot of one project's activity, for the home screen and `logbear status`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectStatus {
     pub project: Project,

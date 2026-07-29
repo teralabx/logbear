@@ -1,5 +1,5 @@
 //! Capture-stream parsing, the SQLite store, project resolution, diffing, redaction and
-//! notification policy. The binaries (`runlog`, `runlogd`, `runlog-mcp`, `runlog-hook`)
+//! notification policy. The binaries (`logbear`, `logbeard`, `logbear-mcp`, `logbear-hook`)
 //! and the Tauri backend are thin adapters over this crate.
 //!
 //! Two invariants constrain everything here:

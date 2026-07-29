@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
-    /// Symlink `runlog` onto PATH.
+    /// Symlink `logbear` onto PATH.
     Path,
-    /// Register `runlogd` as a user-level launch agent / systemd user service.
+    /// Register `logbeard` as a user-level launch agent / systemd user service.
     Daemon,
     McpClaude,
     McpCodex,
@@ -70,11 +70,11 @@ pub struct InstallStatus {
 ///
 /// Returns what it did, or `None` if this is not a first launch.
 pub fn first_run_setup() -> Option<Vec<(&'static str, Result<StepState, String>)>> {
-    let marker = runlog_core::paths::home().join(".setup-done");
+    let marker = logbear_core::paths::home().join(".setup-done");
     if marker.exists() {
         return None;
     }
-    let _ = runlog_core::paths::ensure_home();
+    let _ = logbear_core::paths::ensure_home();
 
     let done = vec![
         ("PATH", install(Step::Path)),
@@ -83,8 +83,8 @@ pub fn first_run_setup() -> Option<Vec<(&'static str, Result<StepState, String>)
 
     // Written whatever happened. Retrying automatically on every launch would mean a
     // machine where this genuinely cannot work gets nagged forever; Settings still has
-    // the button, and `runlog doctor` still explains what is missing.
-    let _ = std::fs::write(&marker, runlog_core::now_micros().to_string());
+    // the button, and `logbear doctor` still explains what is missing.
+    let _ = std::fs::write(&marker, logbear_core::now_micros().to_string());
     Some(done)
 }
 
@@ -197,7 +197,7 @@ fn writable(dir: &Path) -> bool {
     }
     // The honest test is a write, not a permission-bit guess: `/usr/local/bin` is
     // group-writable on a homebrew Intel Mac and root-only on a stock Apple Silicon one.
-    let probe = dir.join(".runlog-write-probe");
+    let probe = dir.join(".logbear-write-probe");
     match std::fs::write(&probe, b"") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);
@@ -235,7 +235,7 @@ fn chosen_dir() -> (PathBuf, bool) {
 
 fn existing_link() -> Option<(PathBuf, PathBuf)> {
     for dir in path_candidates() {
-        let link = dir.join("runlog");
+        let link = dir.join("logbear");
         if let Ok(target) = std::fs::read_link(&link) {
             return Some((link, target));
         }
@@ -244,7 +244,7 @@ fn existing_link() -> Option<(PathBuf, PathBuf)> {
 }
 
 fn path_status() -> StepState {
-    let wanted = bin("runlog");
+    let wanted = bin("logbear");
     match existing_link() {
         Some((link, target)) if target == wanted => {
             let dir = link.parent().unwrap_or(Path::new("/")).to_path_buf();
@@ -298,17 +298,17 @@ fn path_status() -> StepState {
 }
 
 fn install_path() -> Result<StepState, String> {
-    let source = bin("runlog");
+    let source = bin("logbear");
     if !source.exists() {
         return Err(format!(
-            "the runlog binary is missing from {}",
+            "the logbear binary is missing from {}",
             bin_dir().display()
         ));
     }
 
     let (dir, already_on_path) = chosen_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let link = dir.join("runlog");
+    let link = dir.join("logbear");
 
     // Replace only a symlink. A real file there belongs to someone else.
     if link.is_symlink() {
@@ -351,7 +351,7 @@ fn install_path() -> Result<StepState, String> {
 }
 
 /// The marker that lets this be run repeatedly without stacking up duplicate lines.
-const PROFILE_MARKER: &str = "# added by runlog";
+const PROFILE_MARKER: &str = "# added by logbear";
 
 /// Put `dir` on PATH for every shell the user actually has, and return what was touched.
 ///
@@ -365,10 +365,10 @@ fn add_to_shell_profiles(dir: &Path) -> Result<Vec<String>, String> {
     if Path::new(&home().join(".config/fish")).is_dir() || which_shell_is("fish") {
         let conf_d = home().join(".config/fish/conf.d");
         std::fs::create_dir_all(&conf_d).map_err(|e| format!("{}: {e}", conf_d.display()))?;
-        let file = conf_d.join("runlog.fish");
+        let file = conf_d.join("logbear.fish");
         let body = format!(
             "{PROFILE_MARKER}
-# Remove this file to take runlog off your PATH.
+# Remove this file to take logbear off your PATH.
 fish_add_path -g {d}
 "
         );
@@ -408,12 +408,12 @@ fn which_shell_is(name: &str) -> bool {
 
 fn uninstall_path() -> Result<StepState, String> {
     for dir in path_candidates() {
-        let link = dir.join("runlog");
+        let link = dir.join("logbear");
         if link.is_symlink() {
             let _ = std::fs::remove_file(&link);
         }
     }
-    let _ = std::fs::remove_file(home().join(".config/fish/conf.d/runlog.fish"));
+    let _ = std::fs::remove_file(home().join(".config/fish/conf.d/logbear.fish"));
     for rc in [".zshrc", ".bashrc", ".profile"] {
         let path = home().join(rc);
         let Ok(existing) = std::fs::read_to_string(&path) else {
@@ -469,21 +469,21 @@ fn tilde(p: &Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn service_file() -> PathBuf {
-    home().join("Library/LaunchAgents/sh.runlog.daemon.plist")
+    home().join("Library/LaunchAgents/sh.logbear.daemon.plist")
 }
 
 #[cfg(target_os = "linux")]
 fn service_file() -> PathBuf {
-    home().join(".config/systemd/user/runlogd.service")
+    home().join(".config/systemd/user/logbeard.service")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn service_file() -> PathBuf {
-    home().join(".runlog/runlogd.service")
+    home().join(".logbear/logbeard.service")
 }
 
 fn daemon_status() -> StepState {
-    let running = runlog_core::client::Client::connect().is_ok();
+    let running = logbear_core::client::Client::connect().is_ok();
     let registered = service_file().exists();
     StepState {
         installed: registered,
@@ -500,11 +500,11 @@ fn daemon_status() -> StepState {
 
 /// The service definition this build wants on disk.
 fn service_body() -> Result<String, String> {
-    let exe = bin("runlogd");
+    let exe = bin("logbeard");
     if !exe.exists() {
-        return Err(format!("runlogd is missing from {}", bin_dir().display()));
+        return Err(format!("logbeard is missing from {}", bin_dir().display()));
     }
-    let log = runlog_core::paths::daemon_log();
+    let log = logbear_core::paths::daemon_log();
 
     // `Adaptive` rather than `Background`: the daemon idles most of the time but the app
     // blocks on its replies, and a Background-class job is scheduled on the efficiency
@@ -515,7 +515,7 @@ fn service_body() -> Result<String, String> {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>sh.runlog.daemon</string>
+  <key>Label</key><string>sh.logbear.daemon</string>
   <key>ProgramArguments</key>
   <array><string>{exe}</string><string>serve</string></array>
   <key>RunAtLoad</key><true/>
@@ -532,7 +532,7 @@ fn service_body() -> Result<String, String> {
 
     #[cfg(not(target_os = "macos"))]
     let body = format!(
-        "[Unit]\nDescription=runlog daemon\n\n\
+        "[Unit]\nDescription=logbear daemon\n\n\
          [Service]\nExecStart={exe} serve\nRestart=always\nRestartSec=2\n\n\
          [Install]\nWantedBy=default.target\n",
         exe = exe.display()
@@ -609,13 +609,13 @@ unsafe fn libc_getuid() -> u32 {
 fn load_service(_path: &Path) {
     use std::process::Command;
     let _ = Command::new("systemctl").args(["--user", "daemon-reload"]).status();
-    let _ = Command::new("systemctl").args(["--user", "enable", "--now", "runlogd"]).status();
+    let _ = Command::new("systemctl").args(["--user", "enable", "--now", "logbeard"]).status();
 }
 
 #[cfg(not(target_os = "macos"))]
 fn unload_service(_path: &Path) {
     use std::process::Command;
-    let _ = Command::new("systemctl").args(["--user", "disable", "--now", "runlogd"]).status();
+    let _ = Command::new("systemctl").args(["--user", "disable", "--now", "logbeard"]).status();
 }
 
 // ---------------------------------------------------------------------------
@@ -670,11 +670,11 @@ fn harness_cli(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Whether `claude mcp get runlog` resolves. Exits non-zero when the server is unknown.
+/// Whether `claude mcp get logbear` resolves. Exits non-zero when the server is unknown.
 ///
 /// Preferred over reading `~/.claude.json` because a server may be registered at local,
 /// user or project scope, and only the CLI knows which scopes are in play.
-fn claude_cli_has_runlog(cli: &Path) -> bool {
+fn claude_cli_has_logbear(cli: &Path) -> bool {
     std::process::Command::new(cli)
         .args(["mcp", "get", MCP_NAME])
         .stdin(std::process::Stdio::null())
@@ -683,7 +683,7 @@ fn claude_cli_has_runlog(cli: &Path) -> bool {
         .unwrap_or(false)
 }
 
-const MCP_NAME: &str = "runlog";
+const MCP_NAME: &str = "logbear";
 
 fn mcp_status(h: Harness) -> StepState {
     let path = h.mcp_config();
@@ -692,13 +692,13 @@ fn mcp_status(h: Harness) -> StepState {
         .flatten();
 
     let installed = match (&cli, h) {
-        (Some(cli), _) => claude_cli_has_runlog(cli),
+        (Some(cli), _) => claude_cli_has_logbear(cli),
         (None, Harness::Claude) => read_json(&path)
             .and_then(|v| v.get("mcpServers").cloned())
             .map(|v| v.get(MCP_NAME).is_some())
             .unwrap_or(false),
         (None, Harness::Codex) => std::fs::read_to_string(&path)
-            .map(|s| s.contains("[mcp_servers.runlog]"))
+            .map(|s| s.contains("[mcp_servers.logbear]"))
             .unwrap_or(false),
     };
 
@@ -720,7 +720,7 @@ fn mcp_status(h: Harness) -> StepState {
     }
 }
 
-/// Start `runlog-mcp` and complete an `initialize` handshake.
+/// Start `logbear-mcp` and complete an `initialize` handshake.
 ///
 /// Registering the server only edits config; this is what proves the binary runs and
 /// speaks the protocol, so a failure surfaces here rather than as a silent absence inside
@@ -737,7 +737,7 @@ fn verify_mcp(server: &Path) -> Result<String, String> {
 
     let req = concat!(
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"#,
-        r#""2025-06-18","capabilities":{},"clientInfo":{"name":"runlog-installer","#,
+        r#""2025-06-18","capabilities":{},"clientInfo":{"name":"logbear-installer","#,
         r#""version":"1"}}}"#,
         "\n"
     );
@@ -754,9 +754,9 @@ fn verify_mcp(server: &Path) -> Result<String, String> {
     let _ = child.kill();
     let _ = child.wait();
 
-    let reply = reply.ok_or_else(|| "runlog-mcp did not answer an initialize request".to_string())?;
+    let reply = reply.ok_or_else(|| "logbear-mcp did not answer an initialize request".to_string())?;
     let v: serde_json::Value =
-        serde_json::from_str(&reply).map_err(|e| format!("runlog-mcp replied with non-JSON: {e}"))?;
+        serde_json::from_str(&reply).map_err(|e| format!("logbear-mcp replied with non-JSON: {e}"))?;
     v.pointer("/result/serverInfo/version")
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
@@ -764,9 +764,9 @@ fn verify_mcp(server: &Path) -> Result<String, String> {
 }
 
 fn install_mcp(h: Harness) -> Result<StepState, String> {
-    let server = bin("runlog-mcp");
+    let server = bin("logbear-mcp");
     if !server.exists() {
-        return Err(format!("runlog-mcp is missing from {}", bin_dir().display()));
+        return Err(format!("logbear-mcp is missing from {}", bin_dir().display()));
     }
     verify_mcp(&server)?;
 
@@ -779,7 +779,7 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|e| format!("{} failed: {e}", cli.display()))?;
-        if !out.status.success() && !claude_cli_has_runlog(&cli) {
+        if !out.status.success() && !claude_cli_has_logbear(&cli) {
             return Err(format!(
                 "claude mcp add failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
@@ -817,12 +817,12 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
             // Append a delimited block rather than parsing and rewriting someone else's
             // TOML, which may hold anything.
             let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
-            if !existing.contains("[mcp_servers.runlog]") {
+            if !existing.contains("[mcp_servers.logbear]") {
                 if !existing.is_empty() && !existing.ends_with('\n') {
                     existing.push('\n');
                 }
                 existing.push_str(&format!(
-                    "\n# added by runlog\n[mcp_servers.runlog]\ncommand = \"{}\"\nargs = []\n",
+                    "\n# added by logbear\n[mcp_servers.logbear]\ncommand = \"{}\"\nargs = []\n",
                     server.to_string_lossy()
                 ));
                 if let Some(parent) = path.parent() {
@@ -840,7 +840,7 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
 
 fn uninstall_mcp(h: Harness) -> Result<StepState, String> {
     if let (Harness::Claude, Some(cli)) = (h, harness_cli("claude")) {
-        if claude_cli_has_runlog(&cli) {
+        if claude_cli_has_logbear(&cli) {
             let _ = std::process::Command::new(&cli)
                 .args(["mcp", "remove", "--scope", "user", MCP_NAME])
                 .stdin(std::process::Stdio::null())
@@ -862,7 +862,7 @@ fn uninstall_mcp(h: Harness) -> Result<StepState, String> {
         }
         Harness::Codex => {
             if let Ok(existing) = std::fs::read_to_string(&path) {
-                let cleaned = strip_toml_block(&existing, "[mcp_servers.runlog]");
+                let cleaned = strip_toml_block(&existing, "[mcp_servers.logbear]");
                 std::fs::write(&path, cleaned).map_err(|e| e.to_string())?;
             }
         }
@@ -873,7 +873,7 @@ fn uninstall_mcp(h: Harness) -> Result<StepState, String> {
 fn hook_status(h: Harness) -> StepState {
     let path = h.config();
     let installed = std::fs::read_to_string(&path)
-        .map(|s| s.contains("runlog-hook"))
+        .map(|s| s.contains("logbear-hook"))
         .unwrap_or(false);
     StepState {
         installed,
@@ -892,9 +892,9 @@ fn hook_status(h: Harness) -> StepState {
 /// The hook binary knows its own config shape, so it emits the block to merge and this
 /// only has to merge it. One source of truth for a format two vendors keep changing.
 fn hook_block(h: Harness) -> Result<serde_json::Value, String> {
-    let exe = bin("runlog-hook");
+    let exe = bin("logbear-hook");
     if !exe.exists() {
-        return Err(format!("runlog-hook is missing from {}", bin_dir().display()));
+        return Err(format!("logbear-hook is missing from {}", bin_dir().display()));
     }
     let flag = match h {
         Harness::Claude => "claude",
@@ -907,7 +907,7 @@ fn hook_block(h: Harness) -> Result<serde_json::Value, String> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| format!("runlog-hook emitted invalid JSON: {e}"))
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("logbear-hook emitted invalid JSON: {e}"))
 }
 
 fn install_hook(h: Harness) -> Result<StepState, String> {
@@ -932,7 +932,7 @@ fn uninstall_hook(h: Harness) -> Result<StepState, String> {
     let Some(mut root) = read_json(&path) else {
         return Ok(hook_status(h));
     };
-    prune_runlog(&mut root);
+    prune_logbear(&mut root);
     write_json(&path, &root)?;
     Ok(hook_status(h))
 }
@@ -968,19 +968,19 @@ fn merge(target: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
-/// Remove anything mentioning `runlog-hook`, then drop containers left empty by it, so
+/// Remove anything mentioning `logbear-hook`, then drop containers left empty by it, so
 /// uninstall does not leave a litter of empty arrays behind.
-fn prune_runlog(value: &mut serde_json::Value) {
+fn prune_logbear(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             let keys: Vec<String> = map.keys().cloned().collect();
             for k in keys {
                 if let Some(v) = map.get_mut(&k) {
-                    if mentions_runlog(v) && !v.is_object() && !v.is_array() {
+                    if mentions_logbear(v) && !v.is_object() && !v.is_array() {
                         map.remove(&k);
                         continue;
                     }
-                    prune_runlog(v);
+                    prune_logbear(v);
                     let empty = match v {
                         serde_json::Value::Array(a) => a.is_empty(),
                         serde_json::Value::Object(o) => o.is_empty(),
@@ -993,17 +993,17 @@ fn prune_runlog(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Array(items) => {
-            items.retain(|v| !mentions_runlog(v));
+            items.retain(|v| !mentions_logbear(v));
             for v in items.iter_mut() {
-                prune_runlog(v);
+                prune_logbear(v);
             }
         }
         _ => {}
     }
 }
 
-fn mentions_runlog(v: &serde_json::Value) -> bool {
-    v.to_string().contains("runlog-hook")
+fn mentions_logbear(v: &serde_json::Value) -> bool {
+    v.to_string().contains("logbear-hook")
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
@@ -1024,8 +1024,8 @@ fn back_up(path: &Path) -> Result<Option<String>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let stamp = runlog_core::now_micros();
-    let backup = path.with_extension(format!("runlog-backup.{stamp}"));
+    let stamp = logbear_core::now_micros();
+    let backup = path.with_extension(format!("logbear-backup.{stamp}"));
     std::fs::copy(path, &backup).map_err(|e| format!("could not back up {}: {e}", path.display()))?;
     Ok(Some(backup.to_string_lossy().into_owned()))
 }
@@ -1038,8 +1038,8 @@ fn strip_toml_block(source: &str, header: &str) -> String {
         let trimmed = line.trim();
         if trimmed == header {
             skipping = true;
-            // Also drop the "# added by runlog" marker we wrote above it.
-            if out.last().map(|l: &&str| l.trim() == "# added by runlog").unwrap_or(false) {
+            // Also drop the "# added by logbear" marker we wrote above it.
+            if out.last().map(|l: &&str| l.trim() == "# added by logbear").unwrap_or(false) {
                 out.pop();
             }
             continue;
@@ -1076,7 +1076,7 @@ mod tests {
         });
         let ours = json!({
             "hooks": {
-                "Stop": [{ "hooks": [{ "type": "command", "command": "runlog-hook stop" }] }]
+                "Stop": [{ "hooks": [{ "type": "command", "command": "logbear-hook stop" }] }]
             }
         });
         merge(&mut existing, &ours);
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn merging_twice_does_not_duplicate_our_entry() {
         let mut existing = json!({});
-        let ours = json!({ "hooks": { "Stop": [{ "command": "runlog-hook" }] } });
+        let ours = json!({ "hooks": { "Stop": [{ "command": "logbear-hook" }] } });
         merge(&mut existing, &ours);
         merge(&mut existing, &ours);
         assert_eq!(existing["hooks"]["Stop"].as_array().unwrap().len(), 1);
@@ -1103,11 +1103,11 @@ mod tests {
             "hooks": {
                 "Stop": [
                     { "hooks": [{ "type": "command", "command": "their-tool" }] },
-                    { "hooks": [{ "type": "command", "command": "/opt/runlog-hook stop" }] }
+                    { "hooks": [{ "type": "command", "command": "/opt/logbear-hook stop" }] }
                 ]
             }
         });
-        prune_runlog(&mut config);
+        prune_logbear(&mut config);
         assert_eq!(config["model"], "opus");
         let stop = config["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
@@ -1117,20 +1117,20 @@ mod tests {
     #[test]
     fn uninstall_leaves_no_empty_containers_behind() {
         let mut config = json!({
-            "hooks": { "Stop": [{ "hooks": [{ "command": "runlog-hook" }] }] },
+            "hooks": { "Stop": [{ "hooks": [{ "command": "logbear-hook" }] }] },
             "model": "opus"
         });
-        prune_runlog(&mut config);
+        prune_logbear(&mut config);
         assert!(config.get("hooks").is_none(), "an empty hooks object was left: {config}");
         assert_eq!(config["model"], "opus");
     }
 
     #[test]
     fn a_toml_block_is_removed_without_disturbing_its_neighbours() {
-        let source = "[general]\nfoo = 1\n\n# added by runlog\n[mcp_servers.runlog]\ncommand = \"/x\"\nargs = []\n\n[mcp_servers.other]\ncommand = \"/y\"\n";
-        let out = strip_toml_block(source, "[mcp_servers.runlog]");
-        assert!(!out.contains("mcp_servers.runlog"));
-        assert!(!out.contains("added by runlog"));
+        let source = "[general]\nfoo = 1\n\n# added by logbear\n[mcp_servers.logbear]\ncommand = \"/x\"\nargs = []\n\n[mcp_servers.other]\ncommand = \"/y\"\n";
+        let out = strip_toml_block(source, "[mcp_servers.logbear]");
+        assert!(!out.contains("mcp_servers.logbear"));
+        assert!(!out.contains("added by logbear"));
         assert!(out.contains("[general]"), "{out}");
         assert!(out.contains("[mcp_servers.other]"), "{out}");
         assert!(out.contains("command = \"/y\""), "{out}");
@@ -1162,9 +1162,9 @@ mod tests {
 
     #[test]
     fn a_profile_block_is_removed_cleanly() {
-        let before = "export EDITOR=nvim\n\n# added by runlog\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n\nalias g=git\n";
+        let before = "export EDITOR=nvim\n\n# added by logbear\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n\nalias g=git\n";
         let after = strip_profile_block(before);
-        assert!(!after.contains("added by runlog"), "{after}");
+        assert!(!after.contains("added by logbear"), "{after}");
         assert!(!after.contains(".local/bin"), "{after}");
         assert!(after.contains("export EDITOR=nvim"), "an unrelated line was lost: {after}");
         assert!(after.contains("alias g=git"), "an unrelated line was lost: {after}");
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn removing_the_block_leaves_a_users_own_path_export_alone() {
-        let before = "export PATH=\"/opt/mine:$PATH\"\n# added by runlog\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n";
+        let before = "export PATH=\"/opt/mine:$PATH\"\n# added by logbear\nexport PATH=\"/Users/x/.local/bin:$PATH\"\n";
         let after = strip_profile_block(before);
         assert!(after.contains("/opt/mine"), "their own PATH export was eaten: {after}");
         assert!(!after.contains(".local/bin"), "{after}");

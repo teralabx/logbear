@@ -1,6 +1,6 @@
-//! `runlogd` — the long-lived process that owns the databases.
+//! `logbeard` — the long-lived process that owns the databases.
 //!
-//! It outlives the desktop app and auto-starts on the first `runlog` invocation.
+//! It outlives the desktop app and auto-starts on the first `logbear` invocation.
 //! Everything it does happens behind one unix socket.
 
 mod conn;
@@ -9,9 +9,9 @@ mod spool;
 mod state;
 
 use clap::{Parser, Subcommand};
-use runlog_core::client::Client;
-use runlog_core::paths;
-use runlog_core::proto::Request;
+use logbear_core::client::Client;
+use logbear_core::paths;
+use logbear_core::proto::Request;
 use state::Daemon;
 use std::os::unix::net::UnixListener;
 use std::sync::atomic::Ordering;
@@ -24,7 +24,7 @@ const TICK: Duration = Duration::from_millis(200);
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
-#[command(name = "runlogd", version, about = "The runlog daemon")]
+#[command(name = "logbeard", version, about = "The logbear daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -52,7 +52,7 @@ fn main() {
 
 fn serve() -> i32 {
     if let Err(e) = paths::ensure_home() {
-        eprintln!("runlogd: cannot create {}: {e}", paths::home().display());
+        eprintln!("logbeard: cannot create {}: {e}", paths::home().display());
         return 1;
     }
 
@@ -61,7 +61,7 @@ fn serve() -> i32 {
     let socket = paths::socket();
     if socket.exists() {
         if Client::connect_to(&socket).is_ok() {
-            eprintln!("runlogd: already running at {}", socket.display());
+            eprintln!("logbeard: already running at {}", socket.display());
             return 0;
         }
         let _ = std::fs::remove_file(&socket);
@@ -70,7 +70,7 @@ fn serve() -> i32 {
     let listener = match UnixListener::bind(&socket) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("runlogd: cannot bind {}: {e}", socket.display());
+            eprintln!("logbeard: cannot bind {}: {e}", socket.display());
             return 1;
         }
     };
@@ -83,7 +83,7 @@ fn serve() -> i32 {
     let daemon = match Daemon::open() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("runlogd: cannot open storage: {e}");
+            eprintln!("logbeard: cannot open storage: {e}");
             let _ = std::fs::remove_file(&socket);
             return 1;
         }
@@ -91,7 +91,7 @@ fn serve() -> i32 {
 
     let _ = std::fs::write(paths::pid_file(), std::process::id().to_string());
     log(&format!(
-        "runlogd {} listening on {}",
+        "logbeard {} listening on {}",
         env!("CARGO_PKG_VERSION"),
         socket.display()
     ));
@@ -120,7 +120,7 @@ fn serve() -> i32 {
     daemon.close_active_runs();
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(paths::pid_file());
-    log("runlogd stopped");
+    log("logbeard stopped");
     0
 }
 
@@ -155,7 +155,7 @@ fn spawn_maintenance(daemon: Arc<Daemon>) {
                 last_sweep = std::time::Instant::now();
                 for handle in daemon.open_projects() {
                     let cap = daemon.retention_cap(&handle.project);
-                    match runlog_core::store::retention::enforce(&handle.db, cap) {
+                    match logbear_core::store::retention::enforce(&handle.db, cap) {
                         Ok(n) if n > 0 => log(&format!(
                             "{}: evicted the raw log of {n} old run(s) to stay under {} bytes",
                             handle.project.name, cap
@@ -173,11 +173,11 @@ fn stop() -> i32 {
     match Client::connect() {
         Ok(mut c) => {
             let _ = c.call::<serde_json::Value>(&Request::Shutdown);
-            println!("runlogd: shutdown requested");
+            println!("logbeard: shutdown requested");
             0
         }
         Err(_) => {
-            println!("runlogd: not running");
+            println!("logbeard: not running");
             0
         }
     }
@@ -190,13 +190,13 @@ fn status() -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("runlogd: {e}");
+            eprintln!("logbeard: {e}");
             1
         }
     }
 }
 
-/// Timestamped stderr; whatever starts the daemon redirects it to `~/.runlog/runlogd.log`.
+/// Timestamped stderr; whatever starts the daemon redirects it to `~/.logbear/logbeard.log`.
 fn log(msg: &str) {
     let now = time::OffsetDateTime::now_utc();
     eprintln!(

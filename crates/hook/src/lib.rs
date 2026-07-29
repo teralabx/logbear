@@ -19,10 +19,10 @@ pub mod payload;
 
 use decide::Decision;
 use payload::Payload;
-use runlog_core::client::Client;
-use runlog_core::model::EntryId;
-use runlog_core::proto::{ProjectRef, UnreadState};
-use runlog_core::Result;
+use logbear_core::client::Client;
+use logbear_core::model::EntryId;
+use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::Result;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -86,7 +86,7 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
     let unread = match daemon.unread(project.clone(), &payload.session_id, harness) {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("runlog-hook: unread failed ({e}); allowing");
+            eprintln!("logbear-hook: unread failed ({e}); allowing");
             return allow();
         }
     };
@@ -102,7 +102,7 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
             watermark,
             /* record_block */ true,
         ) {
-            eprintln!("runlog-hook: could not spend the block budget ({e}); degrading");
+            eprintln!("logbear-hook: could not spend the block budget ({e}); degrading");
             decision = Decision::Context {
                 text: match &decision {
                     Decision::Block { reason } => reason.clone(),

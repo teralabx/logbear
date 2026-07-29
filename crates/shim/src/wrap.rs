@@ -1,4 +1,4 @@
-//! `runlog <cmd> [args...]` — wrap a command and capture what it emits.
+//! `logbear <cmd> [args...]` — wrap a command and capture what it emits.
 //!
 //! The ordering is load-bearing: read from the pty, write to the user's stdout, flush, and
 //! only then hand a copy to [`crate::sink`], which cannot block. Whatever state the daemon
@@ -6,15 +6,15 @@
 //!
 //! The wrapped process is never modified. No environment variable is set and nothing is
 //! injected; the child inherits exactly what the shell would have given it, and the only
-//! observable difference is that its terminal is a pty runlog opened.
+//! observable difference is that its terminal is a pty logbear opened.
 
 use crate::cli::WrapArgs;
 use crate::sink::Sink;
 use crate::term;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use runlog_core::client::Client;
-use runlog_core::model::RunId;
-use runlog_core::proto::{Request, Settings};
+use logbear_core::client::Client;
+use logbear_core::model::RunId;
+use logbear_core::proto::{Request, Settings};
 use std::ffi::CStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ pub fn run(args: WrapArgs) -> ! {
         }
         Err(message) => {
             term::restore();
-            eprintln!("runlog: {message}");
+            eprintln!("logbear: {message}");
             std::process::exit(EXIT_CANNOT_RUN)
         }
     }
@@ -75,13 +75,13 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
         // command the user just typed.
         let skip = token.clone();
         std::thread::Builder::new()
-            .name("runlog-drain".into())
+            .name("logbear-drain".into())
             .spawn(move || crate::sink::drain(&skip))
             .ok();
     }
 
-    let stamp = runlog_core::project::stamp(args.command.clone(), &cwd, cols, rows);
-    let started_at = runlog_core::now_micros();
+    let stamp = logbear_core::project::stamp(args.command.clone(), &cwd, cols, rows);
+    let started_at = logbear_core::now_micros();
 
     let run_id = client.as_mut().and_then(|c| start_run(c, &stamp));
     if run_id.is_none() {
@@ -108,7 +108,7 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
     }
 }
 
-fn start_run(client: &mut Client, stamp: &runlog_core::model::RunStamp) -> Option<RunId> {
+fn start_run(client: &mut Client, stamp: &logbear_core::model::RunStamp) -> Option<RunId> {
     let value = client
         .call_value(&Request::StartRun {
             stamp: stamp.clone(),
@@ -159,13 +159,13 @@ pub fn is_denied(program: &str, settings: &Settings) -> bool {
 /// Replaces this process with the real command.
 ///
 /// An exec rather than a spawn, so signals, job control, the terminal and the exit code are
-/// exactly what they would have been without runlog.
+/// exactly what they would have been without logbear.
 fn exec_direct(command: &[String]) -> ! {
     use std::os::unix::process::CommandExt;
     let err = std::process::Command::new(&command[0])
         .args(&command[1..])
         .exec();
-    eprintln!("runlog: cannot run {}: {err}", command[0]);
+    eprintln!("logbear: cannot run {}: {err}", command[0]);
     std::process::exit(EXIT_CANNOT_RUN)
 }
 
@@ -316,7 +316,7 @@ fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
                 let _ = out.flush();
                 // Timestamped here rather than on the sender thread so arrival times stay
                 // real under load.
-                sink.offer(runlog_core::now_micros(), chunk);
+                sink.offer(logbear_core::now_micros(), chunk);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // A pty master reports the child's exit as EIO on Linux rather than as a clean
@@ -330,7 +330,7 @@ fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i3
     // Never joined: a blocking read on stdin cannot be cancelled portably, and the process
     // exits and takes the thread with it.
     std::thread::Builder::new()
-        .name("runlog-stdin".into())
+        .name("logbear-stdin".into())
         .spawn(move || {
             let interactive = crate::ui::is_tty(libc::STDIN_FILENO);
             let mut forwarded_anything = false;
@@ -363,12 +363,12 @@ fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i3
         .ok();
 }
 
-/// Sends the pty's EOF character now that our own stdin has ended, or `echo x | runlog cat`
+/// Sends the pty's EOF character now that our own stdin has ended, or `echo x | logbear cat`
 /// never returns.
 ///
 /// A pty can only signal EOF through the line discipline's EOF character, the same byte
 /// Ctrl-D sends. Only sent when there was a real stdin behind it — an interactive terminal,
-/// or a pipe that delivered something — because under `runlog npm test < /dev/null` the pty
+/// or a pipe that delivered something — because under `logbear npm test < /dev/null` the pty
 /// echoes it as `^D` into the first bytes of the captured stream.
 fn send_eof(writer: &mut Box<dyn Write + Send>, master_fd: Option<i32>) {
     let Some(fd) = master_fd else { return };
@@ -391,7 +391,7 @@ fn spawn_signal_forwarder(master_fd: Option<i32>, child_pid: Option<i32>, sink: 
         return;
     };
     std::thread::Builder::new()
-        .name("runlog-signals".into())
+        .name("logbear-signals".into())
         .spawn(move || {
             for sig in signals.forever() {
                 if sig == SIGWINCH {
@@ -493,7 +493,7 @@ fn spawn_pipe_signal_forwarder(child_pid: i32) {
         return;
     };
     std::thread::Builder::new()
-        .name("runlog-signals".into())
+        .name("logbear-signals".into())
         .spawn(move || {
             for sig in signals.forever() {
                 unsafe { libc::kill(child_pid, sig) };
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn a_program_that_does_not_exist_resolves_to_nothing() {
-        // What `runlog $c` produces in fish when `$c` is the string "logs -n 50": one
+        // What `logbear $c` produces in fish when `$c` is the string "logs -n 50": one
         // argument, no such executable, and nothing worth recording as a run.
         assert!(resolve_program("logs -n 50").is_none());
         assert!(resolve_program("definitely-not-a-real-program").is_none());

@@ -235,7 +235,7 @@ export interface FingerprintHistoryPoint {
 	started_at: number;
 }
 
-export type RunlogEvent =
+export type LogbearEvent =
 	| { event: 'run_started'; run: Run }
 	| { event: 'run_finished'; run: Run }
 	| { event: 'entries'; run_id: number; entries: EntryView[] }

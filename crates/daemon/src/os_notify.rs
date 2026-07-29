@@ -1,13 +1,13 @@
 //! Posting a notification to the operating system.
 //!
-//! The decision is made in `runlog_core::notify`, so it is the same whether or not the app
+//! The decision is made in `logbear_core::notify`, so it is the same whether or not the app
 //! is open; this posts only when no app is subscribed, since the app posts them itself
 //! through `tauri-plugin-notification` with a real application identity and click-through.
 //!
 //! Shell-based on purpose: linking a notification framework into a headless daemon costs a
 //! bundle-identity requirement on macOS and a dbus connection on Linux.
 
-use runlog_core::proto::Notice;
+use logbear_core::proto::Notice;
 use std::process::{Command, Stdio};
 
 pub fn post(notice: &Notice) {
@@ -33,7 +33,7 @@ fn post_macos(notice: &Notice) {
             "-group",
             &group,
             "-sender",
-            "sh.runlog.app",
+            "sh.logbear.app",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -58,14 +58,14 @@ fn post_macos(notice: &Notice) {
 
 #[cfg(target_os = "linux")]
 fn post_linux(notice: &Notice) {
-    let urgency = if notice.level == runlog_core::model::Level::Error {
+    let urgency = if notice.level == logbear_core::model::Level::Error {
         "critical"
     } else {
         "normal"
     };
     let _ = Command::new("notify-send")
         .args([
-            "--app-name=runlog",
+            "--app-name=logbear",
             &format!("--urgency={urgency}"),
             &notice.title,
             &body(notice),
@@ -94,7 +94,7 @@ fn applescript_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runlog_core::model::Level;
+    use logbear_core::model::Level;
 
     fn notice(count: i64) -> Notice {
         Notice {

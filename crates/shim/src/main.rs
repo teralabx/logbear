@@ -1,6 +1,6 @@
-//! `runlog` — the user-facing binary.
+//! `logbear` — the user-facing binary.
 //!
-//! `runlog <cmd>` wraps a command under a pty and streams a copy of its output to the
+//! `logbear <cmd>` wraps a command under a pty and streams a copy of its output to the
 //! daemon ([`wrap`]); every other verb queries what has already been captured ([`cmds`]).
 //! [`cli`] decides which by exact match against a closed list of subcommand names, because
 //! the primary verb is whatever the user typed.

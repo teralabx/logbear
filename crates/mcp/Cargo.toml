@@ -1,5 +1,5 @@
 [package]
-name = "runlog-mcp"
+name = "logbear-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,18 +7,18 @@ license-file.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "MCP server exposing runlog's capture database to coding agents"
+description = "MCP server exposing logbear's capture database to coding agents"
 
 [lib]
-name = "runlog_mcp"
+name = "logbear_mcp"
 path = "src/lib.rs"
 
 [[bin]]
-name = "runlog-mcp"
+name = "logbear-mcp"
 path = "src/main.rs"
 
 [dependencies]
-runlog-core.workspace = true
+logbear-core.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 serde.workspace = true

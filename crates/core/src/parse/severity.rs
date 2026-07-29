@@ -334,7 +334,7 @@ pub fn normalise_level(s: &str) -> Level {
 /// Maps a numeric `level` field onto [`Level`], using pino and bunyan's scale: 10 trace,
 /// 20 debug, 30 info, 40 warn, 50 error, 60 fatal.
 ///
-/// Not OpenTelemetry's 1–24 scale, on which 30 would be an error rather than info; runlog
+/// Not OpenTelemetry's 1–24 scale, on which 30 would be an error rather than info; logbear
 /// reads stdout rather than OTLP, so a bare numeric `level` comes from a Node logger.
 /// Zero and below stay unknown, which both scales reserve for "unspecified".
 pub fn from_numeric_level(n: i64) -> Level {

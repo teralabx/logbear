@@ -94,7 +94,7 @@
 				tone: 'neutral' as const,
 				headline: 'Not enough history to compare.',
 				detail: !diff.a
-					? 'There is no baseline run matching that selection yet — runlog needs at least one run that exited 0 before it can tell you what changed.'
+					? 'There is no baseline run matching that selection yet — logbear needs at least one run that exited 0 before it can tell you what changed.'
 					: 'There is no later run to compare the baseline against.'
 			};
 		}
@@ -203,7 +203,7 @@
 		<EmptyState
 			title="Nothing to compare yet"
 			body="A diff needs two runs. Run your command once, change something, run it again."
-			command="runlog npm test"
+			command="logbear npm test"
 		/>
 	</div>
 {:else}
@@ -463,7 +463,7 @@
 							{/each}
 						</div>
 						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
-							Names only. runlog never records environment values.
+							Names only. logbear never records environment values.
 						</p>
 					{:else}
 						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">

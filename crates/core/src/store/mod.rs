@@ -269,7 +269,7 @@ pub fn raw_range(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Resu
 // SQL functions
 // ---------------------------------------------------------------------------
 
-/// Registers `runlog_render` and `runlog_raw` on a connection.
+/// Registers `logbear_render` and `logbear_raw` on a connection.
 ///
 /// Both read `chunks` while a query is already executing on the same connection, which
 /// SQLite disallows, so each holds its own read-only connection to the file.
@@ -283,7 +283,7 @@ pub fn register_functions(conn: &Connection, path: &Path) -> Result<()> {
         | FunctionFlags::SQLITE_DETERMINISTIC;
 
     let render_conn = open_reader(path)?;
-    conn.create_scalar_function("runlog_render", 3, flags, move |ctx| {
+    conn.create_scalar_function("logbear_render", 3, flags, move |ctx| {
         let run_id: i64 = ctx.get(0)?;
         let start: i64 = ctx.get(1)?;
         let end: i64 = ctx.get(2)?;
@@ -295,7 +295,7 @@ pub fn register_functions(conn: &Connection, path: &Path) -> Result<()> {
     })?;
 
     let raw_conn = open_reader(path)?;
-    conn.create_scalar_function("runlog_raw", 3, flags, move |ctx| {
+    conn.create_scalar_function("logbear_raw", 3, flags, move |ctx| {
         let run_id: i64 = ctx.get(0)?;
         let start: i64 = ctx.get(1)?;
         let end: i64 = ctx.get(2)?;
@@ -321,8 +321,8 @@ fn open_reader(path: &Path) -> Result<Arc<Mutex<Connection>>> {
 
 /// Function names an agent's SQL may call. Anything absent is denied.
 pub const ALLOWED_FUNCTIONS: &[&str] = &[
-    "runlog_render",
-    "runlog_raw",
+    "logbear_render",
+    "logbear_raw",
     // Core SQLite scalar and aggregate functions.
     "abs", "avg", "cast", "char", "coalesce", "count", "date", "datetime", "format",
     "group_concat", "hex", "ifnull", "iif", "instr", "json", "json_array",

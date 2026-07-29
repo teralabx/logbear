@@ -28,7 +28,7 @@ import type {
 	Run,
 	RunDiff,
 	RunRef,
-	RunlogEvent,
+	LogbearEvent,
 	Settings,
 	StepState
 } from './types';
@@ -83,7 +83,7 @@ const projects: Project[] = [
 		id: 1,
 		name: 'checkout-api',
 		root: '/Users/dev/code/checkout-api',
-		db_path: '/Users/dev/.runlog/projects/checkout-api/runlog.db',
+		db_path: '/Users/dev/.logbear/projects/checkout-api/logbear.db',
 		created_at: NOW - 63 * DAY,
 		last_seen_at: NOW - 40,
 		retention_bytes: 512 * 1024 * 1024,
@@ -94,7 +94,7 @@ const projects: Project[] = [
 		id: 2,
 		name: 'pearl-web',
 		root: '/Users/dev/code/pearl-web',
-		db_path: '/Users/dev/.runlog/projects/pearl-web/runlog.db',
+		db_path: '/Users/dev/.logbear/projects/pearl-web/logbear.db',
 		created_at: NOW - 48 * DAY,
 		last_seen_at: NOW - 51 * MIN,
 		retention_bytes: null,
@@ -851,25 +851,25 @@ const installStatus: InstallStatus = {
 	path: {
 		installed: true,
 		available: true,
-		detail: '~/.runlog/bin is first in PATH (added to ~/.zshrc)',
-		backup: '~/.runlog/backups/zshrc.2026-07-11T09-14-02'
+		detail: '~/.logbear/bin is first in PATH (added to ~/.zshrc)',
+		backup: '~/.logbear/backups/zshrc.2026-07-11T09-14-02'
 	},
 	daemon: {
 		installed: true,
 		available: true,
-		detail: 'launchd agent sh.runlog.daemon loaded, running as pid 41822',
+		detail: 'launchd agent sh.logbear.daemon loaded, running as pid 41822',
 		backup: null
 	},
 	mcp_claude: {
 		installed: true,
 		available: true,
-		detail: 'Registered in ~/.claude.json as MCP server "runlog"',
-		backup: '~/.runlog/backups/claude.json.2026-07-11T09-14-05'
+		detail: 'Registered in ~/.claude.json as MCP server "logbear"',
+		backup: '~/.logbear/backups/claude.json.2026-07-11T09-14-05'
 	},
 	mcp_codex: {
 		installed: false,
 		available: true,
-		detail: 'Not registered. Adds "runlog" to ~/.codex/config.toml',
+		detail: 'Not registered. Adds "logbear" to ~/.codex/config.toml',
 		backup: null
 	},
 	hook_claude: {
@@ -904,7 +904,7 @@ export const mock = {
 			version: '0.4.1',
 			pid: 41822,
 			started_at: NOW - 3 * DAY - 4 * HOUR,
-			socket: '/Users/dev/.runlog/daemon.sock',
+			socket: '/Users/dev/.logbear/daemon.sock',
 			projects: projects.length,
 			active_runs: runData.filter((r) => r.run.ended_at === null).length,
 			total_db_bytes: projects.reduce((a, p) => a + dbBytes(p.id), 0),
@@ -1228,12 +1228,12 @@ function renderRaw(r: RunData): string {
 /* event ticker                                                                */
 /* -------------------------------------------------------------------------- */
 
-type Handler = (e: RunlogEvent) => void;
+type Handler = (e: LogbearEvent) => void;
 const handlers = new Set<Handler>();
 let timer: ReturnType<typeof setInterval> | null = null;
 let tick = 0;
 
-function emit(e: RunlogEvent) {
+function emit(e: LogbearEvent) {
 	for (const h of handlers) h(e);
 }
 

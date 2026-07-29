@@ -13,15 +13,15 @@ TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 OUT="apps/desktop/src-tauri/binaries"
 
 if [ "$PROFILE" = "release" ]; then
-  cargo build --release -p runlog -p runlogd -p runlog-mcp -p runlog-hook
+  cargo build --release -p logbear -p logbeard -p logbear-mcp -p logbear-hook
   SRC="target/release"
 else
-  cargo build -p runlog -p runlogd -p runlog-mcp -p runlog-hook
+  cargo build -p logbear -p logbeard -p logbear-mcp -p logbear-hook
   SRC="target/debug"
 fi
 
 mkdir -p "$OUT"
-for bin in runlog runlogd runlog-mcp runlog-hook; do
+for bin in logbear logbeard logbear-mcp logbear-hook; do
   cp "$SRC/$bin" "$OUT/$bin-$TRIPLE"
   chmod +x "$OUT/$bin-$TRIPLE"
   echo "staged $OUT/$bin-$TRIPLE"

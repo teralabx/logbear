@@ -3,11 +3,11 @@
 //! The payloads in `tests/payloads/` are transcribed from each vendor's documented and
 //! generated schemas, so a wire-format change fails here rather than silently.
 
-use runlog_core::model::{Boundaries, Entry, EntryId, EntryView, Level};
-use runlog_core::proto::{ProjectRef, UnreadState};
-use runlog_core::{Error, Result};
-use runlog_hook::payload::{self, Event, Harness};
-use runlog_hook::{respond, Daemon};
+use logbear_core::model::{Boundaries, Entry, EntryId, EntryView, Level};
+use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::{Error, Result};
+use logbear_hook::payload::{self, Event, Harness};
+use logbear_hook::{respond, Daemon};
 use serde_json::Value;
 
 // --------------------------------------------------------------------------- fixtures
@@ -26,9 +26,9 @@ fn entry(id: EntryId, new_signature: bool, text: &str, template: &str) -> EntryV
             run_id: 42,
             start_line: id * 10,
             end_line: id * 10 + 4,
-            captured_at: runlog_core::now_micros() - 40_000_000,
+            captured_at: logbear_core::now_micros() - 40_000_000,
             level: Level::Error,
-            evidence: runlog_core::model::Evidence::Structural,
+            evidence: logbear_core::model::Evidence::Structural,
             is_error: true,
             error_reason: Some("structural:elixir_exception".into()),
             fingerprint_id: Some(id),
@@ -45,7 +45,7 @@ fn unread() -> UnreadState {
     UnreadState {
         new_errors: 2,
         new_signatures: 1,
-        oldest_at: Some(runlog_core::now_micros() - 40_000_000),
+        oldest_at: Some(logbear_core::now_micros() - 40_000_000),
         newest_entry_id: Some(1002),
         blocks_issued: 0,
         blocks_remaining: 3,
@@ -370,7 +370,7 @@ fn emit_config_prints_only_json_on_stdout() {
         let cmd = v["hooks"]["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(cmd.contains("runlog-hook"), "{which}: {cmd}");
+        assert!(cmd.contains("logbear-hook"), "{which}: {cmd}");
         assert!(cmd.ends_with(&format!("--harness {which}")), "{which}: {cmd}");
     }
     // The Codex trust caveat goes to stderr so stdout stays pipeable.
@@ -382,22 +382,22 @@ fn invoke(args: &[&str], stdin: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let dir = std::env::temp_dir().join(format!("runlog-hook-test-{}", std::process::id()));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_runlog-hook"))
+    let dir = std::env::temp_dir().join(format!("logbear-hook-test-{}", std::process::id()));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_logbear-hook"))
         .args(args)
         // Point at a socket that cannot exist, so the test can never reach a real daemon.
-        .env("RUNLOG_HOME", &dir)
-        .env("RUNLOG_SOCKET", dir.join("absent.sock"))
+        .env("LOGBEAR_HOME", &dir)
+        .env("LOGBEAR_SOCKET", dir.join("absent.sock"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawning runlog-hook");
+        .expect("spawning logbear-hook");
     child
         .stdin
         .as_mut()
         .expect("stdin")
         .write_all(stdin.as_bytes())
         .expect("writing stdin");
-    child.wait_with_output().expect("waiting for runlog-hook")
+    child.wait_with_output().expect("waiting for logbear-hook")
 }

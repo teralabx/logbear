@@ -1,11 +1,11 @@
 //! On-disk layout.
 //!
 //! ```text
-//! ~/.runlog/
+//! ~/.logbear/
 //!   index.db                  project registry, global run summaries, settings
-//!   runlogd.sock              daemon control socket
-//!   runlogd.pid
-//!   runlogd.log
+//!   logbeard.sock              daemon control socket
+//!   logbeard.pid
+//!   logbeard.log
 //!   projects/<hash>.db        one database per project
 //!   spool/<uuid>.spool        shim fallback when the daemon is unreachable (C2)
 //!   models/                   fastembed ONNX cache (v1.1)
@@ -13,16 +13,16 @@
 
 use std::path::{Path, PathBuf};
 
-/// Root of everything runlog owns. `RUNLOG_HOME` overrides it, which is how tests avoid
+/// Root of everything logbear owns. `LOGBEAR_HOME` overrides it, which is how tests avoid
 /// touching real history.
 pub fn home() -> PathBuf {
-    if let Some(dir) = std::env::var_os("RUNLOG_HOME") {
+    if let Some(dir) = std::env::var_os("LOGBEAR_HOME") {
         return PathBuf::from(dir);
     }
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join(".runlog")
+    base.join(".logbear")
 }
 
 pub fn ensure_home() -> std::io::Result<PathBuf> {
@@ -37,18 +37,18 @@ pub fn index_db() -> PathBuf {
 }
 
 pub fn socket() -> PathBuf {
-    if let Some(s) = std::env::var_os("RUNLOG_SOCKET") {
+    if let Some(s) = std::env::var_os("LOGBEAR_SOCKET") {
         return PathBuf::from(s);
     }
-    home().join("runlogd.sock")
+    home().join("logbeard.sock")
 }
 
 pub fn pid_file() -> PathBuf {
-    home().join("runlogd.pid")
+    home().join("logbeard.pid")
 }
 
 pub fn daemon_log() -> PathBuf {
-    home().join("runlogd.log")
+    home().join("logbeard.log")
 }
 
 pub fn spool_dir() -> PathBuf {

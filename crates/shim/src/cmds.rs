@@ -5,10 +5,10 @@
 
 use crate::cli::Cmd;
 use crate::ui::{self, Cell};
-use runlog_core::client::Client;
-use runlog_core::model::*;
-use runlog_core::paths;
-use runlog_core::proto::{EntryFilter, ProjectRef, QueryResult, RunDiff, RunRef};
+use logbear_core::client::Client;
+use logbear_core::model::*;
+use logbear_core::paths;
+use logbear_core::proto::{EntryFilter, ProjectRef, QueryResult, RunDiff, RunRef};
 use std::io::Write;
 
 pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
@@ -33,18 +33,18 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
     }
 }
 
-/// Connects to the daemon without starting it: `runlog status` must report whether it is
+/// Connects to the daemon without starting it: `logbear status` must report whether it is
 /// running, not change the answer by asking.
 fn connect() -> Result<Client, String> {
     Client::connect().map_err(|_| ui::daemon_down(&paths::socket()))
 }
 
-fn failed(e: runlog_core::Error) -> String {
-    format!("runlog: {e}")
+fn failed(e: logbear_core::Error) -> String {
+    format!("logbear: {e}")
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> Result<i32, String> {
-    let text = serde_json::to_string_pretty(value).map_err(|e| format!("runlog: {e}"))?;
+    let text = serde_json::to_string_pretty(value).map_err(|e| format!("logbear: {e}"))?;
     println!("{text}");
     Ok(0)
 }
@@ -57,12 +57,12 @@ fn cat(run_id: RunId) -> Result<i32, String> {
     let mut client = connect()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    // Byte-exact, ANSI intact: `runlog cat` is a replay, not a rendering. Stripping or
+    // Byte-exact, ANSI intact: `logbear cat` is a replay, not a rendering. Stripping or
     // reflowing here would break the guarantee the capture side makes.
     client
         .raw_stream(ProjectRef::cwd(), run_id, |bytes| out.write_all(bytes))
         .map_err(failed)?;
-    out.flush().map_err(|e| format!("runlog: {e}"))?;
+    out.flush().map_err(|e| format!("logbear: {e}"))?;
     Ok(0)
 }
 
@@ -85,8 +85,8 @@ fn logs(
         None => None,
         Some(s) => {
             let d = ui::parse_duration(s)
-                .ok_or_else(|| format!("runlog: `{s}` is not a duration (try 30s, 10m, 2h, 1d)"))?;
-            Some(runlog_core::now_micros() - d.as_micros() as i64)
+                .ok_or_else(|| format!("logbear: `{s}` is not a duration (try 30s, 10m, 2h, 1d)"))?;
+            Some(logbear_core::now_micros() - d.as_micros() as i64)
         }
     };
 
@@ -173,7 +173,7 @@ fn runs(number: usize, json: bool) -> Result<i32, String> {
     if runs.is_empty() {
         println!(
             "{}",
-            ui::ash("no runs recorded for this project yet — try `runlog mix phx.server`")
+            ui::ash("no runs recorded for this project yet — try `logbear mix phx.server`")
         );
         return Ok(0);
     }
@@ -294,7 +294,7 @@ pub fn parse_run_ref(s: &str) -> Result<RunRef, String> {
             .parse::<i64>()
             .map(RunRef::Id)
             .map_err(|_| {
-                format!("runlog: `{s}` is not a run id or one of latest, last-good, last-bad")
+                format!("logbear: `{s}` is not a run id or one of latest, last-good, last-bad")
             }),
     }
 }
@@ -309,7 +309,7 @@ fn diff(a: Option<String>, b: Option<String>, json: bool) -> Result<i32, String>
         return print_json(&diff);
     }
     print_diff(&diff);
-    // Non-zero when something regressed, so `runlog diff && deploy` means what it looks
+    // Non-zero when something regressed, so `logbear diff && deploy` means what it looks
     // like.
     Ok(if diff.new_signatures.is_empty() { 0 } else { 1 })
 }
@@ -463,7 +463,7 @@ fn status(json: bool) -> Result<i32, String> {
                     "running · v{} · pid {} · up {}",
                     daemon.version,
                     daemon.pid,
-                    ui::duration(runlog_core::now_micros() - daemon.started_at)
+                    ui::duration(logbear_core::now_micros() - daemon.started_at)
                 ),
                 ui::CLEAR,
             ),

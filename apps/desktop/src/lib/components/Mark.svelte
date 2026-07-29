@@ -13,7 +13,7 @@
 	let {
 		size = 24,
 		class: klass = '',
-		title = 'runlog'
+		title = 'logbear'
 	}: { size?: number; class?: string; title?: string } = $props();
 
 	type Bar = { x: number; y: number; w: number; h: number };

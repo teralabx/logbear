@@ -5,8 +5,8 @@
 //! loop-safety rules are testable without a socket.
 
 use crate::payload::{Event, Harness};
-use runlog_core::model::EntryView;
-use runlog_core::proto::UnreadState;
+use logbear_core::model::EntryView;
+use logbear_core::proto::UnreadState;
 use serde_json::{json, Value};
 
 /// How many entries are injected verbatim.
@@ -86,7 +86,7 @@ pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
 fn block_reason(u: &UnreadState) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "runlog: the process you are working on logged {} new error{}{} since you last looked. \
+        "logbear: the process you are working on logged {} new error{}{} since you last looked. \
          Do not report this task as finished until you have accounted for {}.\n",
         u.new_errors,
         plural(u.new_errors),
@@ -118,7 +118,7 @@ fn block_reason(u: &UnreadState) -> String {
             out.push_str(line);
             out.push('\n');
         }
-        if e.entry.boundaries == runlog_core::model::Boundaries::Inferred {
+        if e.entry.boundaries == logbear_core::model::Boundaries::Inferred {
             out.push_str("    (entry boundaries inferred — this may be under- or over-grouped)\n");
         }
     }
@@ -128,7 +128,7 @@ fn block_reason(u: &UnreadState) -> String {
         out.push_str(&format!("\n… and {} more.\n", u.entries.len() - shown));
     }
     out.push_str(
-        "\nUse the runlog MCP tools to investigate, or run `runlog logs --level error`. \
+        "\nUse the logbear MCP tools to investigate, or run `logbear logs --level error`. \
          If these errors are expected, say so and stop.\n",
     );
     out
@@ -151,8 +151,8 @@ fn summary(u: &UnreadState) -> String {
         })
         .unwrap_or_default();
     format!(
-        "runlog: {} new error{}{} in this project{}.{} Check with the runlog MCP tools or \
-         `runlog logs --level error`.",
+        "logbear: {} new error{}{} in this project{}.{} Check with the logbear MCP tools or \
+         `logbear logs --level error`.",
         u.new_errors,
         plural(u.new_errors),
         signatures(u.new_signatures),
@@ -186,7 +186,7 @@ fn plural(n: i64) -> &'static str {
 }
 
 fn ago(at: i64) -> String {
-    let secs = ((runlog_core::now_micros() - at) / 1_000_000).max(0);
+    let secs = ((logbear_core::now_micros() - at) / 1_000_000).max(0);
     if secs < 90 {
         format!("{secs}s ago")
     } else if secs < 5400 {

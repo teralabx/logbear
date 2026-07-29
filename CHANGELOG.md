@@ -11,7 +11,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
   `teralabx/tap` tap.
-- crates.io publishing metadata, so `cargo install runlog runlogd runlog-mcp runlog-hook`
+- crates.io publishing metadata, so `cargo install logbear logbeard logbear-mcp logbear-hook`
   works.
 
 ### Changed
@@ -21,14 +21,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ~87ms fixed cost from every query the UI issues.
 - Tauri commands that talk to the daemon run off the main thread, so a slow reply no longer
   stops the window painting.
-- `runlogd` is scheduled as `Adaptive` rather than `Background`, which kept it on efficiency
+- `logbeard` is scheduled as `Adaptive` rather than `Background`, which kept it on efficiency
   cores with throttled I/O on Apple Silicon.
 - The UI says "uncommitted" rather than "dirty".
 
 ### Fixed
 
 - A command that cannot start is no longer recorded as a run.
-- `RUNLOG_DAEMON` is authoritative even when it names a path that does not exist, so tests
+- `LOGBEAR_DAEMON` is authoritative even when it names a path that does not exist, so tests
   can assert the no-daemon path.
 - The entries-only view on the live screen no longer collapses to zero height.
 - A derived-schema bump rebuilds the index.
@@ -38,5 +38,5 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Initial release.
 
-[Unreleased]: https://github.com/teralabx/runlog/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/teralabx/runlog/releases/tag/v0.1.0
+[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/teralabx/logbear/releases/tag/v0.1.0

@@ -229,9 +229,9 @@ mod tests {
 
     #[test]
     fn env_values_are_never_captured() {
-        std::env::set_var("RUNLOG_TEST_SECRET", "hunter2");
+        std::env::set_var("LOGBEAR_TEST_SECRET", "hunter2");
         let keys = env_keys();
-        assert!(keys.iter().any(|k| k == "RUNLOG_TEST_SECRET"));
+        assert!(keys.iter().any(|k| k == "LOGBEAR_TEST_SECRET"));
         assert!(
             !keys.iter().any(|k| k.contains("hunter2")),
             "a value leaked into the key list"

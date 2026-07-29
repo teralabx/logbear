@@ -1,4 +1,4 @@
-//! `runlog doctor` — check the parts of the install that live outside runlog's own files.
+//! `logbear doctor` — check the parts of the install that live outside logbear's own files.
 //!
 //! A binary on `PATH`, a running daemon, an MCP entry and a hook block in each harness's
 //! config: all four are written by the installer, all four can be undone by a shell profile
@@ -8,8 +8,8 @@
 //! the process exits non-zero if anything is not ok.
 
 use crate::ui::{self, Cell};
-use runlog_core::client::Client;
-use runlog_core::paths;
+use logbear_core::client::Client;
+use logbear_core::paths;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -88,7 +88,7 @@ pub fn run(json: bool) -> Result<i32, String> {
             "checks": checks,
             "failures": failures,
         }))
-        .map_err(|e| format!("runlog: {e}"))?;
+        .map_err(|e| format!("logbear: {e}"))?;
         println!("{text}");
         return Ok(if failures == 0 { 0 } else { 1 });
     }
@@ -134,7 +134,7 @@ fn collect() -> Vec<Check> {
 
 fn check_on_path() -> Check {
     let exe = std::env::current_exe().ok();
-    match which("runlog") {
+    match which("logbear") {
         Some(found) => {
             let same = exe
                 .as_ref()
@@ -143,11 +143,11 @@ fn check_on_path() -> Check {
                 .map(|(a, b)| a == b)
                 .unwrap_or(true);
             if same {
-                Check::ok("runlog on PATH", found.display().to_string())
+                Check::ok("logbear on PATH", found.display().to_string())
             } else {
                 // Two installs means debugging a fix that was never running.
                 Check::broken(
-                    "runlog on PATH",
+                    "logbear on PATH",
                     format!(
                         "PATH has {}, you are running {}",
                         found.display(),
@@ -158,10 +158,10 @@ fn check_on_path() -> Check {
             }
         }
         None => Check::missing(
-            "runlog on PATH",
+            "logbear on PATH",
             "not found on PATH",
             format!(
-                "ln -s {} /usr/local/bin/runlog",
+                "ln -s {} /usr/local/bin/logbear",
                 exe.map(|e| e.display().to_string())
                     .unwrap_or_else(|| "<this binary>".into())
             ),
@@ -170,12 +170,12 @@ fn check_on_path() -> Check {
 }
 
 fn check_daemon_binary() -> Check {
-    match runlog_core::client::daemon_binary() {
-        Some(path) => Check::ok("runlogd binary", path.display().to_string()),
+    match logbear_core::client::daemon_binary() {
+        Some(path) => Check::ok("logbeard binary", path.display().to_string()),
         None => Check::missing(
-            "runlogd binary",
-            "not next to runlog and not on PATH",
-            "reinstall from the runlog app, or set RUNLOG_DAEMON to its path",
+            "logbeard binary",
+            "not next to logbear and not on PATH",
+            "reinstall from the logbear app, or set LOGBEAR_DAEMON to its path",
         ),
     }
 }
@@ -196,18 +196,18 @@ fn check_daemon() -> Check {
             Err(e) => Check::broken(
                 "daemon",
                 format!("socket accepted the connection but did not answer: {e}"),
-                "kill the stale daemon and let the next `runlog` command restart it",
+                "kill the stale daemon and let the next `logbear` command restart it",
             ),
         },
         Err(_) if socket.exists() => Check::broken(
             "daemon",
             format!("a stale socket is sitting at {}", socket.display()),
-            format!("rm {} and run any `runlog` command", socket.display()),
+            format!("rm {} and run any `logbear` command", socket.display()),
         ),
         Err(_) => Check::missing(
             "daemon",
             format!("not running (no socket at {})", socket.display()),
-            "start it with `runlogd serve`, or open the runlog app",
+            "start it with `logbeard serve`, or open the logbear app",
         ),
     }
 }
@@ -243,14 +243,14 @@ fn check_mcp_claude_code() -> Check {
         |value| {
             value
                 .get("mcpServers")
-                .and_then(|s| s.get("runlog"))
+                .and_then(|s| s.get("logbear"))
                 .is_some()
         },
-        "register it from the runlog app, or add an `mcpServers.runlog` entry to ~/.claude.json",
+        "register it from the logbear app, or add an `mcpServers.logbear` entry to ~/.claude.json",
     )
 }
 
-/// Hooks live in `~/.claude/settings.json`. Matched on the `runlog-hook` binary name rather
+/// Hooks live in `~/.claude/settings.json`. Matched on the `logbear-hook` binary name rather
 /// than on a schema, since the block's shape changes between harness versions.
 fn check_hook_claude_code() -> Check {
     let candidates = [
@@ -260,8 +260,8 @@ fn check_hook_claude_code() -> Check {
     scan_json(
         "hooks · Claude Code",
         &candidates,
-        |value| mentions(value.get("hooks"), "runlog-hook"),
-        "install the hook from the runlog app (it merges into ~/.claude/settings.json, never overwrites)",
+        |value| mentions(value.get("hooks"), "logbear-hook"),
+        "install the hook from the logbear app (it merges into ~/.claude/settings.json, never overwrites)",
     )
 }
 
@@ -271,19 +271,19 @@ fn check_mcp_codex() -> Check {
         return Check::missing(
             "MCP · Codex",
             "no ~/.codex/config.toml — Codex does not look installed",
-            "install Codex first, then register runlog from the runlog app",
+            "install Codex first, then register logbear from the logbear app",
         );
     }
     match std::fs::read_to_string(&path) {
         // A presence check, matched textually rather than by adding a TOML parser to the
         // shim.
-        Ok(text) if text.contains("mcp_servers.runlog") => {
+        Ok(text) if text.contains("mcp_servers.logbear") => {
             Check::ok("MCP · Codex", tilde(&path))
         }
         Ok(_) => Check::missing(
             "MCP · Codex",
-            format!("no [mcp_servers.runlog] in {}", tilde(&path)),
-            "register it from the runlog app",
+            format!("no [mcp_servers.logbear] in {}", tilde(&path)),
+            "register it from the logbear app",
         ),
         Err(e) => Check::broken(
             "MCP · Codex",
@@ -301,8 +301,8 @@ fn check_hook_codex() -> Check {
     scan_json(
         "hooks · Codex",
         &candidates,
-        |value| mentions(Some(value), "runlog-hook"),
-        "install the hook from the runlog app (it merges into ~/.codex/hooks.json)",
+        |value| mentions(Some(value), "logbear-hook"),
+        "install the hook from the logbear app (it merges into ~/.codex/hooks.json)",
     )
 }
 
@@ -380,18 +380,18 @@ mod tests {
     fn a_hook_command_is_found_however_it_is_nested() {
         let config = serde_json::json!({
             "hooks": {
-                "Stop": [{ "hooks": [{ "type": "command", "command": "runlog-hook stop" }] }]
+                "Stop": [{ "hooks": [{ "type": "command", "command": "logbear-hook stop" }] }]
             }
         });
-        assert!(mentions(config.get("hooks"), "runlog-hook"));
+        assert!(mentions(config.get("hooks"), "logbear-hook"));
         assert!(!mentions(config.get("hooks"), "some-other-hook"));
-        assert!(!mentions(None, "runlog-hook"));
+        assert!(!mentions(None, "logbear-hook"));
     }
 
     #[test]
     fn an_unrelated_config_is_not_a_false_positive() {
         let config = serde_json::json!({ "hooks": { "Stop": [] }, "model": "opus" });
-        assert!(!mentions(config.get("hooks"), "runlog-hook"));
+        assert!(!mentions(config.get("hooks"), "logbear-hook"));
     }
 
     #[test]
@@ -408,19 +408,19 @@ mod tests {
     fn a_registered_entry_is_ok_and_an_absent_one_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         let good = dir.path().join("good.json");
-        std::fs::write(&good, r#"{"mcpServers":{"runlog":{"command":"runlog-mcp"}}}"#).unwrap();
+        std::fs::write(&good, r#"{"mcpServers":{"logbear":{"command":"logbear-mcp"}}}"#).unwrap();
         let bare = dir.path().join("bare.json");
         std::fs::write(&bare, r#"{"mcpServers":{"other":{}}}"#).unwrap();
 
-        let has_runlog =
-            |v: &serde_json::Value| v.get("mcpServers").and_then(|s| s.get("runlog")).is_some();
-        assert_eq!(scan_json("t", &[good], has_runlog, "fix").state, State::Ok);
-        assert_eq!(scan_json("t", &[bare], has_runlog, "fix").state, State::Missing);
+        let has_logbear =
+            |v: &serde_json::Value| v.get("mcpServers").and_then(|s| s.get("logbear")).is_some();
+        assert_eq!(scan_json("t", &[good], has_logbear, "fix").state, State::Ok);
+        assert_eq!(scan_json("t", &[bare], has_logbear, "fix").state, State::Missing);
     }
 
     #[test]
     fn a_missing_file_is_missing_not_broken() {
-        let check = scan_json("t", &[PathBuf::from("/nonexistent/runlog-test.json")], |_| true, "fix");
+        let check = scan_json("t", &[PathBuf::from("/nonexistent/logbear-test.json")], |_| true, "fix");
         assert_eq!(check.state, State::Missing);
         assert!(!check.fix.is_empty(), "a failing check must say what to do");
     }

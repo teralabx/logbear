@@ -50,7 +50,7 @@
 <div class="pane flex-1 p-4">
 	{#if app.daemonError}
 		<ErrorNote
-			what="The runlog daemon is not answering, so this list may be stale."
+			what="The logbear daemon is not answering, so this list may be stale."
 			detail={app.daemonError}
 			retry={() => void app.refresh()}
 		/>
@@ -61,8 +61,8 @@
 	{:else if app.projects.length === 0}
 		<EmptyState
 			title="Nothing recorded yet"
-			body="runlog records a project the first time you run something through it — start your dev command with runlog and this list fills itself in."
-			command="runlog npm run dev"
+			body="logbear records a project the first time you run something through it — start your dev command with logbear and this list fills itself in."
+			command="logbear npm run dev"
 		>
 			<p class="meta m-0 text-[11.5px] leading-[1.6]">
 				Once it is capturing, install the PATH shims from Settings → Install and you can drop the

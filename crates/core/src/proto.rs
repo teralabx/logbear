@@ -1,6 +1,6 @@
 //! The daemon wire protocol.
 //!
-//! One unix socket at `~/.runlog/runlogd.sock` serves three kinds of client: the shim
+//! One unix socket at `~/.logbear/logbeard.sock` serves three kinds of client: the shim
 //! streaming capture, request/response callers (CLI, MCP, hook, Tauri), and long-lived
 //! subscribers. They are distinguished by what they send first, not by separate sockets.
 //!
@@ -155,7 +155,7 @@ pub enum Request {
         #[serde(default)]
         filter: EntryFilter,
     },
-    /// Verbatim bytes for a line range, used by `runlog cat` and the xterm replay.
+    /// Verbatim bytes for a line range, used by `logbear cat` and the xterm replay.
     /// Returns [`FRAME_DATA`] frames followed by a `Response::Ok(null)`.
     RawStream {
         project: ProjectRef,

@@ -4,10 +4,10 @@
 //! running daemon, and so every reconnect decision lives in one place: an MCP server is
 //! long-lived and the daemon it talks to is restartable.
 
-use runlog_core::client::Client;
-use runlog_core::model::{EntryId, EntryView, Level};
-use runlog_core::proto::{ProjectRef, QueryResult, Request, RunDiff, RunRef, UnreadState};
-use runlog_core::Result;
+use logbear_core::client::Client;
+use logbear_core::model::{EntryId, EntryView, Level};
+use logbear_core::proto::{ProjectRef, QueryResult, Request, RunDiff, RunRef, UnreadState};
+use logbear_core::Result;
 use serde_json::Value;
 
 /// The harness string recorded against this server's session cursor.
@@ -90,8 +90,8 @@ impl Default for DaemonBackend {
 
 /// A dead socket is worth retrying; a rejected query is not, since retrying it would re-run
 /// a query that already cost seconds.
-fn is_transport_failure(e: &runlog_core::Error) -> bool {
-    use runlog_core::Error::*;
+fn is_transport_failure(e: &logbear_core::Error) -> bool {
+    use logbear_core::Error::*;
     matches!(e, DaemonUnreachable(_) | Protocol(_) | Bare(_) | Io { .. })
 }
 

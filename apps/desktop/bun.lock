@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "runlog-desktop",
+      "name": "logbear-desktop",
       "dependencies": {
         "@fontsource/ibm-plex-mono": "^5.3.0",
         "@tauri-apps/api": "^2",

@@ -6,16 +6,16 @@
 //! new output, diffing two runs against git, and advancing a watermark.
 
 use crate::backend::Backend;
-use runlog_core::model::{EntryView, Level};
-use runlog_core::proto::{ProjectRef, RunDiff, RunRef};
+use logbear_core::model::{EntryView, Level};
+use logbear_core::proto::{ProjectRef, RunDiff, RunRef};
 use serde_json::{json, Map, Value};
 
 pub const TOOL_NAMES: [&str; 5] = [
-    "runlog_schema",
-    "runlog_query",
-    "runlog_wait",
-    "runlog_diff",
-    "runlog_ack",
+    "logbear_schema",
+    "logbear_query",
+    "logbear_wait",
+    "logbear_diff",
+    "logbear_ack",
 ];
 
 /// What a `tools/call` produced, before the banner is prefixed.
@@ -45,20 +45,20 @@ impl Outcome {
 }
 
 const SCHEMA_HINT: &str =
-    "Call runlog_schema() for the tables, views, SQL functions and worked examples \
+    "Call logbear_schema() for the tables, views, SQL functions and worked examples \
      available to you, then retry.";
 
 /// The `tools/list` payload.
 pub fn descriptors() -> Value {
     json!([
         {
-            "name": "runlog_schema",
-            "title": "runlog schema",
+            "name": "logbear_schema",
+            "title": "logbear schema",
             "description":
-                "Full schema of this project's runlog database: DDL, the v_entries/v_errors/v_runs \
+                "Full schema of this project's logbear database: DDL, the v_entries/v_errors/v_runs \
                  views, the SQL functions available to you, worked example queries, and this \
                  project's entry-delimiter mode and retention state. Call this before writing SQL \
-                 for runlog_query.",
+                 for logbear_query.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -67,14 +67,14 @@ pub fn descriptors() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
-            "name": "runlog_query",
-            "title": "Query runlog",
+            "name": "logbear_query",
+            "title": "Query logbear",
             "description":
-                "Run read-only SQL against the resolved project's runlog database and return \
+                "Run read-only SQL against the resolved project's logbear database and return \
                  columns plus rows. SELECT only: writes, ATTACH, PRAGMA and extension loading are \
                  refused, statements are cancelled after 5s, and results are capped. Prefer the \
                  v_entries / v_errors / v_runs views over the raw tables — entries hold no text, \
-                 only a line range. Get the schema from runlog_schema() first.",
+                 only a line range. Get the schema from logbear_schema() first.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -100,7 +100,7 @@ pub fn descriptors() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
-            "name": "runlog_wait",
+            "name": "logbear_wait",
             "title": "Wait for new output",
             "description":
                 "Block until a new log entry appears in this project or the timeout expires, and \
@@ -128,7 +128,7 @@ pub fn descriptors() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
-            "name": "runlog_diff",
+            "name": "logbear_diff",
             "title": "Diff two runs",
             "description":
                 "Compare two runs: error signatures new in B, signatures gone since A, count \
@@ -152,11 +152,11 @@ pub fn descriptors() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
-            "name": "runlog_ack",
+            "name": "logbear_ack",
             "title": "Acknowledge errors",
             "description":
                 "Mark this session's unread errors as seen, which clears the warning banner on \
-                 runlog tool results. Call it once you have read and understood the errors — not \
+                 logbear tool results. Call it once you have read and understood the errors — not \
                  to silence them.",
             "inputSchema": {
                 "type": "object",
@@ -193,16 +193,16 @@ pub fn dispatch<B: Backend>(
     };
 
     match name {
-        "runlog_schema" => schema(backend, project),
-        "runlog_query" => query(backend, project, &args),
-        "runlog_wait" => wait(backend, project, &args),
-        "runlog_diff" => diff(backend, project, &args),
-        "runlog_ack" => ack(backend, project, session_id, &args),
+        "logbear_schema" => schema(backend, project),
+        "logbear_query" => query(backend, project, &args),
+        "logbear_wait" => wait(backend, project, &args),
+        "logbear_diff" => diff(backend, project, &args),
+        "logbear_ack" => ack(backend, project, session_id, &args),
         _ => Outcome::err(
             "tools/call",
             format!("no tool named {name:?}"),
             &format!(
-                "runlog exposes exactly these tools: {}.",
+                "logbear exposes exactly these tools: {}.",
                 TOOL_NAMES.join(", ")
             ),
         ),
@@ -218,10 +218,10 @@ fn schema<B: Backend>(backend: &mut B, project: ProjectRef) -> Outcome {
             serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string()),
         ),
         Err(e) => Outcome::err(
-            "runlog_schema",
+            "logbear_schema",
             e,
-            "The runlog daemon could not describe this project. It may have no captured runs \
-             yet — a run is created by wrapping a command with `runlog <cmd>`.",
+            "The logbear daemon could not describe this project. It may have no captured runs \
+             yet — a run is created by wrapping a command with `logbear <cmd>`.",
         ),
     }
 }
@@ -231,7 +231,7 @@ fn query<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Va
         Some(s) if !s.trim().is_empty() => s.to_string(),
         _ => {
             return Outcome::err(
-                "runlog_query",
+                "logbear_query",
                 "the required `sql` argument is missing or empty",
                 SCHEMA_HINT,
             )
@@ -242,7 +242,7 @@ fn query<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Va
         Some(Value::Array(a)) => a.clone(),
         Some(other) => {
             return Outcome::err(
-                "runlog_query",
+                "logbear_query",
                 format!("`params` must be an array of positional bindings, got {other}"),
                 "Bind values positionally: sql \"SELECT * FROM v_errors WHERE run_id = ?1\", \
                  params [42].",
@@ -264,7 +264,7 @@ fn query<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Va
             Outcome::ok(text)
         }
         Err(e) => Outcome::err(
-            "runlog_query",
+            "logbear_query",
             e,
             &format!("Your SQL was:\n{sql}\n\n{SCHEMA_HINT}"),
         ),
@@ -276,9 +276,9 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
         Some(n) if n > 0 => n,
         _ => {
             return Outcome::err(
-                "runlog_wait",
+                "logbear_wait",
                 "the required `timeout_ms` argument is missing or not a positive integer",
-                "Call it as runlog_wait({\"timeout_ms\": 15000}), optionally with \
+                "Call it as logbear_wait({\"timeout_ms\": 15000}), optionally with \
                  \"level\": \"error\".",
             )
         }
@@ -290,7 +290,7 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
             // "unknown" may resolve to that level.
             Level::Unknown if s != "unknown" => {
                 return Outcome::err(
-                    "runlog_wait",
+                    "logbear_wait",
                     format!("{s:?} is not a level"),
                     "Levels are: error, warn, info, debug, trace, unknown.",
                 )
@@ -299,7 +299,7 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
         },
         Some(other) => {
             return Outcome::err(
-                "runlog_wait",
+                "logbear_wait",
                 format!("`level` must be a string, got {other}"),
                 "Levels are: error, warn, info, debug, trace, unknown.",
             )
@@ -309,8 +309,8 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
     match backend.wait(project, timeout_ms, level) {
         Ok(entries) if entries.is_empty() => Outcome::ok(format!(
             "No matching entry appeared within {timeout_ms}ms. The process may be idle, or it may \
-             not be running under runlog at all — check with \
-             runlog_query(\"SELECT id, command, started_at, ended_at FROM v_runs ORDER BY \
+             not be running under logbear at all — check with \
+             logbear_query(\"SELECT id, command, started_at, ended_at FROM v_runs ORDER BY \
              started_at DESC LIMIT 3\")."
         )),
         Ok(entries) => Outcome::ok(
@@ -318,9 +318,9 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
                 .unwrap_or_default(),
         ),
         Err(e) => Outcome::err(
-            "runlog_wait",
+            "logbear_wait",
             e,
-            "The runlog daemon did not answer. Fall back to runlog_query for entries already \
+            "The logbear daemon did not answer. Fall back to logbear_query for entries already \
              captured.",
         ),
     }
@@ -329,11 +329,11 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
 fn diff<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Value>) -> Outcome {
     let a = match run_ref(args.get("a")) {
         Ok(v) => v,
-        Err(e) => return Outcome::err("runlog_diff", e, RUN_REF_HINT),
+        Err(e) => return Outcome::err("logbear_diff", e, RUN_REF_HINT),
     };
     let b = match run_ref(args.get("b")) {
         Ok(v) => v,
-        Err(e) => return Outcome::err("runlog_diff", e, RUN_REF_HINT),
+        Err(e) => return Outcome::err("logbear_diff", e, RUN_REF_HINT),
     };
     // Defaults live here rather than in the daemon so this tool's documented contract holds
     // regardless of what other callers of `diff` default to.
@@ -343,10 +343,10 @@ fn diff<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
     match backend.diff(project, a, b) {
         Ok(d) => Outcome::ok(serde_json::to_string(&diff_json(&d)).unwrap_or_default()),
         Err(e) => Outcome::err(
-            "runlog_diff",
+            "logbear_diff",
             e,
             "There may be no run to compare against yet. \
-             runlog_query(\"SELECT id, started_at, exit_code, clean FROM v_runs ORDER BY \
+             logbear_query(\"SELECT id, started_at, exit_code, clean FROM v_runs ORDER BY \
              started_at DESC LIMIT 10\") shows what exists.",
         ),
     }
@@ -393,7 +393,7 @@ fn entry_json(e: &EntryView) -> Value {
 /// Trim a `RunDiff` down to the identity of each side and the signatures that moved; the
 /// full `Run` structs carry far more than the model needs.
 fn diff_json(d: &RunDiff) -> Value {
-    let side = |r: &Option<runlog_core::model::Run>| match r {
+    let side = |r: &Option<logbear_core::model::Run>| match r {
         None => Value::Null,
         Some(r) => json!({
             "run_id": r.id,
@@ -408,7 +408,7 @@ fn diff_json(d: &RunDiff) -> Value {
             "chunks_evicted": r.chunks_evicted,
         }),
     };
-    let sigs = |v: &Vec<runlog_core::proto::DiffSignature>| {
+    let sigs = |v: &Vec<logbear_core::proto::DiffSignature>| {
         v.iter()
             .map(|s| {
                 json!({
@@ -459,7 +459,7 @@ fn ack<B: Backend>(
             Some(id) => Some(id),
             None => {
                 return Outcome::err(
-                    "runlog_ack",
+                    "logbear_ack",
                     format!("{n} is not an entry id"),
                     "Omit entry_id to acknowledge everything currently unread.",
                 )
@@ -467,7 +467,7 @@ fn ack<B: Backend>(
         },
         Some(other) => {
             return Outcome::err(
-                "runlog_ack",
+                "logbear_ack",
                 format!("`entry_id` must be an integer, got {other}"),
                 "Omit entry_id to acknowledge everything currently unread.",
             )
@@ -486,7 +486,7 @@ fn ack<B: Backend>(
             if state.new_signatures == 1 { "" } else { "s" },
         )),
         Err(e) => Outcome::err(
-            "runlog_ack",
+            "logbear_ack",
             e,
             "The watermark was not advanced, so the banner will keep reporting these errors.",
         ),

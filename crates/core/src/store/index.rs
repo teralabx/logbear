@@ -1,4 +1,4 @@
-//! The central registry at `~/.runlog/index.db`.
+//! The central registry at `~/.logbear/index.db`.
 //!
 //! Holds only which projects exist and a per-run summary, so the app can open without
 //! touching every project database. It is the only place a cross-project question can be

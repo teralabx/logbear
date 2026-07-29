@@ -1,4 +1,4 @@
-//! runlog's MCP server.
+//! logbear's MCP server.
 //!
 //! Stdio transport, newline-delimited JSON-RPC 2.0, hand-rolled (see [`jsonrpc`]). It is a
 //! thin client of the daemon: it owns no data, and the only state it keeps is the session

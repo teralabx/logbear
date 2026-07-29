@@ -5,8 +5,8 @@
 Please do not open a public issue.
 
 Report privately through
-[GitHub Security Advisories](https://github.com/teralabx/runlog/security/advisories/new),
-or by email to **security@runlog.sh**.
+[GitHub Security Advisories](https://github.com/teralabx/logbear/security/advisories/new),
+or by email to **security@logbear.sh**.
 
 Include what you were running, what you observed, and a reproduction if you have one. You
 can expect an acknowledgement within 72 hours and an assessment within a week. We will keep
@@ -14,7 +14,7 @@ you updated through to a fix and credit you in the advisory unless you prefer ot
 
 ## What counts as a vulnerability here
 
-runlog captures and stores development output on disk, so the interesting failures are
+logbear captures and stores development output on disk, so the interesting failures are
 about data escaping where it should not:
 
 - **Redaction bypass** — a credential shape that reaches disk unmasked. Redaction happens
@@ -34,12 +34,12 @@ about data escaping where it should not:
 
 ## Out of scope
 
-- Output you deliberately captured being readable by your own user account. runlog stores
-  it under `RUNLOG_HOME` (default `~/.runlog`) with your user's permissions by design.
+- Output you deliberately captured being readable by your own user account. logbear stores
+  it under `LOGBEAR_HOME` (default `~/.logbear`) with your user's permissions by design.
 - Anything requiring an attacker who already has code execution as your user.
 - There is no network code in this repository, so there is no remote attack surface to
   report against the daemon.
 
 ## Supported versions
 
-runlog is pre-1.0. Fixes land on the latest release only.
+logbear is pre-1.0. Fixes land on the latest release only.

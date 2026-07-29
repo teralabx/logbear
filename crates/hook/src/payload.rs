@@ -34,7 +34,7 @@ pub enum Event {
     Stop,
     SubagentStop,
     PostToolUse,
-    /// A lifecycle event runlog does not register for. Always allowed.
+    /// A lifecycle event logbear does not register for. Always allowed.
     Other(String),
 }
 
@@ -71,7 +71,7 @@ pub struct Payload {
     pub session_id: String,
     pub cwd: String,
     /// True when a hook already blocked the preceding stop. Both harnesses cap consecutive
-    /// blocks themselves (Claude Code at eight), underneath runlog's own block budget.
+    /// blocks themselves (Claude Code at eight), underneath logbear's own block budget.
     pub stop_hook_active: bool,
     pub tool_name: Option<String>,
 }
@@ -117,7 +117,7 @@ pub fn parse(input: &str, forced: Option<Harness>) -> Option<Payload> {
 
 /// Guess the harness from a vendor-specific extension field: `turn_id` is Codex-only.
 ///
-/// A fallback for hand-written configs; every config runlog emits passes `--harness`.
+/// A fallback for hand-written configs; every config logbear emits passes `--harness`.
 fn detect_harness(obj: &serde_json::Map<String, Value>) -> Harness {
     if obj.contains_key("turn_id") {
         Harness::Codex

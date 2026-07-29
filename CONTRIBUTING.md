@@ -1,10 +1,10 @@
-# Contributing to runlog
+# Contributing to logbear
 
 Thanks for your interest. Issues and pull requests are both welcome.
 
 ## Two things that get a PR declined
 
-**Total opacity is not negotiable.** runlog never touches the process it wraps. No injected
+**Total opacity is not negotiable.** logbear never touches the process it wraps. No injected
 logger handlers, no `ERL_FLAGS` / `NODE_OPTIONS` / `RUBYOPT` / `PYTHONPATH`, no
 `FORCE_COLOR`, no dependency added to the user's app. We observe the output stream and
 nothing else. A change that violates this will be declined however well it works — a
@@ -20,16 +20,16 @@ daemon is down the shim spools to disk and carries on.
 Requires Rust 1.82+ and [Bun](https://bun.sh).
 
 ```sh
-git clone https://github.com/teralabx/runlog
-cd runlog
+git clone https://github.com/teralabx/logbear
+cd logbear
 cargo test --workspace
 ```
 
-`RUNLOG_HOME` redirects every piece of state runlog writes. The test suite sets it, which
+`LOGBEAR_HOME` redirects every piece of state logbear writes. The test suite sets it, which
 is how tests avoid touching your real history — use it when experimenting too:
 
 ```sh
-RUNLOG_HOME=/tmp/runlog-scratch cargo run -p runlog -- npm run dev
+LOGBEAR_HOME=/tmp/logbear-scratch cargo run -p logbear -- npm run dev
 ```
 
 ## Before opening a pull request
@@ -64,13 +64,13 @@ across repeated runs, never a single wall-clock sample.
 | | |
 |---|---|
 | `crates/core` | capture, parsing, storage, query, diff, notification policy |
-| `crates/shim` | the `runlog` binary: PTY wrapper and CLI |
-| `crates/daemon` | `runlogd` |
-| `crates/mcp` | `runlog-mcp`, the stdio MCP server |
-| `crates/hook` | `runlog-hook`, one binary for both harnesses |
+| `crates/shim` | the `logbear` binary: PTY wrapper and CLI |
+| `crates/daemon` | `logbeard` |
+| `crates/mcp` | `logbear-mcp`, the stdio MCP server |
+| `crates/hook` | `logbear-hook`, one binary for both harnesses |
 | `apps/desktop` | Tauri v2 + SvelteKit |
 
-`runlog-core` has zero coupling to the CLI, MCP or UI. New logic belongs there; everything
+`logbear-core` has zero coupling to the CLI, MCP or UI. New logic belongs there; everything
 else should stay a thin adapter over it.
 
 ## Licensing of contributions

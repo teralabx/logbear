@@ -1,17 +1,17 @@
-# runlog
+# logbear
 
-[![CI](https://github.com/teralabx/runlog/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/runlog/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/runlog.svg)](https://crates.io/crates/runlog)
+[![CI](https://github.com/teralabx/logbear/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/logbear/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/logbear.svg)](https://crates.io/crates/logbear)
 [![Licence: FSL-1.1-MIT](https://img.shields.io/badge/licence-FSL--1.1--MIT-blue.svg)](LICENSE.md)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
 
 **It worked two days ago. What changed?**
 
-runlog wraps a development process, records everything it emits, and tells your coding
+logbear wraps a development process, records everything it emits, and tells your coding
 agent the moment something breaks.
 
 ```
-runlog mix phx.server
+logbear mix phx.server
 ```
 
 That is the whole interface. Your terminal behaves exactly as it did before — colours,
@@ -50,19 +50,19 @@ Nothing else closes that loop:
 | Atuin | command, exit code, duration | **the output** |
 | pm2 / overmind | supervises and tails | stores nothing queryable |
 
-runlog sits at the point of invocation, which is the only place where the command and the
+logbear sits at the point of invocation, which is the only place where the command and the
 context that produced it are visible together, for free, at the same instant.
 
 ---
 
 ## What you get
 
-**A blocking hook.** When your agent says it is finished, runlog checks whether anything
+**A blocking hook.** When your agent says it is finished, logbear checks whether anything
 broke since it last looked. If so, the agent is interrupted and handed the actual
 exception, its history, and which run it came from. If not, nothing happens at all.
 
 **A queryable history.** Every run is stamped with its git SHA, branch, a hash of the
-uncommitted changes, and the hash of every lockfile. `runlog diff` answers "what changed" with
+uncommitted changes, and the hash of every lockfile. `logbear diff` answers "what changed" with
 the commits in between, the lockfiles that moved, and the error signatures that appeared.
 
 **A read-only SQL endpoint for agents**, rather than a fixed menu of tools. An agent can
@@ -79,37 +79,37 @@ and the diff view.
 **Homebrew** — CLI, daemon, MCP server and hook:
 
 ```sh
-brew install teralabx/tap/runlog
-brew services start runlog
-runlog doctor            # register the MCP server and the agent hook
+brew install teralabx/tap/logbear
+brew services start logbear
+logbear doctor            # register the MCP server and the agent hook
 ```
 
-runlog is source-available rather than OSI open source, so it is not eligible for
+logbear is source-available rather than OSI open source, so it is not eligible for
 `homebrew-core` and lives in its own tap. See [`packaging/homebrew`](packaging/homebrew).
 
 **Cargo** — the same four binaries, built from source:
 
 ```sh
-cargo install runlog runlogd runlog-mcp runlog-hook
+cargo install logbear logbeard logbear-mcp logbear-hook
 ```
 
 **The desktop app** is the easiest path, because it is also the installer. On first launch
 it offers, with confirmation for each step:
 
-1. `runlog` on your PATH
-2. `runlogd` as a background service that survives reboots
+1. `logbear` on your PATH
+2. `logbeard` as a background service that survives reboots
 3. the MCP server registered with Claude Code and Codex
 4. the hook installed in both
 
 Every config file is backed up before it is touched, every write **merges** rather than
 overwrites, and each step can be reverted individually. Nothing is done without asking.
 
-`runlog doctor` reports the state of all four and tells you how to fix whatever is broken.
+`logbear doctor` reports the state of all four and tells you how to fix whatever is broken.
 
 ### Platform support
 
-macOS is what runlog is developed and tested on, and the desktop installer is macOS-only
-— it registers `runlogd` with launchd. The CLI, daemon, MCP server and hook are ordinary
+macOS is what logbear is developed and tested on, and the desktop installer is macOS-only
+— it registers `logbeard` with launchd. The CLI, daemon, MCP server and hook are ordinary
 Unix programs (PTYs, unix sockets, SQLite) and should build on Linux, but that is
 unverified. Windows is not supported.
 
@@ -118,18 +118,18 @@ unverified. Windows is not supported.
 ## Using it
 
 ```sh
-runlog mix phx.server          # or npm run dev, cargo watch, pytest, anything
-runlog runs                    # history for this project
-runlog logs --errors -n 20     # recent errors, whole entries
-runlog logs --new              # output never seen in this project before
-runlog diff                    # last known good vs now
-runlog cat 42                  # replay a run byte for byte, ANSI intact
-runlog query "SELECT template, count(*) FROM v_errors GROUP BY 1"
-runlog status                  # daemon health, project, retention
-runlog doctor                  # check every integration
+logbear mix phx.server          # or npm run dev, cargo watch, pytest, anything
+logbear runs                    # history for this project
+logbear logs --errors -n 20     # recent errors, whole entries
+logbear logs --new              # output never seen in this project before
+logbear diff                    # last known good vs now
+logbear cat 42                  # replay a run byte for byte, ANSI intact
+logbear query "SELECT template, count(*) FROM v_errors GROUP BY 1"
+logbear status                  # daemon health, project, retention
+logbear doctor                  # check every integration
 ```
 
-`runlog diff` with no arguments compares the **last known good** run — the most recent one
+`logbear diff` with no arguments compares the **last known good** run — the most recent one
 that exited cleanly *and* logged no errors — against the latest. That is what people mean
 by "it worked yesterday", and it is almost never the previous run.
 
@@ -156,26 +156,26 @@ ago is findable without anything having to guess whether it looked bad.
          │
          ▼
    ┌───────────┐   PTY    ┌────────────────┐
-   │  runlog   │◄────────►│ mix phx.server │
+   │  logbear   │◄────────►│ mix phx.server │
    │  (shim)   │          └────────────────┘
    └─────┬─────┘
          │ unix socket, fire and forget
          ▼
    ┌───────────────────────────────────────┐
-   │            runlogd (daemon)           │
+   │            logbeard (daemon)           │
    │  parse · group · fingerprint · store  │
    │  retention · fanout · notifications   │
    └───┬───────────────┬───────────────┬───┘
        ▼               ▼               ▼
   ┌─────────┐    ┌───────────┐   ┌──────────┐
-  │  Tauri  │    │ runlog-mcp│   │  runlog- │
+  │  Tauri  │    │ logbear-mcp│   │  logbear- │
   │   app   │    │  (stdio)  │   │   hook   │
   └─────────┘    └───────────┘   └──────────┘
 ```
 
 ### Four constraints everything defers to
 
-**Total opacity.** runlog never touches the wrapped process. No injected logger handlers,
+**Total opacity.** logbear never touches the wrapped process. No injected logger handlers,
 no `ERL_FLAGS` / `NODE_OPTIONS` / `RUBYOPT` / `PYTHONPATH`, no `FORCE_COLOR`, no dependency
 added to your app. We observe the output stream and nothing else. During design we verified
 that a sidecar Elixir logger handler gives perfect structured entries while leaving the
@@ -222,7 +222,7 @@ chunks   -- truth: append-only, never rewritten, the captured bytes
 entries  -- derived index: a line range, a level, a fingerprint. NO text.
 ```
 
-Text lives once. Rendered text is produced on demand by `runlog_render()` over a line
+Text lives once. Rendered text is produced on demand by `logbear_render()` over a line
 range. That is what makes `DELETE FROM entries` plus a rebuild always safe — if the row
 *were* the logical entry, regenerating would split and merge rows, and every reference to
 it would break.
@@ -234,8 +234,8 @@ still answers correctly long after the raw log is gone.
 
 ### The MCP surface
 
-Five tools, not fifteen: `runlog_schema`, `runlog_query`, `runlog_wait`, `runlog_diff`,
-`runlog_ack`. Every tool's JSON schema sits in the agent's context in every session, so a
+Five tools, not fifteen: `logbear_schema`, `logbear_query`, `logbear_wait`, `logbear_diff`,
+`logbear_ack`. Every tool's JSON schema sits in the agent's context in every session, so a
 large fixed menu is a permanent tax that still cannot answer the interesting questions.
 Instead the agent gets the schema and a read-only SQL endpoint.
 
@@ -282,16 +282,16 @@ agent because our daemon is down is far worse than one that misses a notificatio
 
 ```
 crates/core      capture, parsing, storage, query, diff, notification policy
-crates/shim      the `runlog` binary: PTY wrapper and CLI
-crates/daemon    `runlogd`
-crates/mcp       `runlog-mcp`, the stdio MCP server
-crates/hook      `runlog-hook`, one binary for both harnesses
+crates/shim      the `logbear` binary: PTY wrapper and CLI
+crates/daemon    `logbeard`
+crates/mcp       `logbear-mcp`, the stdio MCP server
+crates/hook      `logbear-hook`, one binary for both harnesses
 apps/desktop     Tauri v2 + SvelteKit
 packaging/       the Homebrew formula
 docs/            implementation notes
 ```
 
-`runlog-core` has zero coupling to the CLI, MCP or UI. Everything else is a thin adapter
+`logbear-core` has zero coupling to the CLI, MCP or UI. Everything else is a thin adapter
 over it.
 
 ## Building from source
@@ -306,7 +306,7 @@ cd apps/desktop && bun install && bun run check && bun run build
 cd apps/desktop && bun run tauri build
 ```
 
-`RUNLOG_HOME` redirects all state, which is how the test suite avoids touching your real
+`LOGBEAR_HOME` redirects all state, which is how the test suite avoids touching your real
 history.
 
 ## Contributing
@@ -318,7 +318,7 @@ our [Code of Conduct](CODE_OF_CONDUCT.md). Released versions are listed in
 
 ## Security
 
-runlog stores your development output on disk, so a parsing or redaction bug is a privacy
+logbear stores your development output on disk, so a parsing or redaction bug is a privacy
 bug. Please report vulnerabilities privately rather than in a public issue — see
 [SECURITY.md](SECURITY.md).
 
@@ -329,15 +329,15 @@ License. The full text is in [`LICENSE.md`](LICENSE.md).
 
 In plain terms: use it, modify it, redistribute it, run it commercially inside your
 company, build on it, fork it. The single restriction is *Competing Use* — you may not
-use runlog to offer a commercial product or service that substitutes for runlog. Two
+use logbear to offer a commercial product or service that substitutes for logbear. Two
 years after each version is published, that version becomes plain **MIT**, permanently
 and irrevocably.
 
 This is source-available, not OSI open source, and calling it otherwise would be
-inaccurate. The restriction exists so runlog can be funded without a rug-pull: revenue
+inaccurate. The restriction exists so logbear can be funded without a rug-pull: revenue
 pays for hosted sync infrastructure and the cost of running it, not for locking away
 what already works locally. Everything you install from this repository runs entirely on
 your machine, forever, with no account and no network calls.
 
-The **runlog** name and the Delta mark are not covered by the licence grant. Fork the
+The **logbear** name and the Delta mark are not covered by the licence grant. Fork the
 code freely; ship it under your own name.

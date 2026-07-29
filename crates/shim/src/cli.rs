@@ -1,12 +1,12 @@
 //! Argument dispatch.
 //!
-//! The primary verb is whatever the user typed: `runlog mix phx.server` wraps mix, and
-//! `runlog logs` shows logs. clap cannot own argv, because it would reject `runlog test` as
+//! The primary verb is whatever the user typed: `logbear mix phx.server` wraps mix, and
+//! `logbear logs` shows logs. clap cannot own argv, because it would reject `logbear test` as
 //! an unknown subcommand.
 //!
 //! So argv is classified here by exact match against a closed list of subcommand names, and
 //! only a recognised subcommand reaches clap; everything else is a command to run. Both
-//! `runlog -- logs` and a leading wrap flag (`--no-pty`, `--force`) force the wrap reading.
+//! `logbear -- logs` and a leading wrap flag (`--no-pty`, `--force`) force the wrap reading.
 
 use clap::{Parser, Subcommand};
 
@@ -93,16 +93,16 @@ pub fn classify(args: &[String]) -> Dispatch {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "runlog",
+    name = "logbear",
     version,
     about = "Wrap a command, capture everything it emits, and push errors at your agent.",
     subcommand_required = true,
     arg_required_else_help = true,
     after_help = "Anything that is not one of the commands above is a command to wrap:\n  \
-                  runlog mix phx.server\n  \
-                  runlog --no-pty npm test     pipes instead of a pty (degraded timing)\n  \
-                  runlog --force psql          capture even a denylisted command\n  \
-                  runlog -- logs               wrap a program actually named `logs`"
+                  logbear mix phx.server\n  \
+                  logbear --no-pty npm test     pipes instead of a pty (degraded timing)\n  \
+                  logbear --force psql          capture even a denylisted command\n  \
+                  logbear -- logs               wrap a program actually named `logs`"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -187,7 +187,7 @@ pub enum Cmd {
 /// Runs a subcommand and returns the process exit code. clap's `--help` and `--version`
 /// exit inside `parse_from`.
 pub fn run_subcommand(args: &[String]) -> i32 {
-    let argv = std::iter::once("runlog".to_string()).chain(args.iter().cloned());
+    let argv = std::iter::once("logbear".to_string()).chain(args.iter().cloned());
     let cli = Cli::parse_from(argv);
     match crate::cmds::dispatch(cli.command) {
         Ok(code) => code,
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn words_that_look_like_subcommands_but_are_not_get_wrapped() {
-        // `runlog test` and `runlog run` are the classic failures: clap would reject both.
+        // `logbear test` and `logbear run` are the classic failures: clap would reject both.
         assert_eq!(wrapped(&["test"]).command, ["test"]);
         assert_eq!(wrapped(&["run"]).command, ["run"]);
         assert_eq!(wrapped(&["make", "logs"]).command, ["make", "logs"]);

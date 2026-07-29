@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security or privacy vulnerability
-    url: https://github.com/teralabx/runlog/security/advisories/new
+    url: https://github.com/teralabx/logbear/security/advisories/new
     about: Report privately. Never in a public issue.
   - name: Question or idea
-    url: https://github.com/teralabx/runlog/discussions
+    url: https://github.com/teralabx/logbear/discussions
     about: For anything that is not yet a bug report or a concrete proposal.

@@ -1,33 +1,33 @@
 //! End-to-end passthrough checks against the real binary.
 //!
-//! Ignored by default, since they spawn `runlog`, which opens a pty and spawns a child:
+//! Ignored by default, since they spawn `logbear`, which opens a pty and spawns a child:
 //!
 //! ```text
-//! cargo test -p runlog -- --ignored
+//! cargo test -p logbear -- --ignored
 //! ```
 //!
-//! Every case runs the daemon-absent path: `RUNLOG_HOME` and `RUNLOG_SOCKET` point into a
-//! temporary directory, the binary is copied somewhere with no `runlogd` beside it, `PATH`
-//! contains only that directory, and `RUNLOG_DAEMON` names a file that does not exist.
+//! Every case runs the daemon-absent path: `LOGBEAR_HOME` and `LOGBEAR_SOCKET` point into a
+//! temporary directory, the binary is copied somewhere with no `logbeard` beside it, `PATH`
+//! contains only that directory, and `LOGBEAR_DAEMON` names a file that does not exist.
 //! Otherwise these tests would silently spawn a real daemon. For the same reason every
 //! wrapped command is an absolute path or a `/bin/sh` builtin.
 
 use std::path::Path;
 use std::process::Command;
 
-fn runlog(dir: &Path) -> Command {
-    let exe = dir.join("runlog");
+fn logbear(dir: &Path) -> Command {
+    let exe = dir.join("logbear");
     if !exe.exists() {
-        std::fs::copy(env!("CARGO_BIN_EXE_runlog"), &exe).expect("copy the binary");
+        std::fs::copy(env!("CARGO_BIN_EXE_logbear"), &exe).expect("copy the binary");
     }
     let mut cmd = Command::new(&exe);
-    cmd.env("RUNLOG_HOME", dir);
-    cmd.env("RUNLOG_SOCKET", dir.join("no-daemon.sock"));
+    cmd.env("LOGBEAR_HOME", dir);
+    cmd.env("LOGBEAR_SOCKET", dir.join("no-daemon.sock"));
     cmd.env("PATH", dir);
     // Naming a daemon that does not exist, rather than unsetting: discovery also looks
     // beside the executable and inside an installed app bundle, so on a developer's own
     // machine an empty PATH is not enough to guarantee the no-daemon path.
-    cmd.env("RUNLOG_DAEMON", dir.join("no-such-runlogd"));
+    cmd.env("LOGBEAR_DAEMON", dir.join("no-such-logbeard"));
     cmd
 }
 
@@ -43,7 +43,7 @@ fn a_command_that_cannot_start_is_not_recorded_as_a_run() {
     let dir = tempfile::tempdir().unwrap();
     // One argument holding a whole command line, which is what a shell that does not
     // word-split a variable hands over. There is no such executable.
-    let out = runlog(dir.path()).arg("logs -n 50").output().expect("runlog runs");
+    let out = logbear(dir.path()).arg("logs -n 50").output().expect("logbear runs");
 
     assert_eq!(out.status.code(), Some(127), "shells report a missing command as 127");
     assert!(
@@ -62,10 +62,10 @@ fn a_command_that_cannot_start_is_not_recorded_as_a_run() {
 #[ignore = "spawns the real binary under a pty"]
 fn a_wrapped_command_propagates_its_exit_code() {
     let dir = tempfile::tempdir().unwrap();
-    let out = runlog(dir.path())
+    let out = logbear(dir.path())
         .args(["/bin/sh", "-c", "exit 7"])
         .output()
-        .expect("runlog runs");
+        .expect("logbear runs");
     assert_eq!(out.status.code(), Some(7));
 }
 
@@ -73,10 +73,10 @@ fn a_wrapped_command_propagates_its_exit_code() {
 #[ignore = "spawns the real binary under a pty"]
 fn a_wrapped_command_reproduces_its_output_and_nothing_else() {
     let dir = tempfile::tempdir().unwrap();
-    let out = runlog(dir.path())
+    let out = logbear(dir.path())
         .args(["/bin/sh", "-c", "printf hello"])
         .output()
-        .expect("runlog runs");
+        .expect("logbear runs");
     // Exactly the child's bytes: anything extra means the shim injected something into the
     // pty, such as a stray newline plus EOT on stdin EOF.
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
@@ -86,10 +86,10 @@ fn a_wrapped_command_reproduces_its_output_and_nothing_else() {
 #[ignore = "spawns the real binary under a pty"]
 fn a_signalled_child_exits_128_plus_the_signal() {
     let dir = tempfile::tempdir().unwrap();
-    let out = runlog(dir.path())
+    let out = logbear(dir.path())
         .args(["/bin/sh", "-c", "kill -TERM $$"])
         .output()
-        .expect("runlog runs");
+        .expect("logbear runs");
     assert_eq!(out.status.code(), Some(128 + libc::SIGTERM));
 }
 
@@ -100,19 +100,19 @@ fn stdin_reaches_the_child() {
     use std::process::Stdio;
 
     let dir = tempfile::tempdir().unwrap();
-    let mut child = runlog(dir.path())
+    let mut child = logbear(dir.path())
         .args(["/bin/sh", "-c", "read line; printf 'got:%s' \"$line\""])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("runlog runs");
+        .expect("logbear runs");
     child
         .stdin
         .take()
         .unwrap()
         .write_all(b"typed\n")
         .expect("write to stdin");
-    let out = child.wait_with_output().expect("runlog finishes");
+    let out = child.wait_with_output().expect("logbear finishes");
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("got:typed"),
         "stdout was {:?}",
@@ -124,10 +124,10 @@ fn stdin_reaches_the_child() {
 #[ignore = "spawns the real binary under a pty"]
 fn a_run_with_no_daemon_lands_in_the_spool() {
     let dir = tempfile::tempdir().unwrap();
-    let status = runlog(dir.path())
+    let status = logbear(dir.path())
         .args(["/bin/sh", "-c", "printf spooled"])
         .status()
-        .expect("runlog runs");
+        .expect("logbear runs");
     assert!(status.success());
 
     let files = spool_files(dir.path());
@@ -148,10 +148,10 @@ fn a_run_with_no_daemon_lands_in_the_spool() {
 #[ignore = "spawns the real binary"]
 fn the_no_pty_path_still_propagates_the_exit_code() {
     let dir = tempfile::tempdir().unwrap();
-    let out = runlog(dir.path())
+    let out = logbear(dir.path())
         .args(["--no-pty", "/bin/sh", "-c", "printf piped; exit 3"])
         .output()
-        .expect("runlog runs");
+        .expect("logbear runs");
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "piped");
 }
@@ -170,7 +170,7 @@ fn a_denylisted_command_is_exec_ed_with_no_capture() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let out = runlog(dir.path()).arg("vim").output().expect("runlog runs");
+    let out = logbear(dir.path()).arg("vim").output().expect("logbear runs");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "editing");
     assert!(
         spool_files(dir.path()).is_empty(),
@@ -190,10 +190,10 @@ fn force_overrides_the_denylist() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let out = runlog(dir.path())
+    let out = logbear(dir.path())
         .args(["--force", "vim"])
         .output()
-        .expect("runlog runs");
+        .expect("logbear runs");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "editing");
     assert_eq!(spool_files(dir.path()).len(), 1, "--force means capture it");
 }
@@ -209,7 +209,7 @@ fn subcommands_say_the_daemon_is_down_instead_of_dumping_an_error() {
         vec!["cat", "1"],
         vec!["sql-schema"],
     ] {
-        let out = runlog(dir.path()).args(&args).output().expect("runlog runs");
+        let out = logbear(dir.path()).args(&args).output().expect("logbear runs");
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
@@ -217,14 +217,14 @@ fn subcommands_say_the_daemon_is_down_instead_of_dumping_an_error() {
         );
         assert!(
             text.contains("daemon is not running"),
-            "`runlog {}` said {text:?}",
+            "`logbear {}` said {text:?}",
             args.join(" ")
         );
         assert!(
             !text.contains("Error {") && !text.contains("panicked"),
-            "`runlog {}` leaked a Rust error: {text:?}",
+            "`logbear {}` leaked a Rust error: {text:?}",
             args.join(" ")
         );
-        assert_ne!(out.status.code(), Some(0), "`runlog {}`", args.join(" "));
+        assert_ne!(out.status.code(), Some(0), "`logbear {}`", args.join(" "));
     }
 }

@@ -13,8 +13,8 @@ apps/desktop/vite.config.ts.timestamp-*
 # Tauri generated
 apps/desktop/src-tauri/gen
 
-# Local runlog state, never committed
-.runlog/
+# Local logbear state, never committed
+.logbear/
 *.db
 *.db-wal
 *.db-shm

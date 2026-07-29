@@ -4,11 +4,11 @@
 //! notification, dropping the banner on an error path, a malformed `tools/list` — are
 //! framing bugs, and none of them need real log data.
 
-use runlog_core::model::{EntryId, EntryView, Level};
-use runlog_core::proto::{ProjectRef, QueryResult, RunDiff, RunRef, UnreadState};
-use runlog_core::{Error, Result};
-use runlog_mcp::backend::Backend;
-use runlog_mcp::Server;
+use logbear_core::model::{EntryId, EntryView, Level};
+use logbear_core::proto::{ProjectRef, QueryResult, RunDiff, RunRef, UnreadState};
+use logbear_core::{Error, Result};
+use logbear_mcp::backend::Backend;
+use logbear_mcp::Server;
 use serde_json::{json, Value};
 
 /// A backend with no daemon behind it. `unread` is always non-empty so every test can
@@ -36,7 +36,7 @@ impl Backend for Stub {
         Ok(UnreadState {
             new_errors: 6,
             new_signatures: 2,
-            oldest_at: Some(runlog_core::now_micros() - 40_000_000),
+            oldest_at: Some(logbear_core::now_micros() - 40_000_000),
             newest_entry_id: Some(99),
             blocks_issued: 0,
             blocks_remaining: 3,
@@ -119,7 +119,7 @@ fn initialize_reports_the_protocol_version_and_server_info() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
     );
     assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(r["result"]["serverInfo"]["name"], "runlog");
+    assert_eq!(r["result"]["serverInfo"]["name"], "logbear");
     assert!(r["result"]["serverInfo"]["version"].is_string());
     assert!(r["result"]["capabilities"]["tools"].is_object());
     assert_eq!(r["id"], 1);
@@ -173,11 +173,11 @@ fn tools_list_is_the_five_tools_with_valid_schemas() {
     assert_eq!(
         names,
         vec![
-            "runlog_schema",
-            "runlog_query",
-            "runlog_wait",
-            "runlog_diff",
-            "runlog_ack"
+            "logbear_schema",
+            "logbear_query",
+            "logbear_wait",
+            "logbear_diff",
+            "logbear_ack"
         ]
     );
     for t in tools {
@@ -187,20 +187,20 @@ fn tools_list_is_the_five_tools_with_valid_schemas() {
     }
     // The tools with mandatory arguments say so.
     let by_name = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
-    assert_eq!(by_name("runlog_query")["inputSchema"]["required"], json!(["sql"]));
+    assert_eq!(by_name("logbear_query")["inputSchema"]["required"], json!(["sql"]));
     assert_eq!(
-        by_name("runlog_wait")["inputSchema"]["required"],
+        by_name("logbear_wait")["inputSchema"]["required"],
         json!(["timeout_ms"])
     );
-    // Only runlog_ack writes.
-    assert_eq!(by_name("runlog_ack")["annotations"]["readOnlyHint"], false);
-    assert_eq!(by_name("runlog_query")["annotations"]["readOnlyHint"], true);
+    // Only logbear_ack writes.
+    assert_eq!(by_name("logbear_ack")["annotations"]["readOnlyHint"], false);
+    assert_eq!(by_name("logbear_query")["annotations"]["readOnlyHint"], true);
 }
 
 #[test]
 fn the_banner_rides_on_a_successful_result() {
     let mut s = server();
-    let r = call(&mut s, "runlog_query", json!({ "sql": "SELECT 1" }));
+    let r = call(&mut s, "logbear_query", json!({ "sql": "SELECT 1" }));
     assert_eq!(r["result"]["isError"], false);
     let text = text_of(&r);
     assert!(text.starts_with("⚠️ 6 new errors"), "{text}");
@@ -211,23 +211,23 @@ fn the_banner_rides_on_a_successful_result() {
 #[test]
 fn the_banner_rides_on_an_error_result_too() {
     let mut s = server();
-    let r = call(&mut s, "runlog_query", json!({ "sql": "DELETE FROM boom" }));
+    let r = call(&mut s, "logbear_query", json!({ "sql": "DELETE FROM boom" }));
     assert_eq!(r["result"]["isError"], true);
     let text = text_of(&r);
     assert!(text.starts_with("⚠️ 6 new errors"), "{text}");
     assert!(text.contains("DELETE FROM boom"), "{text}");
-    assert!(text.contains("runlog_schema()"), "{text}");
+    assert!(text.contains("logbear_schema()"), "{text}");
 }
 
 #[test]
 fn a_tool_error_is_never_a_bare_rust_error() {
     let mut s = server();
     for (tool, args) in [
-        ("runlog_query", json!({})),
-        ("runlog_wait", json!({})),
-        ("runlog_diff", json!({ "a": "yesterday" })),
-        ("runlog_ack", json!({ "entry_id": "nope" })),
-        ("runlog_nonexistent", json!({})),
+        ("logbear_query", json!({})),
+        ("logbear_wait", json!({})),
+        ("logbear_diff", json!({ "a": "yesterday" })),
+        ("logbear_ack", json!({ "entry_id": "nope" })),
+        ("logbear_nonexistent", json!({})),
     ] {
         let r = call(&mut s, tool, args);
         assert_eq!(r["result"]["isError"], true, "{tool}");
@@ -241,9 +241,9 @@ fn a_tool_error_is_never_a_bare_rust_error() {
 #[test]
 fn an_unknown_tool_names_the_real_ones() {
     let mut s = server();
-    let text = text_of(&call(&mut s, "runlog_tail", json!({})));
-    assert!(text.contains("runlog_query"), "{text}");
-    assert!(text.contains("runlog_schema"), "{text}");
+    let text = text_of(&call(&mut s, "logbear_tail", json!({})));
+    assert!(text.contains("logbear_query"), "{text}");
+    assert!(text.contains("logbear_schema"), "{text}");
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn a_dead_daemon_costs_the_banner_but_not_the_response() {
         },
         "mcp-test".into(),
     );
-    let r = call(&mut s, "runlog_schema", json!({}));
+    let r = call(&mut s, "logbear_schema", json!({}));
     assert_eq!(r["result"]["isError"], false);
     assert_eq!(text_of(&r), "CREATE TABLE runs (...);");
 }
@@ -281,7 +281,7 @@ fn roots_are_requested_after_initialized_and_used_for_routing() {
     assert_eq!(s.roots(), [std::path::PathBuf::from("/tmp/my project")]);
 
     // And the project handed to the daemon is the root, not the process cwd.
-    call(&mut s, "runlog_schema", json!({}));
+    call(&mut s, "logbear_schema", json!({}));
     assert_eq!(
         s.backend().last_project.as_deref(),
         Some("/tmp/my project")
@@ -300,7 +300,7 @@ fn a_roots_change_notification_re_requests() {
 fn no_roots_falls_back_to_the_process_cwd() {
     let mut s = server();
     s.handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#);
-    call(&mut s, "runlog_schema", json!({}));
+    call(&mut s, "logbear_schema", json!({}));
     let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
     assert_eq!(s.backend().last_project.as_deref(), Some(cwd.as_str()));
 }

@@ -1,14 +1,14 @@
 # Homebrew packaging
 
-`runlog.rb` is the formula. It lives here so it is versioned alongside the code it
+`logbear.rb` is the formula. It lives here so it is versioned alongside the code it
 builds; Homebrew itself reads it from a separate tap repository.
 
 ## Why a tap and not homebrew-core
 
-`homebrew-core` only accepts formulae under an OSI-approved licence. runlog is
-source-available under FSL-1.1-MIT, so it is not eligible, and `brew install runlog`
+`homebrew-core` only accepts formulae under an OSI-approved licence. logbear is
+source-available under FSL-1.1-MIT, so it is not eligible, and `brew install logbear`
 will never resolve. A tap has no licence requirement, which makes
-`brew install teralabx/tap/runlog` the supported route.
+`brew install teralabx/tap/logbear` the supported route.
 
 ## One-time tap setup
 
@@ -17,7 +17,7 @@ gh repo create teralabx/homebrew-tap --public \
   --description "Homebrew formulae for teralabx tools"
 git clone https://github.com/teralabx/homebrew-tap
 mkdir -p homebrew-tap/Formula
-cp packaging/homebrew/runlog.rb homebrew-tap/Formula/
+cp packaging/homebrew/logbear.rb homebrew-tap/Formula/
 ```
 
 The repository **must** be named `homebrew-tap`; `brew` derives the tap name by
@@ -25,15 +25,15 @@ stripping that prefix.
 
 ## Publishing to crates.io
 
-Order matters. Four crates depend on `runlog-core`, and `cargo publish` resolves against
+Order matters. Four crates depend on `logbear-core`, and `cargo publish` resolves against
 the real index, so the dependency has to exist there first:
 
 ```sh
-cargo publish -p runlog-core
-cargo publish -p runlogd -p runlog-mcp -p runlog-hook -p runlog
+cargo publish -p logbear-core
+cargo publish -p logbeard -p logbear-mcp -p logbear-hook -p logbear
 ```
 
-`runlog-desktop` is marked `publish = false` — it ships as an app bundle.
+`logbear-desktop` is marked `publish = false` — it ships as an app bundle.
 
 ## Cutting a release
 
@@ -41,16 +41,16 @@ The formula pins a tarball by hash, so both change together.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
-curl -sL https://github.com/teralabx/runlog/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+curl -sL https://github.com/teralabx/logbear/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
 ```
 
-Update `url` and `sha256` in `runlog.rb`, copy it into the tap, and verify before
+Update `url` and `sha256` in `logbear.rb`, copy it into the tap, and verify before
 pushing:
 
 ```sh
-brew install --build-from-source ./Formula/runlog.rb
-brew test runlog
-brew audit --strict --online runlog
+brew install --build-from-source ./Formula/logbear.rb
+brew test logbear
+brew audit --strict --online logbear
 ```
 
 `brew audit` will flag `license :cannot_represent`. That is expected and correct —

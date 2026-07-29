@@ -146,7 +146,7 @@
 	const STEP_COPY: Record<InstallStep, { title: string; what: string }> = {
 		path: {
 			title: 'PATH shims',
-			what: 'Puts ~/.runlog/bin first in your shell PATH. Commands like npm, mix and cargo then run through runlog with no prefix — including the ones your Makefiles and your coding agent invoke.'
+			what: 'Puts ~/.logbear/bin first in your shell PATH. Commands like npm, mix and cargo then run through logbear with no prefix — including the ones your Makefiles and your coding agent invoke.'
 		},
 		daemon: {
 			title: 'Background daemon',
@@ -154,7 +154,7 @@
 		},
 		mcp_claude: {
 			title: 'MCP server — Claude Code',
-			what: 'Registers runlog as an MCP server for Claude Code, giving it three read-only tools: recent runs, diff between two runs, and errors for a run.'
+			what: 'Registers logbear as an MCP server for Claude Code, giving it three read-only tools: recent runs, diff between two runs, and errors for a run.'
 		},
 		mcp_codex: {
 			title: 'MCP server — Codex',
@@ -175,7 +175,7 @@
 
 <PageHeader
 	title="Settings"
-	sub={app.daemon ? `runlog ${app.daemon.version} · pid ${app.daemon.pid}` : 'daemon not reachable'}
+	sub={app.daemon ? `logbear ${app.daemon.version} · pid ${app.daemon.pid}` : 'daemon not reachable'}
 />
 
 <div class="pane flex-1 pb-[90px]">
@@ -194,7 +194,7 @@
 			<div>
 				<h3 class="text-[13px] font-semibold">Storage</h3>
 				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-					runlog stores raw output on disk. When a project passes its cap the oldest runs are
+					logbear stores raw output on disk. When a project passes its cap the oldest runs are
 					evicted — their counts and fingerprints survive, their bytes do not.
 				</p>
 			</div>
@@ -308,7 +308,7 @@
 				<Toggle
 					bind:checked={settings.notifications_enabled}
 					label="Notify on new error signatures"
-					hint="Off means runlog still records everything — it just never interrupts you."
+					hint="Off means logbear still records everything — it just never interrupts you."
 				/>
 
 				<div class="my-3 {settings.notifications_enabled ? '' : 'opacity-55'}">
@@ -387,7 +387,7 @@
 			<div>
 				<h3 class="text-[13px] font-semibold">Agent push</h3>
 				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-					When a run fails, runlog can push a short block of context — the command, the exit code,
+					When a run fails, logbear can push a short block of context — the command, the exit code,
 					the new signatures — into the coding agent's next turn instead of waiting to be asked.
 				</p>
 			</div>
@@ -412,7 +412,7 @@
 							disabled={!settings.push_enabled}
 						/>
 						<span class="meta max-w-[62ch] text-[11px] leading-[1.6]">
-							The most blocks runlog will push into one agent session. Reached budget means later
+							The most blocks logbear will push into one agent session. Reached budget means later
 							failures are still recorded and still queryable — they just stop being volunteered.
 						</span>
 					</div>
@@ -511,7 +511,7 @@
 		<div>
 			<h3 class="text-[13px] font-semibold">Install</h3>
 			<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-				Each step is independent and reversible. Anything runlog edits is backed up first, and the
+				Each step is independent and reversible. Anything logbear edits is backed up first, and the
 				backup path is shown here.
 			</p>
 		</div>

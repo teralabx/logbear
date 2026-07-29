@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0, hand-rolled.
 //!
-//! The MCP surface runlog needs — `initialize`, `tools/list`, `tools/call`, `ping`, and a
+//! The MCP surface logbear needs — `initialize`, `tools/list`, `tools/call`, `ping`, and a
 //! server-to-client `roots/list` — is small enough to own outright rather than depend on
 //! the still-moving official SDK.
 //!

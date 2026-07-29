@@ -5,7 +5,7 @@
 //! index are a derived projection that can be dropped and rebuilt from it.
 //!
 //! `entries` stores a line range and no text; text lives once in `chunks` and is rendered
-//! on demand by `runlog_render()`. A reparse therefore rewrites only the derived layer and
+//! on demand by `logbear_render()`. A reparse therefore rewrites only the derived layer and
 //! can never lose or alter captured output.
 
 /// Bumped whenever the derived layer's meaning changes. The daemon then rebuilds the index
@@ -183,7 +183,7 @@ DROP VIEW IF EXISTS v_runs;
 CREATE VIEW v_entries AS
 SELECT e.id, e.run_id, e.start_line, e.end_line, e.captured_at, e.level, e.evidence,
        e.is_error, e.error_reason, e.fingerprint_id, e.boundaries,
-       runlog_render(e.run_id, e.start_line, e.end_line) AS text
+       logbear_render(e.run_id, e.start_line, e.end_line) AS text
   FROM entries e;
 
 -- Output that has never been seen in this project before, at any severity. This is where
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS run_summaries (
 CREATE INDEX IF NOT EXISTS run_summaries_time ON run_summaries(started_at DESC);
 "#;
 
-/// Documentation handed to an agent by `runlog_schema()` before it writes any SQL. Kept
+/// Documentation handed to an agent by `logbear_schema()` before it writes any SQL. Kept
 /// next to the DDL so the two cannot drift.
 pub const AGENT_NOTES: &str = r#"
 ## How this database is shaped
@@ -262,12 +262,12 @@ else is a derived index that can be rebuilt from it, so do not be surprised if e
 change after a reparse — fingerprint hashes and run ids do not.
 
 `entries` holds **no text**, only a line range. Query the `v_entries` view instead: it
-calls `runlog_render()` to produce the text on demand, with ANSI resolved.
+calls `logbear_render()` to produce the text on demand, with ANSI resolved.
 
 ## Functions available to your SQL
 
-  runlog_render(run_id, start_line, end_line) -> TEXT   VT-emulated, ANSI stripped
-  runlog_raw(run_id, start_line, end_line)    -> TEXT   verbatim bytes, ANSI intact
+  logbear_render(run_id, start_line, end_line) -> TEXT   VT-emulated, ANSI stripped
+  logbear_raw(run_id, start_line, end_line)    -> TEXT   verbatim bytes, ANSI intact
 
 ## Views
 

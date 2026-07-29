@@ -5,15 +5,15 @@
 //! original timestamps.
 
 use crate::state::Daemon;
-use runlog_core::proto::{Frame, SpoolHeader};
-use runlog_core::Result;
+use logbear_core::proto::{Frame, SpoolHeader};
+use logbear_core::Result;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::Arc;
 
 /// Ingests one spool file and deletes it, returning the number of bytes replayed.
 pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
-    let file = std::fs::File::open(path).map_err(|e| runlog_core::Error::io(path, e))?;
+    let file = std::fs::File::open(path).map_err(|e| logbear_core::Error::io(path, e))?;
     let mut reader = BufReader::new(file);
 
     let mut header_line = String::new();
@@ -45,7 +45,7 @@ pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
 
 /// Drains every spool file present at startup, oldest first.
 pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
-    let dir = runlog_core::paths::spool_dir();
+    let dir = logbear_core::paths::spool_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return 0;
     };
@@ -63,7 +63,7 @@ pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
             Err(e) => {
                 // A spool that will not parse is moved aside rather than retried forever
                 // or deleted: it is the only copy of that output.
-                eprintln!("runlogd: could not ingest {}: {e}", path.display());
+                eprintln!("logbeard: could not ingest {}: {e}", path.display());
                 let _ = std::fs::rename(&path, path.with_extension("spool.bad"));
             }
         }
@@ -74,19 +74,19 @@ pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runlog_core::model::RunStamp;
+    use logbear_core::model::RunStamp;
     use std::io::Write;
 
     #[test]
     fn a_spooled_run_becomes_a_real_run() {
         let _guard = crate::state::tests::HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("RUNLOG_HOME", tmp.path());
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
         let daemon = Daemon::open().unwrap();
 
         let work = tmp.path().join("proj");
         std::fs::create_dir_all(&work).unwrap();
-        let path = runlog_core::paths::spool_dir().join("t.spool");
+        let path = logbear_core::paths::spool_dir().join("t.spool");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
         {
@@ -99,14 +99,14 @@ mod tests {
                     project_name: "proj".into(),
                     ..Default::default()
                 },
-                started_at: runlog_core::now_micros(),
+                started_at: logbear_core::now_micros(),
                 exit_code: Some(1),
                 signal: None,
                 extra: Default::default(),
             };
             writeln!(f, "{}", serde_json::to_string(&header).unwrap()).unwrap();
             Frame::Data {
-                captured_at: runlog_core::now_micros(),
+                captured_at: logbear_core::now_micros(),
                 bytes: b"Error: spooled while the daemon was down\n".to_vec(),
             }
             .write_to(&mut f)
@@ -118,11 +118,11 @@ mod tests {
         assert!(!path.exists(), "the spool should be gone once the run is durable");
 
         let handle = daemon
-            .resolve(&runlog_core::proto::ProjectRef::Path(
+            .resolve(&logbear_core::proto::ProjectRef::Path(
                 work.to_string_lossy().into_owned(),
             ))
             .unwrap();
-        let runs = runlog_core::store::read::list_runs(&handle.db, 10, 0).unwrap();
+        let runs = logbear_core::store::read::list_runs(&handle.db, 10, 0).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].exit_code, Some(1));
         assert_eq!(runs[0].counters.n_error, 1);
@@ -132,9 +132,9 @@ mod tests {
     fn an_unreadable_spool_is_set_aside_not_deleted() {
         let _guard = crate::state::tests::HOME_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("RUNLOG_HOME", tmp.path());
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
         let daemon = Daemon::open().unwrap();
-        let path = runlog_core::paths::spool_dir().join("broken.spool");
+        let path = logbear_core::paths::spool_dir().join("broken.spool");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"this is not a spool file\n").unwrap();
 

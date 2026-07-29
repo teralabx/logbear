@@ -210,7 +210,7 @@ impl Notifier {
             project_id,
             project_name: project_name.to_string(),
             title: format!("{n} more errors in {project_name}"),
-            body: "Open runlog to see them.".into(),
+            body: "Open logbear to see them.".into(),
             level: Level::Error,
             at: crate::now_micros(),
             replaces_key: Some(format!("coalesced:{project_id}")),

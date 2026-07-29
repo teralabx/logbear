@@ -445,7 +445,7 @@ mod tests {
         drop(h);
 
         // Stamp stays current; the column disappears. The views are dropped first because
-        // they call `runlog_render`, which a bare connection has not registered — `Db::open`
+        // they call `logbear_render`, which a bare connection has not registered — `Db::open`
         // recreates them.
         {
             let conn = rusqlite::Connection::open(&path).unwrap();
