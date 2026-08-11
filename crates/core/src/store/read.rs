@@ -328,6 +328,15 @@ pub fn unread(
     max_entries: usize,
 ) -> Result<UnreadState> {
     let cursor = ensure_cursor(db, session_id, harness)?;
+    // `last_seen_at` is how read receipts find the sessions that are actually present:
+    // the hook calls unread on every event, so a live turn keeps its cursor fresh.
+    db.with(|conn| {
+        conn.execute(
+            "UPDATE session_cursors SET last_seen_at = ?2 WHERE session_id = ?1",
+            rusqlite::params![session_id, crate::now_micros()],
+        )?;
+        Ok(())
+    })?;
     let filter = EntryFilter {
         errors_only: true,
         after_entry: Some(cursor.last_entry_id),
@@ -349,10 +358,15 @@ pub fn unread(
 
     let new_signatures = db.with(|conn| {
         Ok(conn.query_row(
-            "SELECT count(DISTINCT e.fingerprint_id) FROM entries e
+            // NULL fingerprints count as new: an error that failed fingerprinting cannot
+            // be matched against anything this session has seen, and the safe direction
+            // for an unidentifiable error is to surface it. COALESCE onto the negated
+            // entry id keeps each such entry distinct without colliding with real ids.
+            "SELECT count(DISTINCT COALESCE(e.fingerprint_id, -e.id)) FROM entries e
               WHERE e.is_error = 1 AND e.id > ?1
-                AND e.fingerprint_id NOT IN (SELECT fingerprint_id FROM session_blocks
-                                              WHERE session_id = ?2)",
+                AND (e.fingerprint_id IS NULL
+                     OR e.fingerprint_id NOT IN (SELECT fingerprint_id FROM session_blocks
+                                                  WHERE session_id = ?2))",
             rusqlite::params![cursor.last_entry_id, session_id],
             |r| r.get::<_, i64>(0),
         )?)
@@ -761,6 +775,46 @@ mod tests {
         assert!(already_blocked(&h.db, "s", fp).unwrap());
         // Recording twice must not error or double count.
         record_block(&h.db, "s", &[fp]).unwrap();
+    }
+
+    #[test]
+    fn an_error_without_a_fingerprint_still_counts_as_a_new_signature() {
+        let h = h();
+        unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
+        run(&h, b"Error: boom\n", 1);
+        h.db.with(|conn| {
+            conn.execute("UPDATE entries SET fingerprint_id = NULL WHERE is_error = 1", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let state = unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
+        assert_eq!(
+            state.new_signatures, 1,
+            "an unidentifiable error must still be able to block"
+        );
+    }
+
+    #[test]
+    fn unread_refreshes_the_activity_stamp() {
+        let h = h();
+        unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
+        h.db.with(|conn| {
+            conn.execute("UPDATE session_cursors SET last_seen_at = 1", [])?;
+            Ok(())
+        })
+        .unwrap();
+        unread(&h.db, "s", "claude_code", 3, 2, 10).unwrap();
+        let seen: i64 = h
+            .db
+            .with(|conn| {
+                Ok(conn.query_row(
+                    "SELECT last_seen_at FROM session_cursors WHERE session_id = 's'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(seen > 1, "unread must refresh last_seen_at, got {seen}");
     }
 
     #[test]
