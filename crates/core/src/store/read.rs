@@ -531,6 +531,42 @@ pub fn record_block(db: &Db, session_id: &str, fps: &[FingerprintId]) -> Result<
     })
 }
 
+/// Sessions a read receipt applies to: hook cursors touched within the window.
+///
+/// `mcp` cursors are excluded on purpose — the MCP server's own cursor drives its banner,
+/// and the read that produced the receipt came from it in the first place.
+pub fn active_hook_sessions(db: &Db, within_micros: i64) -> Result<Vec<String>> {
+    let floor = crate::now_micros() - within_micros;
+    db.with(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT session_id FROM session_cursors
+              WHERE harness != 'mcp' AND last_seen_at >= ?1",
+        )?;
+        let rows = stmt.query_map([floor], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    })
+}
+
+/// The verified-read receipt: marks `fps` seen for every recently-active hook session.
+///
+/// Reads carry no harness session id (the MCP server invents its own), so attribution is
+/// "whoever is here right now". The cost of over-attribution is a missed block in a rare
+/// concurrent session; the cost of no attribution is re-blocking on errors the agent
+/// already read.
+pub fn record_seen_for_active(
+    db: &Db,
+    fps: &[FingerprintId],
+    within_micros: i64,
+) -> Result<()> {
+    if fps.is_empty() {
+        return Ok(());
+    }
+    for session in active_hook_sessions(db, within_micros)? {
+        record_block(db, &session, fps)?;
+    }
+    Ok(())
+}
+
 pub fn count_runs(conn: &Connection) -> Result<(i64, i64)> {
     Ok(conn.query_row(
         "SELECT count(*), COALESCE(sum(chunks_evicted), 0) FROM runs",
@@ -791,6 +827,53 @@ mod tests {
         assert_eq!(
             state.new_signatures, 1,
             "an unidentifiable error must still be able to block"
+        );
+    }
+
+    const WINDOW: i64 = 30 * 60 * 1_000_000;
+
+    #[test]
+    fn a_verified_read_marks_signatures_seen_for_active_hook_sessions() {
+        let h = h();
+        unread(&h.db, "hook-session", "claude_code", 3, 2, 10).unwrap();
+        run(&h, b"Error: boom\n", 1);
+
+        let fp = entries(&h.db, &EntryFilter { errors_only: true, ..Default::default() })
+            .unwrap()[0]
+            .entry
+            .fingerprint_id
+            .unwrap();
+        record_seen_for_active(&h.db, &[fp], WINDOW).unwrap();
+
+        let state = unread(&h.db, "hook-session", "claude_code", 3, 2, 10).unwrap();
+        assert_eq!(state.new_errors, 1, "a receipt must not consume the error count");
+        assert_eq!(state.new_signatures, 0, "a receipt must mark the signature seen");
+    }
+
+    #[test]
+    fn receipts_skip_mcp_and_stale_cursors() {
+        let h = h();
+        unread(&h.db, "mcp-session", "mcp", 3, 2, 10).unwrap();
+        unread(&h.db, "stale-hook", "claude_code", 3, 2, 10).unwrap();
+        h.db.with(|conn| {
+            conn.execute(
+                "UPDATE session_cursors SET last_seen_at = 1 WHERE session_id = 'stale-hook'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            active_hook_sessions(&h.db, WINDOW).unwrap(),
+            Vec::<String>::new(),
+            "neither an mcp cursor nor a stale hook cursor is active"
+        );
+
+        unread(&h.db, "live-hook", "claude_code", 3, 2, 10).unwrap();
+        assert_eq!(
+            active_hook_sessions(&h.db, WINDOW).unwrap(),
+            vec!["live-hook".to_string()]
         );
     }
 
