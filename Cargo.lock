@@ -2161,6 +2161,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "libc",
  "regex",
  "rusqlite",
  "serde",
@@ -2219,6 +2220,7 @@ dependencies = [
  "logbear-core",
  "serde",
  "serde_json",
+ "signal-hook",
  "tempfile",
  "time",
 ]

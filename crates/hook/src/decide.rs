@@ -42,6 +42,8 @@ pub struct Input<'a> {
     pub event: &'a Event,
     pub tool: Option<&'a str>,
     pub command: Option<&'a str>,
+    /// The harness's own re-entrancy flag: a hook already blocked the preceding stop.
+    pub stop_hook_active: bool,
 }
 
 impl Input<'_> {
@@ -69,6 +71,17 @@ pub fn decide(input: &Input, unread: &UnreadState) -> Decision {
         },
 
         Event::Stop | Event::SubagentStop if unread.is_empty() => Decision::Allow,
+        // The harness says a hook already blocked the stop this turn, so the agent has been
+        // told once and blocking again cannot teach it anything new. This outranks the block
+        // budget on purpose: the budget lives in the session cursor, so anything that stops
+        // that cursor persisting — a failed ack, a session id that changes between
+        // invocations — spends an allowance that never depletes and the agent is trapped
+        // until the harness's own consecutive-block cap saves it. This flag arrives on every
+        // payload and needs nothing to have been written down.
+        Event::Stop | Event::SubagentStop if input.stop_hook_active => Decision::Context {
+            text: summary(unread),
+            ack_nudge: false,
+        },
         // Past the block budget, errors degrade to advisory context: blocking without a cap
         // traps the agent forever.
         Event::Stop | Event::SubagentStop if unread.blocks_remaining > 0 => Decision::Block {

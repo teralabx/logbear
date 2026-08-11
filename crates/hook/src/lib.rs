@@ -100,6 +100,7 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
                 event: &payload.event,
                 tool: None,
                 command: None,
+                stop_hook_active: payload.stop_hook_active,
             },
             &state,
         );
@@ -119,6 +120,7 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
             event: &payload.event,
             tool: payload.tool_name.as_deref(),
             command: payload.command.as_deref(),
+            stop_hook_active: payload.stop_hook_active,
         },
         &unread,
     );

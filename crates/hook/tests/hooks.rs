@@ -277,6 +277,30 @@ fn past_the_block_budget_claude_degrades_to_context() {
     assert!(d.acks.is_empty(), "a degraded response must not spend budget");
 }
 
+/// The budget lives in the session cursor, so any failure to persist it — a rejected ack, a
+/// session id that differs between invocations — leaves `blocks_remaining` full forever and
+/// the agent blocked on the same errors until the harness's own cap intervenes. The harness
+/// tells us it already blocked this turn on every payload, which needs nothing written down.
+#[test]
+fn a_stop_the_hook_already_blocked_does_not_block_again() {
+    let mut d = FakeDaemon::with(UnreadState {
+        blocks_issued: 0,
+        blocks_remaining: 3,
+        ..unread()
+    });
+    let out = run("claude_stop_reentrant", None, &mut d);
+
+    assert!(out.get("decision").is_none(), "must not block a second time: {out}");
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("the errors must still be reported, just not as a block");
+    assert!(ctx.contains("2 new errors"), "{ctx}");
+    assert!(
+        d.acks.is_empty(),
+        "a block it declined to issue must not spend the Stop budget"
+    );
+}
+
 /// Codex's `Stop` output schema has no `hookSpecificOutput`, so a degraded stop can only
 /// reach the human. Emitting `additionalContext` anyway would fail the whole hook.
 #[test]

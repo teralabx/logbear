@@ -73,8 +73,10 @@ pub struct Payload {
     pub event: Event,
     pub session_id: String,
     pub cwd: String,
-    /// True when a hook already blocked the preceding stop. Both harnesses cap consecutive
-    /// blocks themselves (Claude Code at eight), underneath logbear's own block budget.
+    /// True when a hook already blocked the preceding stop. Overrides the block budget: it
+    /// is the one loop guard that does not depend on the session cursor having persisted, so
+    /// it holds even when the budget silently fails to deplete. Both harnesses also cap
+    /// consecutive blocks themselves (Claude Code at eight), as a last resort beneath this.
     pub stop_hook_active: bool,
     pub tool_name: Option<String>,
     /// The shell command, for shell-running tools only.
