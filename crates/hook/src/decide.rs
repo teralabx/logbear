@@ -82,6 +82,13 @@ pub fn decide(input: &Input, unread: &UnreadState) -> Decision {
             text: summary(unread),
             ack_nudge: false,
         },
+        // Every unread signature has already been surfaced to this session — by an
+        // earlier block or a read the daemon verified. Re-blocking on them cannot teach
+        // the agent anything new; only an unseen signature is worth a turn.
+        Event::Stop | Event::SubagentStop if unread.new_signatures == 0 => Decision::Context {
+            text: recurring_summary(unread),
+            ack_nudge: false,
+        },
         // Past the block budget, errors degrade to advisory context: blocking without a cap
         // traps the agent forever.
         Event::Stop | Event::SubagentStop if unread.blocks_remaining > 0 => Decision::Block {
@@ -206,6 +213,17 @@ pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
     }
 }
 
+/// The degraded stop: errors exist, but this session has seen every signature.
+fn recurring_summary(u: &UnreadState) -> String {
+    format!(
+        "logbear: {} unread error{}, but every signature is one you have already seen \
+         this session — nothing new to account for. Recheck with `logbear logs --level \
+         error` if that seems wrong.",
+        u.new_errors,
+        plural(u.new_errors),
+    )
+}
+
 /// The blocking form: the entries, their templates, whether each is new, and the run.
 fn block_reason(u: &UnreadState) -> String {
     let mut out = String::new();
@@ -218,7 +236,12 @@ fn block_reason(u: &UnreadState) -> String {
         if u.new_errors == 1 { "it" } else { "them" },
     ));
 
-    for (i, e) in u.entries.iter().take(MAX_ENTRIES).enumerate() {
+    let mut entries: Vec<&EntryView> = u.entries.iter().collect();
+    // The new signatures are why this block fired; MAX_ENTRIES must never truncate
+    // them away in favour of recurring ones. Stable, so chronology holds within each group.
+    entries.sort_by_key(|e| !e.is_new_signature);
+
+    for (i, e) in entries.iter().take(MAX_ENTRIES).enumerate() {
         out.push('\n');
         out.push_str(&format!(
             "[{}] {} · run {} · {} · {}\n",
@@ -247,9 +270,9 @@ fn block_reason(u: &UnreadState) -> String {
         }
     }
 
-    let shown = u.entries.len().min(MAX_ENTRIES);
-    if u.entries.len() > shown {
-        out.push_str(&format!("\n… and {} more.\n", u.entries.len() - shown));
+    let shown = entries.len().min(MAX_ENTRIES);
+    if entries.len() > shown {
+        out.push_str(&format!("\n… and {} more.\n", entries.len() - shown));
     }
     out.push_str(
         "\nUse the logbear MCP tools to investigate, or run `logbear logs --level error`. \

@@ -301,6 +301,44 @@ fn a_stop_the_hook_already_blocked_does_not_block_again() {
     );
 }
 
+/// Every unread signature was already surfaced to this session — by an earlier block or a
+/// verified read — so re-blocking cannot teach the agent anything new.
+#[test]
+fn recurring_only_errors_never_block_a_stop() {
+    let mut d = FakeDaemon::with(UnreadState {
+        new_signatures: 0,
+        ..unread()
+    });
+    let v = run("claude_stop", None, &mut d);
+    assert!(v.get("decision").is_none(), "recurring-only must not block: {v}");
+    let text = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(text.contains("already seen"), "{text}");
+    assert!(d.acks.is_empty(), "an advisory must spend no budget");
+}
+
+#[test]
+fn a_new_signature_still_blocks_a_stop() {
+    let mut d = FakeDaemon::with(unread()); // new_signatures: 1
+    let v = run("claude_stop", None, &mut d);
+    assert_eq!(v["decision"], "block");
+}
+
+#[test]
+fn the_block_reason_lists_new_signatures_first() {
+    // Recurring entry first in the state; the reason must reorder it behind the new one.
+    let mut state = unread();
+    state.entries = vec![
+        entry(1001, false, "[error] old friend", "[error] old friend"),
+        entry(1002, true, "Error: brand new", "Error: brand new"),
+    ];
+    let mut d = FakeDaemon::with(state);
+    let v = run("claude_stop", None, &mut d);
+    let reason = v["reason"].as_str().unwrap();
+    let new_at = reason.find("NEW SIGNATURE").expect("new entry shown");
+    let old_at = reason.find("recurring").expect("recurring entry shown");
+    assert!(new_at < old_at, "new signatures must precede recurring ones:\n{reason}");
+}
+
 /// Codex's `Stop` output schema has no `hookSpecificOutput`, so a degraded stop can only
 /// reach the human. Emitting `additionalContext` anyway would fail the whole hook.
 #[test]
