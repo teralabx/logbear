@@ -988,6 +988,31 @@ mod tests {
         assert!(fps.is_empty(), "a count column must not mark anything seen");
     }
 
+    /// The scenario this whole feature exists for: the agent reads the errors, then stops.
+    #[test]
+    fn reading_errors_then_stopping_yields_no_new_signatures() {
+        let h = h();
+        unread(&h.db, "claude-session", "claude_code", 3, 2, 10).unwrap();
+        run(&h, b"Error: boom\n", 1);
+
+        // What conn.rs does after serving Entries/Wait: extract error fps, record.
+        let served = entries(
+            &h.db,
+            &EntryFilter { errors_only: true, ..Default::default() },
+        )
+        .unwrap();
+        let fps: Vec<FingerprintId> = served
+            .iter()
+            .filter(|v| v.entry.is_error)
+            .filter_map(|v| v.entry.fingerprint_id)
+            .collect();
+        record_seen_for_active(&h.db, &fps, WINDOW).unwrap();
+
+        let state = unread(&h.db, "claude-session", "claude_code", 3, 2, 10).unwrap();
+        assert_eq!(state.new_signatures, 0, "the stop after a read must not block");
+        assert_eq!(state.new_errors, 1, "the advisory line still has its count");
+    }
+
     #[test]
     fn unread_refreshes_the_activity_stamp() {
         let h = h();

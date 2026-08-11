@@ -146,6 +146,27 @@ fn reply(w: &mut BufWriter<UnixStream>, response: Response) -> Result<()> {
     Ok(())
 }
 
+/// How recently a hook session must have been seen for a read receipt to apply to it.
+const RECEIPT_WINDOW_MICROS: i64 = 30 * 60 * 1_000_000;
+
+/// Best-effort by design: a receipt failure must never fail the read that produced it.
+fn receipt(h: &ProjectHandle, fps: Vec<FingerprintId>) {
+    if fps.is_empty() {
+        return;
+    }
+    if let Err(e) = read::record_seen_for_active(&h.db, &fps, RECEIPT_WINDOW_MICROS) {
+        eprintln!("logbeard: read receipt failed ({e})");
+    }
+}
+
+fn error_fps(views: &[EntryView]) -> Vec<FingerprintId> {
+    views
+        .iter()
+        .filter(|v| v.entry.is_error)
+        .filter_map(|v| v.entry.fingerprint_id)
+        .collect()
+}
+
 fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
     use serde_json::to_value;
 
@@ -198,7 +219,9 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
 
         Request::Entries { project, filter } => {
             let h = daemon.resolve(&project)?;
-            to_value(read::entries(&h.db, &filter)?)?
+            let views = read::entries(&h.db, &filter)?;
+            receipt(&h, error_fps(&views));
+            to_value(views)?
         }
 
         Request::Fingerprints {
@@ -207,7 +230,14 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             errors_only,
         } => {
             let h = daemon.resolve(&project)?;
-            to_value(read::fingerprints(&h.db, limit, errors_only)?)?
+            let fps = read::fingerprints(&h.db, limit, errors_only)?;
+            let ids: Vec<FingerprintId> = fps
+                .iter()
+                .filter(|f| matches!(f.level, Level::Error))
+                .map(|f| f.id)
+                .collect();
+            receipt(&h, ids);
+            to_value(fps)?
         }
 
         Request::Query {
@@ -219,7 +249,12 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             let h = daemon.resolve(&project)?;
             // Runs on its own read-only connection, so an agent's SQL cannot touch the
             // daemon's write handle or any other project.
-            to_value(sandbox::query(h.db.path(), &sql, &params, max_rows)?)?
+            let result = sandbox::query(h.db.path(), &sql, &params, max_rows)?;
+            match read::query_receipt_fps(&h.db, &result.columns, &result.rows) {
+                Ok(fps) => receipt(&h, fps),
+                Err(e) => eprintln!("logbeard: query receipt failed ({e})"),
+            }
+            to_value(result)?
         }
 
         Request::Schema { project } => {
@@ -248,7 +283,17 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
 
         Request::Diff { project, a, b } => {
             let h = daemon.resolve(&project)?;
-            to_value(diff::diff(&h.db, a, b)?)?
+            let d = diff::diff(&h.db, a, b)?;
+            let fps: Vec<FingerprintId> = d
+                .new_signatures
+                .iter()
+                .chain(d.resolved_signatures.iter())
+                .chain(d.changed_counts.iter())
+                .filter(|s| matches!(s.level, Level::Error))
+                .map(|s| s.fingerprint_id)
+                .collect();
+            receipt(&h, fps);
+            to_value(d)?
         }
 
         Request::Wait {
@@ -271,11 +316,13 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                     ..Default::default()
                 },
             )?;
-            if !already.is_empty() && after_entry.is_some() {
-                to_value(already)?
+            let served = if !already.is_empty() && after_entry.is_some() {
+                already
             } else {
-                to_value(daemon.wait(h.project.id, timeout_ms.min(600_000), level, after_entry))?
-            }
+                daemon.wait(h.project.id, timeout_ms.min(600_000), level, after_entry)
+            };
+            receipt(&h, error_fps(&served));
+            to_value(served)?
         }
 
         Request::Unread {
