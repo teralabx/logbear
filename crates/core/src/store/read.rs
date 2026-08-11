@@ -567,6 +567,75 @@ pub fn record_seen_for_active(
     Ok(())
 }
 
+/// Receipt-list cap: bounds the IN-list work a giant result can cause.
+const RECEIPT_MAX_KEYS: usize = 500;
+
+/// Which fingerprints a SQL result demonstrably showed the caller.
+///
+/// Sniffs the result's columns rather than its SQL: `id`/`entry_id` resolve through the
+/// entries table (error entries only), `fingerprint_id` is taken as-is, `template`
+/// resolves by exact text against error-level fingerprints. A result carrying none of
+/// these — an aggregate, an info-only read — proves nothing and marks nothing. An `id`
+/// column from a non-entries table can resolve to unrelated fingerprints; that costs a
+/// rare missed block, the direction the attribution trade-off already accepts.
+pub fn query_receipt_fps(
+    db: &Db,
+    columns: &[String],
+    rows: &[Vec<serde_json::Value>],
+) -> Result<Vec<FingerprintId>> {
+    let col = |name: &str| columns.iter().position(|c| c == name);
+    let mut fps: Vec<FingerprintId> = Vec::new();
+
+    if let Some(i) = col("fingerprint_id") {
+        fps.extend(rows.iter().filter_map(|r| r.get(i)?.as_i64()).take(RECEIPT_MAX_KEYS));
+    }
+    if let Some(i) = col("id").or_else(|| col("entry_id")) {
+        let ids: Vec<i64> = rows
+            .iter()
+            .filter_map(|r| r.get(i)?.as_i64())
+            .take(RECEIPT_MAX_KEYS)
+            .collect();
+        if !ids.is_empty() {
+            let marks = vec!["?"; ids.len()].join(",");
+            let sql = format!(
+                "SELECT DISTINCT fingerprint_id FROM entries
+                  WHERE id IN ({marks}) AND is_error = 1 AND fingerprint_id IS NOT NULL"
+            );
+            fps.extend(db.with(|conn| {
+                let mut stmt = conn.prepare(&sql)?;
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    ids.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, i64>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            })?);
+        }
+    }
+    if let Some(i) = col("template") {
+        let templates: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.get(i)?.as_str().map(str::to_string))
+            .take(RECEIPT_MAX_KEYS)
+            .collect();
+        if !templates.is_empty() {
+            let marks = vec!["?"; templates.len()].join(",");
+            let sql = format!(
+                "SELECT id FROM fingerprints WHERE level = 'error' AND template IN ({marks})"
+            );
+            fps.extend(db.with(|conn| {
+                let mut stmt = conn.prepare(&sql)?;
+                let refs: Vec<&dyn rusqlite::ToSql> =
+                    templates.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                let rows = stmt.query_map(refs.as_slice(), |r| r.get::<_, i64>(0))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            })?);
+        }
+    }
+
+    fps.sort_unstable();
+    fps.dedup();
+    Ok(fps)
+}
+
 pub fn count_runs(conn: &Connection) -> Result<(i64, i64)> {
     Ok(conn.query_row(
         "SELECT count(*), COALESCE(sum(chunks_evicted), 0) FROM runs",
@@ -875,6 +944,48 @@ mod tests {
             active_hook_sessions(&h.db, WINDOW).unwrap(),
             vec!["live-hook".to_string()]
         );
+    }
+
+    #[test]
+    fn query_receipts_resolve_entry_ids_fingerprint_ids_and_templates() {
+        let h = h();
+        run(&h, b"Error: boom\n", 1);
+        let view = entries(&h.db, &EntryFilter { errors_only: true, ..Default::default() })
+            .unwrap()
+            .remove(0);
+        let (id, fp) = (view.entry.id, view.entry.fingerprint_id.unwrap());
+        let template = view.template.unwrap();
+
+        let by_id =
+            query_receipt_fps(&h.db, &["id".to_string()], &[vec![serde_json::json!(id)]])
+                .unwrap();
+        assert_eq!(by_id, vec![fp]);
+
+        let by_fp = query_receipt_fps(
+            &h.db,
+            &["fingerprint_id".to_string()],
+            &[vec![serde_json::json!(fp)]],
+        )
+        .unwrap();
+        assert_eq!(by_fp, vec![fp]);
+
+        let by_template = query_receipt_fps(
+            &h.db,
+            &["template".to_string()],
+            &[vec![serde_json::json!(template)]],
+        )
+        .unwrap();
+        assert_eq!(by_template, vec![fp]);
+    }
+
+    #[test]
+    fn an_aggregate_result_proves_nothing() {
+        let h = h();
+        run(&h, b"Error: boom\n", 1);
+        let fps =
+            query_receipt_fps(&h.db, &["n".to_string()], &[vec![serde_json::json!(7)]])
+                .unwrap();
+        assert!(fps.is_empty(), "a count column must not mark anything seen");
     }
 
     #[test]
