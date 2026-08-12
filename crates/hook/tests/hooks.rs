@@ -259,8 +259,13 @@ fn the_project_and_session_reach_the_daemon_unmangled() {
 
 // --------------------------------------------------------------------------- degrade
 
+/// Claude Code has no model-visible, non-blocking channel at a stop: `additionalContext`
+/// is not a supported Stop field, and in practice it comes back as "Stop hook feedback"
+/// that re-opens the turn and counts toward the consecutive-block cap. An advisory that
+/// blocks nine turns in a row is a block. `systemMessage` is the one field both harnesses
+/// render as a plain warning to the human while letting the turn end.
 #[test]
-fn past_the_block_budget_claude_degrades_to_context() {
+fn past_the_block_budget_claude_degrades_to_a_user_visible_warning() {
     let mut d = FakeDaemon::with(UnreadState {
         blocks_issued: 3,
         blocks_remaining: 0,
@@ -269,11 +274,12 @@ fn past_the_block_budget_claude_degrades_to_context() {
     let out = run("claude_stop", None, &mut d);
 
     assert!(out.get("decision").is_none(), "must not block: {out}");
-    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "Stop");
-    let ctx = out["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .expect("additionalContext");
-    assert!(ctx.contains("2 new errors"), "{ctx}");
+    assert!(
+        out.get("hookSpecificOutput").is_none(),
+        "additionalContext at a stop re-opens the turn: {out}"
+    );
+    let msg = out["systemMessage"].as_str().expect("systemMessage");
+    assert!(msg.contains("2 new errors"), "{msg}");
     assert!(d.acks.is_empty(), "a degraded response must not spend budget");
 }
 
@@ -291,10 +297,11 @@ fn a_stop_the_hook_already_blocked_does_not_block_again() {
     let out = run("claude_stop_reentrant", None, &mut d);
 
     assert!(out.get("decision").is_none(), "must not block a second time: {out}");
-    let ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert!(out.get("hookSpecificOutput").is_none(), "{out}");
+    let msg = out["systemMessage"]
         .as_str()
-        .expect("the errors must still be reported, just not as a block");
-    assert!(ctx.contains("2 new errors"), "{ctx}");
+        .expect("the errors must still reach the human, just not as a block");
+    assert!(msg.contains("2 new errors"), "{msg}");
     assert!(
         d.acks.is_empty(),
         "a block it declined to issue must not spend the Stop budget"
@@ -311,7 +318,8 @@ fn recurring_only_errors_never_block_a_stop() {
     });
     let v = run("claude_stop", None, &mut d);
     assert!(v.get("decision").is_none(), "recurring-only must not block: {v}");
-    let text = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(v.get("hookSpecificOutput").is_none(), "{v}");
+    let text = v["systemMessage"].as_str().unwrap();
     assert!(text.contains("already seen"), "{text}");
     assert!(d.acks.is_empty(), "an advisory must spend no budget");
 }
@@ -363,7 +371,7 @@ fn a_failed_ack_downgrades_the_block_instead_of_looping() {
     };
     let out = run("claude_stop", None, &mut d);
     assert!(out.get("decision").is_none(), "must not block: {out}");
-    assert!(out["hookSpecificOutput"]["additionalContext"].is_string());
+    assert!(out["systemMessage"].is_string(), "{out}");
 }
 
 // --------------------------------------------------------------------------- drip

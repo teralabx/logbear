@@ -183,23 +183,27 @@ fn verify_nudge(lines: i64) -> String {
 /// The JSON a harness expects on stdout.
 ///
 /// Both dialects agree on `{"decision":"block","reason":...}` and on
-/// `hookSpecificOutput.additionalContext` for advisory text, and diverge in one place:
+/// `hookSpecificOutput.additionalContext` for advisory text on `PostToolUse` (Codex wants
+/// `hookEventName` in camelCase and required even though the input field is snake_case).
+///
+/// Stop events have no model-visible, non-blocking channel in either dialect:
 ///
 /// * Codex's `Stop` output schema is `additionalProperties: false` and defines no
-///   `hookSpecificOutput`; emitting `additionalContext` there fails the whole hook. Its
-///   only non-blocking key is `systemMessage`, which Codex renders as a UI warning and
-///   never puts in front of the model, so a degraded stop reaches the human and not the
-///   agent.
-/// * Codex's `PostToolUse` does carry `hookSpecificOutput`, with `hookEventName` in
-///   camelCase and required even though the input field is snake_case.
+///   `hookSpecificOutput`; emitting `additionalContext` there fails the whole hook, and
+///   non-empty stdout that does not parse as JSON is a hard hook failure.
+/// * Claude Code does not define `additionalContext` for `Stop`/`SubagentStop` either —
+///   in practice it comes back as "Stop hook feedback" that re-opens the turn and counts
+///   toward the consecutive-block cap. An advisory that keeps the agent running is a
+///   block wearing different clothes.
 ///
-/// On Codex `Stop`, non-empty stdout that does not parse as JSON is a hard hook failure.
-pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
+/// So a stop-time advisory degrades to `systemMessage` everywhere: a UI warning that
+/// reaches the human, not the agent, while the turn is allowed to end.
+pub fn render(_harness: Harness, event: &Event, decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({}),
         Decision::Block { reason, .. } => json!({ "decision": "block", "reason": reason }),
         Decision::Context { text, .. } => {
-            if harness == Harness::Codex && event.is_stop() {
+            if event.is_stop() {
                 json!({ "systemMessage": text })
             } else {
                 json!({
@@ -289,12 +293,16 @@ fn summary(u: &UnreadState) -> String {
     let newest = u
         .entries
         .last()
-        .map(|e| {
+        .and_then(|e| {
             let head = e
                 .template
                 .clone()
                 .unwrap_or_else(|| e.text.lines().next().unwrap_or_default().to_string());
-            format!(" Most recent: {}", one_line(&truncate(&head, 200)))
+            let head = one_line(&truncate(&head, 200));
+            let head = head.trim();
+            // An entry whose template and first line are both blank would render as
+            // "Most recent: " followed by nothing, which reads like a bug.
+            (!head.is_empty()).then(|| format!(" Most recent: {head}."))
         })
         .unwrap_or_default();
     format!(
