@@ -32,8 +32,9 @@ pub enum Decision {
     Block { reason: String, budget: Budget },
     /// Advisory text. Never interrupts the turn.
     ///
-    /// `ack_nudge` advances the nudge cursor. Set only by the verify nudge: every other
-    /// advisory reports errors the Stop hook still needs to see.
+    /// `ack_nudge` advances the nudge cursor, so mid-turn advice is given once per batch
+    /// of new output rather than on every tool call. The nudge cursor and not the error
+    /// cursor: the errors themselves are still the Stop hook's to consume.
     Context { text: String, ack_nudge: bool },
 }
 
@@ -117,9 +118,15 @@ fn post_tool_use(input: &Input, unread: &UnreadState) -> Decision {
                 budget: Budget::Change,
             };
         }
+        // Everything unread is behind the nudge cursor, so an earlier advisory or nudge
+        // already mentioned it; saying it again on every tool call teaches the agent to
+        // ignore the whole channel.
+        if unread.unseen_lines == 0 {
+            return Decision::Allow;
+        }
         return Decision::Context {
             text: summary(unread),
-            ack_nudge: false,
+            ack_nudge: true,
         };
     }
 

@@ -280,7 +280,11 @@ fn past_the_block_budget_claude_degrades_to_a_user_visible_warning() {
     );
     let msg = out["systemMessage"].as_str().expect("systemMessage");
     assert!(msg.contains("2 new errors"), "{msg}");
-    assert!(d.acks.is_empty(), "a degraded response must not spend budget");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "told once: the advisory must consume what it reported without spending budget"
+    );
 }
 
 /// The budget lives in the session cursor, so any failure to persist it — a rejected ack, a
@@ -302,9 +306,11 @@ fn a_stop_the_hook_already_blocked_does_not_block_again() {
         .as_str()
         .expect("the errors must still reach the human, just not as a block");
     assert!(msg.contains("2 new errors"), "{msg}");
-    assert!(
-        d.acks.is_empty(),
-        "a block it declined to issue must not spend the Stop budget"
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "a block it declined to issue must not spend the Stop budget, but the warning \
+         it emitted instead must not repeat at every later stop either"
     );
 }
 
@@ -321,7 +327,11 @@ fn recurring_only_errors_never_block_a_stop() {
     assert!(v.get("hookSpecificOutput").is_none(), "{v}");
     let text = v["systemMessage"].as_str().unwrap();
     assert!(text.contains("already seen"), "{text}");
-    assert!(d.acks.is_empty(), "an advisory must spend no budget");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "told once: the next stop must be silent unless new errors arrive"
+    );
 }
 
 #[test]
@@ -386,6 +396,7 @@ fn post_tool_use_with_only_recurring_errors_stays_a_short_advisory() {
     ] {
         let mut d = FakeDaemon::with(UnreadState {
             new_signatures: 0,
+            unseen_lines: 3,
             ..unread()
         });
         let out = run(name, Some(harness), &mut d);
@@ -395,15 +406,30 @@ fn post_tool_use_with_only_recurring_errors_stays_a_short_advisory() {
         let ctx = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: {out}"));
-        // Fires after every edit, so it must stay a line rather than a stack trace.
+        // Fires after an edit, so it must stay a line rather than a stack trace.
         assert!(ctx.len() < 400, "{name}: {} chars", ctx.len());
         assert!(ctx.contains("2 new errors"), "{name}: {ctx}");
-        assert!(
-            d.acks.is_empty(),
-            "{name}: an advisory must not advance the error cursor, or the Stop hook \
-             loses the errors it exists to surface"
+        assert_eq!(
+            d.acks,
+            vec![(None, AckKind::Nudge)],
+            "{name}: the advisory must advance the nudge cursor — not the error cursor, \
+             which the Stop hook still needs — or it repeats on every later tool call"
         );
     }
+}
+
+/// Everything unread was already mentioned by an earlier advisory or nudge; saying it
+/// again on every tool call teaches the agent to ignore the whole channel.
+#[test]
+fn a_mid_turn_advisory_already_given_stays_silent() {
+    let mut d = FakeDaemon::with(UnreadState {
+        new_signatures: 0,
+        unseen_lines: 0,
+        ..unread()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+    assert_eq!(out, serde_json::json!({}), "nothing new since the last advisory: {out}");
+    assert!(d.acks.is_empty());
 }
 
 /// The escalation: a signature this project has never produced, arriving immediately after
@@ -429,13 +455,14 @@ fn post_tool_use_escalates_for_a_signature_the_project_has_never_seen() {
 fn an_exhausted_change_budget_degrades_to_advisory() {
     let mut d = FakeDaemon::with(UnreadState {
         change_blocks_remaining: 0,
+        unseen_lines: 3,
         ..unread()
     });
     let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
 
     assert!(out.get("decision").is_none(), "must not block: {out}");
     assert!(out["hookSpecificOutput"]["additionalContext"].is_string());
-    assert!(d.acks.is_empty());
+    assert_eq!(d.acks, vec![(None, AckKind::Nudge)]);
 }
 
 // --------------------------------------------------------------------------- verify loop

@@ -154,6 +154,18 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
                 eprintln!("logbear-hook: could not advance the nudge cursor ({e})");
             }
         }
+        // A stop-time advisory is told once. `Seen` moves the error cursor without
+        // charging any budget, so the same errors do not warn again at every later stop;
+        // fresh errors start a fresh count.
+        Decision::Context { .. } if payload.event.is_stop() && !unread.is_empty() => {
+            let watermark = decide::watermark(&unread);
+            if let Err(e) =
+                daemon.ack(project, &payload.session_id, harness, watermark, AckKind::Seen)
+            {
+                // Advisory only: worst case the warning repeats at the next stop.
+                eprintln!("logbear-hook: could not mark the stop advisory as told ({e})");
+            }
+        }
         _ => {}
     }
 
