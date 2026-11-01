@@ -101,6 +101,7 @@ fn logs(
         limit: number,
         offset: 0,
         ascending: false,
+        ..Default::default()
     };
 
     let mut client = connect()?;

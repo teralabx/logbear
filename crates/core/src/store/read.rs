@@ -5,8 +5,10 @@
 
 use crate::error::{Error, Result};
 use crate::model::*;
-use crate::proto::{AckKind, EntryFilter, RunRef, UnreadState};
-use crate::store::{render_range, Db};
+use crate::proto::{
+    AckKind, EntryFilter, FingerprintHistory, HistoryPoint, RunErrorCount, RunRef, UnreadState,
+};
+use crate::store::{render_range, render_range_cached, Db};
 use rusqlite::{Connection, OptionalExtension};
 
 const RUN_COLUMNS: &str = "r.id, r.project_id, r.command, r.cwd, r.session_group, r.started_at,
@@ -51,7 +53,7 @@ fn map_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
 }
 
 pub fn get_run(db: &Db, run_id: RunId) -> Result<Run> {
-    db.with(|conn| {
+    db.read(|conn| {
         conn.query_row(
             &format!("SELECT {RUN_COLUMNS} {RUN_FROM} WHERE r.id = ?1"),
             [run_id],
@@ -63,7 +65,7 @@ pub fn get_run(db: &Db, run_id: RunId) -> Result<Run> {
 }
 
 pub fn list_runs(db: &Db, limit: usize, offset: usize) -> Result<Vec<Run>> {
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(&format!(
             "SELECT {RUN_COLUMNS} {RUN_FROM} ORDER BY r.started_at DESC LIMIT ?1 OFFSET ?2"
         ))?;
@@ -73,7 +75,7 @@ pub fn list_runs(db: &Db, limit: usize, offset: usize) -> Result<Vec<Run>> {
 }
 
 pub fn active_runs(db: &Db) -> Result<Vec<Run>> {
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(&format!(
             "SELECT {RUN_COLUMNS} {RUN_FROM} WHERE r.ended_at IS NULL ORDER BY r.started_at DESC"
         ))?;
@@ -106,7 +108,7 @@ pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
               ORDER BY r.started_at DESC LIMIT 1"
         ),
     };
-    db.with(|conn| Ok(conn.query_row(&sql, [], map_run).optional()?))
+    db.read(|conn| Ok(conn.query_row(&sql, [], map_run).optional()?))
 }
 
 /// Fetches entries with their rendered text.
@@ -148,6 +150,10 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
         wheres.push("e.captured_at > ?".into());
         params.push(Box::new(since));
     }
+    if let Some(fp) = f.fingerprint_id {
+        wheres.push("e.fingerprint_id = ?".into());
+        params.push(Box::new(fp));
+    }
     if let Some(after) = f.after_entry {
         wheres.push("e.id > ?".into());
         params.push(Box::new(after));
@@ -165,7 +171,7 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
     params.push(Box::new(f.limit.clamp(1, 5000) as i64));
     params.push(Box::new(f.offset as i64));
 
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(refs.as_slice(), |r| {
@@ -192,9 +198,11 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
         })?;
 
         let mut out = Vec::new();
+        let mut cache = None;
         for row in rows {
             let (entry, template, is_new) = row?;
-            let text = render_range(conn, entry.run_id, entry.start_line, entry.end_line)?;
+            let text =
+                render_range_cached(conn, &mut cache, entry.run_id, entry.start_line, entry.end_line)?;
             out.push(EntryView {
                 entry,
                 text,
@@ -208,7 +216,7 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
 
 pub fn fingerprints(db: &Db, limit: usize, errors_only: bool) -> Result<Vec<Fingerprint>> {
     let filter = if errors_only { "WHERE level = 'error'" } else { "" };
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, template, hash, level, first_seen, last_seen, total_count, run_count
                FROM fingerprints {filter}
@@ -238,7 +246,7 @@ pub fn fingerprint_history(
     fingerprint_id: FingerprintId,
     limit: usize,
 ) -> Result<Vec<(RunId, i64, i64)>> {
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(
             "SELECT r.id, COALESCE(rf.count, 0), r.started_at
                FROM runs r
@@ -254,8 +262,94 @@ pub fn fingerprint_history(
     })
 }
 
+/// [`fingerprint_history`] for many signatures at once: two queries however many there are.
+pub fn fingerprint_histories(
+    db: &Db,
+    fingerprint_ids: &[FingerprintId],
+    limit: usize,
+) -> Result<Vec<FingerprintHistory>> {
+    db.read(|conn| {
+        let mut stmt =
+            conn.prepare_cached("SELECT id, started_at FROM runs ORDER BY started_at DESC LIMIT ?1")?;
+        let mut recent = stmt
+            .query_map([limit as i64], |r| Ok((r.get::<_, RunId>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        recent.reverse();
+
+        let mut counts: std::collections::HashMap<(FingerprintId, RunId), i64> =
+            std::collections::HashMap::new();
+        if let (Some(oldest), false) = (recent.first(), fingerprint_ids.is_empty()) {
+            let ids = vec!["?"; fingerprint_ids.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT rf.fingerprint_id, rf.run_id, rf.count
+                   FROM run_fingerprints rf JOIN runs r ON r.id = rf.run_id
+                  WHERE r.started_at >= ? AND rf.fingerprint_id IN ({ids})"
+            ))?;
+            let mut params: Vec<i64> = vec![oldest.1];
+            params.extend(fingerprint_ids.iter().copied());
+            let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (fp, run, n) = row?;
+                counts.insert((fp, run), n);
+            }
+        }
+
+        Ok(fingerprint_ids
+            .iter()
+            .map(|&fp| FingerprintHistory {
+                fingerprint_id: fp,
+                points: recent
+                    .iter()
+                    .map(|&(run_id, started_at)| HistoryPoint {
+                        run_id,
+                        count: counts.get(&(fp, run_id)).copied().unwrap_or(0),
+                        started_at,
+                    })
+                    .collect(),
+            })
+            .collect())
+    })
+}
+
+/// Error totals per run, with how many were a signature's first sighting.
+pub fn run_error_counts(db: &Db, run_ids: &[RunId]) -> Result<Vec<RunErrorCount>> {
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    db.read(|conn| {
+        let ids = vec!["?"; run_ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT e.run_id, count(*), COALESCE(sum(fp.first_seen = e.captured_at), 0)
+               FROM entries e LEFT JOIN fingerprints fp ON fp.id = e.fingerprint_id
+              WHERE e.is_error = 1 AND e.run_id IN ({ids})
+              GROUP BY e.run_id"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(run_ids.iter()), |r| {
+            Ok(RunErrorCount {
+                run_id: r.get(0)?,
+                total: r.get(1)?,
+                new: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    })
+}
+
+/// One past the last stored line of a run, or 0 when it has none.
+pub fn line_count(db: &Db, run_id: RunId) -> Result<i64> {
+    db.read(|conn| {
+        Ok(conn.query_row(
+            "SELECT COALESCE(max(first_line + n_lines), 0) FROM chunks WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )?)
+    })
+}
+
 pub fn errors_since(db: &Db, since: i64) -> Result<i64> {
-    db.with(|conn| {
+    db.read(|conn| {
         Ok(conn.query_row(
             "SELECT count(*) FROM entries WHERE is_error = 1 AND captured_at > ?1",
             [since],
@@ -265,7 +359,7 @@ pub fn errors_since(db: &Db, since: i64) -> Result<i64> {
 }
 
 pub fn signatures_for_run(db: &Db, run_id: RunId) -> Result<Vec<(FingerprintId, String, Level, i64)>> {
-    db.with(|conn| {
+    db.read(|conn| {
         let mut stmt = conn.prepare(
             "SELECT f.id, f.template, f.level, rf.count
                FROM run_fingerprints rf JOIN fingerprints f ON f.id = rf.fingerprint_id
@@ -285,7 +379,7 @@ pub fn signatures_for_run(db: &Db, run_id: RunId) -> Result<Vec<(FingerprintId, 
 
 /// A representative rendered entry for a signature.
 pub fn sample_for_fingerprint(db: &Db, fp: FingerprintId, run_id: Option<RunId>) -> Result<Option<String>> {
-    db.with(|conn| {
+    db.read(|conn| {
         let row: Option<(RunId, i64, i64)> = match run_id {
             Some(run) => conn
                 .query_row(
@@ -709,6 +803,103 @@ mod tests {
         assert_eq!(e.len(), 1);
         assert!(e[0].text.contains("at a"), "{}", e[0].text);
         assert!(e[0].text.contains("at b"), "{}", e[0].text);
+    }
+
+    #[test]
+    fn a_page_of_entries_renders_the_same_through_the_chunk_cache() {
+        let h = h();
+        let mut w = Writer::start(&h.db, &h.index, &RunStamp::default(), Arc::new(Redactor::disabled()))
+            .unwrap();
+        // Pushed in slices with time passing between them, so the run lands as many chunks.
+        let mut t = crate::now_micros();
+        for i in 0..3000 {
+            let mut out = format!("[info] line {i}\n").into_bytes();
+            if i % 50 == 0 {
+                out.extend_from_slice(b"Error: boom\n    at a (/app/x.js:1:1)\n");
+            }
+            t += 1_000;
+            w.push(&out, t).unwrap();
+        }
+        w.finish(&h.index, Some(1), None).unwrap();
+        let id = w.run_id();
+        let page = entries(
+            &h.db,
+            &EntryFilter { run_id: Some(id), limit: 5000, ascending: true, ..Default::default() },
+        )
+        .unwrap();
+        assert!(page.len() > 50, "{}", page.len());
+        let chunks: i64 = h
+            .db
+            .with(|c| {
+                Ok(c.query_row("SELECT count(*) FROM chunks WHERE run_id = ?1", [id], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert!(chunks > 1, "want a page spanning chunks, got {chunks}");
+        h.db.with(|conn| {
+            for e in &page {
+                let plain = render_range(conn, e.entry.run_id, e.entry.start_line, e.entry.end_line)?;
+                assert_eq!(e.text, plain, "entry {}", e.entry.id);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn entries_filter_by_signature() {
+        let h = h();
+        run(&h, b"Error: alpha\nError: beta failed\nError: alpha\n", 1);
+        let all = entries(&h.db, &EntryFilter { errors_only: true, ..Default::default() }).unwrap();
+        let fp = all.iter().find(|e| e.text.contains("alpha")).unwrap().entry.fingerprint_id;
+        let only = entries(
+            &h.db,
+            &EntryFilter { fingerprint_id: fp, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(only.len(), 2);
+        assert!(only.iter().all(|e| e.text.contains("alpha")));
+    }
+
+    #[test]
+    fn histories_are_zero_filled_oldest_first() {
+        let h = h();
+        let r1 = run(&h, b"Error: alpha\n", 1);
+        let r2 = run(&h, b"[info] fine\n", 0);
+        let r3 = run(&h, b"Error: alpha\nError: alpha\n", 1);
+        let fp = entries(&h.db, &EntryFilter { errors_only: true, ..Default::default() })
+            .unwrap()[0]
+            .entry
+            .fingerprint_id
+            .unwrap();
+        let got = fingerprint_histories(&h.db, &[fp, 999_999], 30).unwrap();
+        assert_eq!(got.len(), 2);
+        let pts: Vec<(RunId, i64)> = got[0].points.iter().map(|p| (p.run_id, p.count)).collect();
+        assert_eq!(pts, vec![(r1, 1), (r2, 0), (r3, 2)]);
+        // Matches the single-signature read it batches.
+        let single: Vec<(RunId, i64)> =
+            fingerprint_history(&h.db, fp, 30).unwrap().into_iter().map(|(r, n, _)| (r, n)).collect();
+        assert_eq!(pts, single);
+        assert!(got[1].points.iter().all(|p| p.count == 0));
+    }
+
+    #[test]
+    fn run_error_counts_separate_new_signatures_from_known_ones() {
+        let h = h();
+        let r1 = run(&h, b"Error: alpha\n", 1);
+        let r2 = run(&h, b"Error: alpha\nError: beta failed\n", 1);
+        let r3 = run(&h, b"[info] fine\n", 0);
+        let mut got = run_error_counts(&h.db, &[r1, r2, r3]).unwrap();
+        got.sort_by_key(|c| c.run_id);
+        let got: Vec<(RunId, i64, i64)> = got.iter().map(|c| (c.run_id, c.total, c.new)).collect();
+        assert_eq!(got, vec![(r1, 1, 1), (r2, 2, 1)]);
+    }
+
+    #[test]
+    fn line_count_is_one_past_the_last_line() {
+        let h = h();
+        let id = run(&h, b"a\nb\nc\n", 0);
+        assert_eq!(line_count(&h.db, id).unwrap(), 3);
+        assert_eq!(line_count(&h.db, 424242).unwrap(), 0);
     }
 
     #[test]

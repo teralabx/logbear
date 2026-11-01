@@ -14,7 +14,7 @@ pub mod write;
 use crate::error::Result;
 use crate::model::*;
 use crate::parse::{vt, RawLine};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +24,8 @@ pub use write::Writer;
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    /// Idle read-only connections, so a slow read never holds the capture writer's lock.
+    readers: Arc<Mutex<Vec<Connection>>>,
     path: PathBuf,
     project_id: ProjectId,
     derived_stale: bool,
@@ -66,6 +68,7 @@ impl Db {
 
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(Mutex::new(Vec::new())),
             path: path.to_path_buf(),
             project_id,
             derived_stale: stale,
@@ -97,6 +100,38 @@ impl Db {
         f(&conn)
     }
 
+    /// Runs a read on a pooled read-only connection.
+    ///
+    /// WAL lets readers proceed while the writer commits, but only on separate connections:
+    /// funnelling a UI request that renders thousands of entries through [`Db::with`]
+    /// would stall capture for as long as the render takes. Use this for anything that
+    /// does not write and does not need to see the writer's uncommitted state.
+    pub fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let pooled = self
+            .readers
+            .lock()
+            .map_err(|_| crate::Error::other("reader pool poisoned"))?
+            .pop();
+        let conn = match pooled {
+            Some(c) => c,
+            None => {
+                let c = Connection::open_with_flags(
+                    &self.path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                c.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA cache_size = -4000;")?;
+                c
+            }
+        };
+        let out = f(&conn);
+        if let Ok(mut idle) = self.readers.lock() {
+            if idle.len() < MAX_IDLE_READERS {
+                idle.push(conn);
+            }
+        }
+        out
+    }
+
     pub fn with_mut<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         let mut conn = self.conn.lock().map_err(|_| crate::Error::other("db mutex poisoned"))?;
         f(&mut conn)
@@ -114,6 +149,10 @@ impl Db {
         total
     }
 }
+
+/// Read connections kept open per project once their reads finish. Bursts beyond this
+/// open a connection and close it afterwards rather than queueing.
+const MAX_IDLE_READERS: usize = 4;
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     // WAL so readers never block the capture writer. NORMAL synchronous trades the last
@@ -250,6 +289,65 @@ pub fn pack_chunk(lines: &[RawLine]) -> Vec<u8> {
 pub fn render_range(conn: &Connection, run_id: RunId, start: i64, end: i64) -> Result<String> {
     let lines = read_lines(conn, run_id, start, end)?;
     Ok(vt::render_lines(lines.iter().map(|l| l.as_slice())))
+}
+
+/// The lines of the chunk most recently read by [`render_range_cached`].
+pub struct ChunkCache {
+    run_id: RunId,
+    first_line: i64,
+    lines: Vec<Vec<u8>>,
+}
+
+/// [`render_range`] for a sequence of nearby ranges, such as a page of entries.
+///
+/// Entries are small and chunks hold hundreds of lines, so neighbouring entries almost
+/// always share a chunk. Rendering a page with plain `render_range` re-reads and re-splits
+/// the same blob once per entry; this reads it once.
+pub fn render_range_cached(
+    conn: &Connection,
+    cache: &mut Option<ChunkCache>,
+    run_id: RunId,
+    start: i64,
+    end: i64,
+) -> Result<String> {
+    fn slice(c: &ChunkCache, run_id: RunId, start: i64, end: i64) -> Option<String> {
+        if c.run_id != run_id || start < c.first_line || end < start {
+            return None;
+        }
+        let (a, b) = ((start - c.first_line) as usize, (end - c.first_line) as usize);
+        let lines = c.lines.get(a..=b)?;
+        Some(vt::render_lines(lines.iter().map(|l| l.as_slice())))
+    }
+
+    if let Some(text) = cache.as_ref().and_then(|c| slice(c, run_id, start, end)) {
+        return Ok(text);
+    }
+    if end >= start {
+        let row = conn
+            .prepare_cached(
+                "SELECT first_line, n_lines, bytes FROM chunks
+                  WHERE run_id = ?1 AND first_line <= ?2 AND first_line + n_lines > ?2
+                  ORDER BY first_line DESC LIMIT 1",
+            )?
+            .query_row((run_id, start), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?))
+            })
+            .optional()?;
+        if let Some((first_line, n_lines, bytes)) = row {
+            let fresh = ChunkCache {
+                run_id,
+                first_line,
+                lines: split_chunk(&bytes, n_lines as usize),
+            };
+            let hit = slice(&fresh, run_id, start, end);
+            *cache = Some(fresh);
+            if let Some(text) = hit {
+                return Ok(text);
+            }
+        }
+    }
+    // Spans a chunk boundary: rare enough that the general path is fine.
+    render_range(conn, run_id, start, end)
 }
 
 /// Verbatim bytes for a line range, CRLF-terminated so it replays into a terminal.

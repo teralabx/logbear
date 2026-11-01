@@ -82,10 +82,43 @@ pub struct EntryFilter {
     /// Oldest-first instead of newest-first.
     #[serde(default)]
     pub ascending: bool,
+    /// Only instances of this error signature.
+    #[serde(default)]
+    pub fingerprint_id: Option<FingerprintId>,
+    /// Read on behalf of a person rather than an agent, so it leaves no read receipt.
+    /// A human looking at an error in the desktop app has not told the agent about it.
+    #[serde(default)]
+    pub unobserved: bool,
 }
 
 fn default_limit() -> usize {
     100
+}
+
+fn default_history() -> usize {
+    30
+}
+
+/// One run's point on a signature's sparkline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPoint {
+    pub run_id: RunId,
+    pub count: i64,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintHistory {
+    pub fingerprint_id: FingerprintId,
+    pub points: Vec<HistoryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunErrorCount {
+    pub run_id: RunId,
+    pub total: i64,
+    /// Errors whose signature was first seen in this project by that entry.
+    pub new: i64,
 }
 
 impl Default for EntryFilter {
@@ -103,6 +136,8 @@ impl Default for EntryFilter {
             limit: default_limit(),
             offset: 0,
             ascending: false,
+            fingerprint_id: None,
+            unobserved: false,
         }
     }
 }
@@ -200,6 +235,10 @@ pub enum Request {
         run_id: RunId,
         start_line: Option<i64>,
         end_line: Option<i64>,
+        /// Only the last this-many lines of the run. Overrides `start_line`; what a
+        /// terminal replay wants, since its scrollback could not hold more anyway.
+        #[serde(default)]
+        tail_lines: Option<i64>,
     },
     Fingerprints {
         project: ProjectRef,
@@ -207,6 +246,22 @@ pub enum Request {
         limit: usize,
         #[serde(default)]
         errors_only: bool,
+        /// See [`EntryFilter::unobserved`].
+        #[serde(default)]
+        unobserved: bool,
+    },
+    /// Per-run occurrence counts for several signatures over the most recent `limit` runs,
+    /// oldest first, zero-filled. One round trip for a screen of sparklines.
+    FingerprintHistories {
+        project: ProjectRef,
+        fingerprint_ids: Vec<FingerprintId>,
+        #[serde(default = "default_history")]
+        limit: usize,
+    },
+    /// Error totals per run, and how many of those were a signature's first sighting.
+    RunErrorCounts {
+        project: ProjectRef,
+        run_ids: Vec<RunId>,
     },
     /// Read-only SQL, run inside the sandbox described in the design spec §9.4.
     Query {

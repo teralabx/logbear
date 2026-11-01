@@ -212,6 +212,17 @@ impl Client {
         &mut self,
         project: ProjectRef,
         run_id: RunId,
+        sink: impl FnMut(&[u8]) -> std::io::Result<()>,
+    ) -> Result<()> {
+        self.raw_tail(project, run_id, None, sink)
+    }
+
+    /// [`Client::raw_stream`] limited to the last `tail_lines` lines, or all of them.
+    pub fn raw_tail(
+        &mut self,
+        project: ProjectRef,
+        run_id: RunId,
+        tail_lines: Option<i64>,
         mut sink: impl FnMut(&[u8]) -> std::io::Result<()>,
     ) -> Result<()> {
         self.send(&Frame::json(&Request::RawStream {
@@ -219,6 +230,7 @@ impl Client {
             run_id,
             start_line: None,
             end_line: None,
+            tail_lines,
         })?)?;
         loop {
             match self.recv()? {

@@ -88,9 +88,17 @@ pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
                         run_id,
                         start_line,
                         end_line,
+                        tail_lines,
                     } => {
-                        let outcome =
-                            stream_raw(&daemon, &mut writer, &project, run_id, start_line, end_line);
+                        let outcome = stream_raw(
+                            &daemon,
+                            &mut writer,
+                            &project,
+                            run_id,
+                            start_line,
+                            end_line,
+                            tail_lines,
+                        );
                         let response = match outcome {
                             Ok(()) => Response::ok(()),
                             Err(e) => Response::err("raw_stream", e.to_string()),
@@ -220,7 +228,9 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
         Request::Entries { project, filter } => {
             let h = daemon.resolve(&project)?;
             let views = read::entries(&h.db, &filter)?;
-            receipt(&h, error_fps(&views));
+            if !filter.unobserved {
+                receipt(&h, error_fps(&views));
+            }
             to_value(views)?
         }
 
@@ -228,16 +238,33 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             project,
             limit,
             errors_only,
+            unobserved,
         } => {
             let h = daemon.resolve(&project)?;
             let fps = read::fingerprints(&h.db, limit, errors_only)?;
-            let ids: Vec<FingerprintId> = fps
-                .iter()
-                .filter(|f| matches!(f.level, Level::Error))
-                .map(|f| f.id)
-                .collect();
-            receipt(&h, ids);
+            if !unobserved {
+                let ids: Vec<FingerprintId> = fps
+                    .iter()
+                    .filter(|f| matches!(f.level, Level::Error))
+                    .map(|f| f.id)
+                    .collect();
+                receipt(&h, ids);
+            }
             to_value(fps)?
+        }
+
+        Request::FingerprintHistories {
+            project,
+            fingerprint_ids,
+            limit,
+        } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::fingerprint_histories(&h.db, &fingerprint_ids, limit.min(500))?)?
+        }
+
+        Request::RunErrorCounts { project, run_ids } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::run_error_counts(&h.db, &run_ids)?)?
         }
 
         Request::Query {
@@ -452,6 +479,7 @@ fn stream_raw(
     run_id: RunId,
     start_line: Option<i64>,
     end_line: Option<i64>,
+    tail_lines: Option<i64>,
 ) -> Result<()> {
     let h = daemon.resolve(project)?;
     let run = read::get_run(&h.db, run_id)?;
@@ -460,8 +488,11 @@ fn stream_raw(
             "the raw log for this run was evicted by the retention cap; its summary and error signatures are still available",
         ));
     }
-    let start = start_line.unwrap_or(0);
     let end = end_line.unwrap_or(i64::MAX);
+    let start = match tail_lines {
+        Some(n) => (read::line_count(&h.db, run_id)?.min(end.saturating_add(1)) - n.max(0)).max(0),
+        None => start_line.unwrap_or(0),
+    };
 
     // Paged rather than one enormous frame: a long dev-server run is hundreds of megabytes
     // and the reader wants to start painting before it has all of it.
@@ -469,7 +500,7 @@ fn stream_raw(
     let mut at = start;
     loop {
         let stop = at.saturating_add(PAGE).min(end);
-        let bytes = h.db.with(|c| logbear_core::store::raw_range(c, run_id, at, stop))?;
+        let bytes = h.db.read(|c| logbear_core::store::raw_range(c, run_id, at, stop))?;
         if bytes.is_empty() {
             break;
         }
