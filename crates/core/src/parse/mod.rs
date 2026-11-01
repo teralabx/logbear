@@ -177,6 +177,21 @@ impl Parser {
         }
     }
 
+    /// A parser that carries on a run already holding `next_index` lines.
+    ///
+    /// A run with lines has had its mode settled, so the mode is locked rather than
+    /// sampled again from the tail, which would group the two halves under different rules.
+    pub fn resume(next_index: i64, mode: DelimiterMode) -> Parser {
+        let mut p = Parser::new();
+        p.splitter.next_index = next_index;
+        if next_index > 0 {
+            p.mode = mode;
+            p.mode_locked = true;
+            p.grouper.set_mode(mode);
+        }
+        p
+    }
+
     pub fn with_redactor(mut self, r: std::sync::Arc<crate::redact::Redactor>) -> Parser {
         self.redactor = Some(r);
         self
