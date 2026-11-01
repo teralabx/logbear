@@ -3,12 +3,11 @@
 `logbear.rb` is the formula. It lives here so it is versioned alongside the code it
 builds; Homebrew itself reads it from a separate tap repository.
 
-## Why a tap and not homebrew-core
+## Why a tap first
 
-`homebrew-core` only accepts formulae under an OSI-approved licence. logbear is
-source-available under FSL-1.1-MIT, so it is not eligible, and `brew install logbear`
-will never resolve. A tap has no licence requirement, which makes
-`brew install teralabx/tap/logbear` the supported route.
+logbear is MIT-licensed, so it is eligible for `homebrew-core`. But core also asks for a
+tagged stable release and evidence of use before it accepts a new formula, so the tap,
+`brew install teralabx/tap/logbear`, is the route until then.
 
 ## One-time tap setup
 
@@ -52,9 +51,6 @@ brew install --build-from-source ./Formula/logbear.rb
 brew test logbear
 brew audit --strict --online logbear
 ```
-
-`brew audit` will flag `license :cannot_represent`. That is expected and correct —
-it is the documented value for a licence SPDX cannot express.
 
 ## What the formula does not cover
 

@@ -30,7 +30,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   entries on open; error instances load when a signature is expanded, and sparklines come
   from one request instead of one per signature.
 - Off-screen entry rows skip layout and paint.
-- Licensed under FSL-1.1-MIT. Previous manifests declared MIT with no licence file present.
+- Licensed under MIT, with the licence text in `LICENSE.md` and the SPDX identifier in
+  every manifest.
 - Sandboxed queries signal their cancellation timer rather than polling it, removing an
   ~87ms fixed cost from every query the UI issues.
 - Tauri commands that talk to the daemon run off the main thread, so a slow reply no longer

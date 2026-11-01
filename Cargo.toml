@@ -13,8 +13,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-# FSL-1.1-MIT is not an SPDX identifier, so the file is the licence of record.
-license-file = "LICENSE.md"
+license = "MIT"
 repository = "https://github.com/teralabx/logbear"
 homepage = "https://logbear.sh"
 readme = "README.md"

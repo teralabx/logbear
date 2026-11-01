@@ -3,9 +3,7 @@ class Logbear < Formula
   homepage "https://logbear.sh"
   url "https://github.com/teralabx/logbear/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0" * 64 # replace at release time: see packaging/homebrew/README.md
-  # FSL-1.1-MIT has no SPDX identifier, which is the one thing Homebrew's `license`
-  # field can express. The licence of record is LICENSE.md in the tarball.
-  license :cannot_represent
+  license "MIT"
   head "https://github.com/teralabx/logbear.git", branch: "master"
 
   depends_on "rust" => :build

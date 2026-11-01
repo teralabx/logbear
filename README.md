@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/teralabx/logbear/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/logbear/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/logbear.svg)](https://crates.io/crates/logbear)
-[![Licence: FSL-1.1-MIT](https://img.shields.io/badge/licence-FSL--1.1--MIT-blue.svg)](LICENSE.md)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE.md)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
 
 **It worked two days ago. What changed?**
@@ -84,8 +84,8 @@ brew services start logbear
 logbear doctor            # register the MCP server and the agent hook
 ```
 
-logbear is source-available rather than OSI open source, so it is not eligible for
-`homebrew-core` and lives in its own tap. See [`packaging/homebrew`](packaging/homebrew).
+It lives in its own tap until it qualifies for `homebrew-core`. See
+[`packaging/homebrew`](packaging/homebrew).
 
 **Cargo** — the same four binaries, built from source:
 
@@ -324,20 +324,10 @@ bug. Please report vulnerabilities privately rather than in a public issue — s
 
 ## Licence
 
-**FSL-1.1-MIT** — the [Functional Source License](https://fsl.software), MIT Future
-License. The full text is in [`LICENSE.md`](LICENSE.md).
+**MIT** — the full text is in [`LICENSE.md`](LICENSE.md).
 
-In plain terms: use it, modify it, redistribute it, run it commercially inside your
-company, build on it, fork it. The single restriction is *Competing Use* — you may not
-use logbear to offer a commercial product or service that substitutes for logbear. Two
-years after each version is published, that version becomes plain **MIT**, permanently
-and irrevocably.
-
-This is source-available, not OSI open source, and calling it otherwise would be
-inaccurate. The restriction exists so logbear can be funded without a rug-pull: revenue
-pays for hosted sync infrastructure and the cost of running it, not for locking away
-what already works locally. Everything you install from this repository runs entirely on
-your machine, forever, with no account and no network calls.
+Use it, modify it, redistribute it, sell it, build on it, fork it. Everything you install
+from this repository runs entirely on your machine, with no account and no network calls.
 
 The **logbear** name and the Delta mark are not covered by the licence grant. Fork the
 code freely; ship it under your own name.
