@@ -13,7 +13,9 @@
 ///
 /// * 2 — severity is read rather than inferred. Adds `entries.evidence` and recomputes
 ///   every existing entry's level.
-pub const DERIVED_VERSION: i64 = 2;
+/// * 3 — in prefix mode an unprefixed exception banner starts its own entry instead of
+///   continuing the one before it, so existing entries are regrouped.
+pub const DERIVED_VERSION: i64 = 3;
 /// Bumped when truth-layer tables change shape. Requires a migration.
 pub const SCHEMA_VERSION: i64 = 1;
 

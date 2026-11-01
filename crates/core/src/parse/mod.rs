@@ -469,6 +469,30 @@ mod tests {
     }
 
     #[test]
+    fn an_unprefixed_exception_amid_prefixed_logs_is_its_own_error() {
+        let mut stream = Vec::new();
+        for i in 0..3 {
+            for j in 0..20 {
+                stream.extend_from_slice(format!("[info] request {i}{j:02} handled in 12ms\n").as_bytes());
+            }
+            stream.extend_from_slice(
+                format!("Error: upstream timeout on shard {i}\n    at fetch (/app/net.js:10:5)\n").as_bytes(),
+            );
+        }
+        let mut p = Parser::new();
+        let mut entries = p.push(&stream, 0).entries;
+        entries.extend(p.finish(1).entries);
+        assert_eq!(p.mode(), DelimiterMode::Prefix);
+        let errs: Vec<_> = entries.iter().filter(|e| e.is_error).collect();
+        assert_eq!(errs.len(), 3, "{entries:#?}");
+        for e in errs {
+            assert_eq!(e.level, Level::Error);
+            assert!(e.text.starts_with("Error: upstream timeout"), "{:?}", e.text);
+            assert!(e.text.contains("at fetch"), "frames stay with their banner: {:?}", e.text);
+        }
+    }
+
+    #[test]
     fn fallback_mode_admits_that_boundaries_are_inferred() {
         let (_, _, entries) = feed(NODE);
         assert!(entries.iter().all(|e| e.boundaries == Boundaries::Inferred));
