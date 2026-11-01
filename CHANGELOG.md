@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The sidebar collapses to a narrow strip (⌘\), remembered between launches.
+- `FingerprintHistories` and `RunErrorCounts` protocol requests, and `fingerprint_id`,
+  `unobserved` and `tail_lines` fields on existing ones.
 - Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
   `teralabx/tap` tap.
 - crates.io publishing metadata, so `cargo install logbear logbeard logbear-mcp logbear-hook`
@@ -16,6 +19,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Reads run on pooled read-only SQLite connections instead of the capture writer's, so a
+  large UI read no longer stalls ingest.
+- A page of entries reads each stored chunk once rather than once per entry.
+- The desktop app keeps a small pool of daemon connections, so one slow command no longer
+  blocks every other one, the health poll included.
+- Terminal replay streams the last 20,000 lines as raw bytes instead of building the whole
+  run's output into one string.
+- Run, Live, Runs and Errors screens page their data instead of loading up to 8,000
+  entries on open; error instances load when a signature is expanded, and sparklines come
+  from one request instead of one per signature.
+- Off-screen entry rows skip layout and paint.
 - Licensed under FSL-1.1-MIT. Previous manifests declared MIT with no licence file present.
 - Sandboxed queries signal their cancellation timer rather than polling it, removing an
   ~87ms fixed cost from every query the UI issues.
@@ -27,6 +41,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Viewing errors in the desktop app no longer marks them as seen for agent sessions, which
+  could stop the hook from surfacing them.
+- The Live screen opens on a run's newest entries rather than its oldest.
 - A command that cannot start is no longer recorded as a run.
 - `LOGBEAR_DAEMON` is authoritative even when it names a path that does not exist, so tests
   can assert the no-daemon path.
