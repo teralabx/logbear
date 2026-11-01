@@ -42,6 +42,8 @@ class AppState {
 	#listeners = new Set<(e: LogbearEvent) => void>();
 	#dispose: (() => void) | null = null;
 	#poll: ReturnType<typeof setInterval> | null = null;
+	#refreshing: Promise<void> | null = null;
+	#again = false;
 
 	get connected(): boolean {
 		return this.daemon !== null && this.daemonError === null;
@@ -76,7 +78,27 @@ class AppState {
 		};
 	}
 
-	async refresh(): Promise<void> {
+	/**
+	 * Re-read daemon health and every project's status. Calls that arrive while one is in
+	 * flight fold into a single follow-up, so a burst of run events — a test watcher
+	 * restarting, a script launching several servers — costs two reads, not one per event.
+	 */
+	refresh(): Promise<void> {
+		if (this.#refreshing) {
+			this.#again = true;
+			return this.#refreshing;
+		}
+		this.#refreshing = (async () => {
+			do {
+				this.#again = false;
+				await this.#read();
+			} while (this.#again);
+			this.#refreshing = null;
+		})();
+		return this.#refreshing;
+	}
+
+	async #read(): Promise<void> {
 		try {
 			this.daemon = await daemonStatus();
 			this.daemonError = null;

@@ -50,7 +50,7 @@
 		brightWhite: '#F5F4F1'
 	};
 
-	export function write(data: string) {
+	export function write(data: string | Uint8Array) {
 		term?.write(data);
 	}
 

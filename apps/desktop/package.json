@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "test": "vitest run"
   },
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@tauri-apps/api": "^2",

@@ -48,6 +48,15 @@
 	let showMeta = $state(true);
 
 	let termRef = $state<ReturnType<typeof TerminalPane> | undefined>();
+	let replayTruncated = $state(false);
+	let hasMore = $state(false);
+	let loadingMore = $state(false);
+
+	/** Entries fetched per page. A long run has hundreds of thousands. */
+	const PAGE = 1000;
+
+	const firstPage = (pid: number, rid: number) =>
+		entries(projectRef(pid), { run_id: rid, limit: PAGE, ascending: true });
 
 	$effect(() => {
 		const pid = projectId;
@@ -56,23 +65,25 @@
 		let cancelled = false;
 		loading = true;
 		loadError = null;
+		replayTruncated = false;
+		expanded = new Set();
 
 		(async () => {
 			try {
 				const ref = projectRef(pid);
-				const [r, es, raw] = await Promise.all([
-					getRun(ref, rid),
-					entries(ref, { run_id: rid, limit: 5000, ascending: true }),
-					rawStream(ref, rid).catch(() => '')
-				]);
+				const [r, es] = await Promise.all([getRun(ref, rid), firstPage(pid, rid)]);
 				if (cancelled) return;
 				run = r;
 				list = es;
+				hasMore = es.length === PAGE;
 				// The terminal is only in the DOM once `loading` is false.
 				loading = false;
 				await tick();
 				if (cancelled) return;
-				termRef?.replace(raw);
+				termRef?.clear();
+				replayTruncated = await rawStream(ref, rid, (bytes) => {
+					if (!cancelled) termRef?.write(bytes);
+				}).catch(() => false);
 			} catch (err) {
 				if (!cancelled) {
 					loadError = apiError(err);
@@ -86,6 +97,26 @@
 		};
 	});
 
+	async function loadMore() {
+		const last = list.at(-1);
+		if (!run || !last || loadingMore) return;
+		loadingMore = true;
+		try {
+			const next = await entries(projectRef(projectId), {
+				run_id: run.id,
+				after_entry: last.id,
+				limit: PAGE,
+				ascending: true
+			});
+			list = list.concat(next);
+			hasMore = next.length === PAGE;
+		} catch (err) {
+			loadError = apiError(err);
+		} finally {
+			loadingMore = false;
+		}
+	}
+
 	const filtered = $derived.by(() => {
 		const q = search.trim().toLowerCase();
 		return list.filter((e) => {
@@ -97,8 +128,11 @@
 
 	const newSignatures = $derived(list.filter((e) => e.is_new_signature).length);
 
+	/** From the run's counters, so the chips are right before every page is loaded. */
 	function countFor(l: Level): number {
-		return list.filter((e) => e.level === l).length;
+		if (!run) return 0;
+		const c = run.counters;
+		return { error: c.n_error, warn: c.n_warn, info: c.n_info, debug: c.n_debug, trace: c.n_trace, unknown: c.n_unknown }[l];
 	}
 
 	function toggleLevel(l: Level) {
@@ -120,11 +154,13 @@
 		busy = 'reparse';
 		try {
 			await reparse(projectRef(projectId), run.id);
-			list = await entries(projectRef(projectId), {
-				run_id: run.id,
-				limit: 5000,
-				ascending: true
-			});
+			const [r, es] = await Promise.all([
+				getRun(projectRef(projectId), run.id),
+				firstPage(projectId, run.id)
+			]);
+			run = r;
+			list = es;
+			hasMore = es.length === PAGE;
 		} catch (err) {
 			loadError = apiError(err);
 		} finally {
@@ -273,6 +309,13 @@
 		</p>
 	{/if}
 
+	{#if replayTruncated}
+		<p class="rule-b flex-none px-4 py-[5px] text-[11px] text-meta">
+			The replay starts at the last 20,000 lines. Every entry is still listed below, and
+			<code>logbear cat {run.id}</code> prints the whole run.
+		</p>
+	{/if}
+
 	<section class="h-[40%] min-h-[160px] flex-none overflow-hidden bg-term-bg" aria-label="Terminal replay">
 		<TerminalPane bind:this={termRef} cols={run.term_cols} />
 	</section>
@@ -329,5 +372,21 @@
 		{:else}
 			<p class="px-4 py-[14px] text-[12px] text-meta">No entries match this filter.</p>
 		{/each}
+		{#if hasMore}
+			<div class="px-4 py-3">
+				<button
+					type="button"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					disabled={loadingMore}
+					onclick={loadMore}
+					>{loadingMore
+						? 'loading…'
+						: `load next ${PAGE} · ${list.length} of ${run.counters.n_entries}`}</button
+				>
+				{#if search.trim() || levelFilter.size}
+					<span class="ml-2 text-[11px] text-meta">Filters apply to loaded entries only.</span>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/if}

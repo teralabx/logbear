@@ -128,6 +128,8 @@ export interface EntryFilter {
 	limit?: number;
 	offset?: number;
 	ascending?: boolean;
+	/** Only instances of this signature. */
+	fingerprint_id?: number | null;
 }
 
 export interface DiffSignature {
@@ -233,6 +235,18 @@ export interface FingerprintHistoryPoint {
 	run_id: number;
 	count: number;
 	started_at: number;
+}
+
+export interface FingerprintHistory {
+	fingerprint_id: number;
+	points: FingerprintHistoryPoint[];
+}
+
+export interface RunErrorCount {
+	run_id: number;
+	total: number;
+	/** Errors whose signature this project had never seen before. */
+	new: number;
 }
 
 export type LogbearEvent =

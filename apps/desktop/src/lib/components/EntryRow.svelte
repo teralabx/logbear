@@ -55,7 +55,7 @@
 </script>
 
 <div
-	class="group grid grid-cols-[2px_16px_62px_1fr] items-start gap-x-1.5 gap-y-0 border-b border-transparent py-px pr-2 hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)]"
+	class="entry-row group grid grid-cols-[2px_16px_62px_1fr] items-start gap-x-1.5 gap-y-0 border-b border-transparent py-px pr-2 hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)]"
 	class:entry-enter={fresh}
 	data-level={entry.level}
 	class:is-new={entry.is_new_signature}
@@ -135,6 +135,13 @@
 </div>
 
 <style>
+	/* Off-screen rows skip layout and paint entirely: a long run is thousands of them,
+	   and laying all of them out was most of the cost of opening one. */
+	.entry-row {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 19px;
+	}
+
 	/* Attribute-driven custom property mapping: not expressible as a utility. */
 	[data-level='error'] {
 		--lvl: var(--color-lvl-error);

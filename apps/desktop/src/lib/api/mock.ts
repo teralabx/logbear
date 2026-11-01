@@ -16,7 +16,8 @@ import type {
 	EntryView,
 	Evidence,
 	Fingerprint,
-	FingerprintHistoryPoint,
+	FingerprintHistory,
+	RunErrorCount,
 	GitCommit,
 	InstallStatus,
 	InstallStep,
@@ -956,7 +957,10 @@ export const mock = {
 			const q = filter.search.toLowerCase();
 			all = all.filter((e) => e.text.toLowerCase().includes(q));
 		}
-		all.sort((a, b) => (filter.ascending === false ? b.id - a.id : a.id - b.id));
+		if (filter.fingerprint_id != null)
+			all = all.filter((e) => e.fingerprint_id === filter.fingerprint_id);
+		// Newest first unless asked otherwise, as the daemon does.
+		all.sort((a, b) => (filter.ascending ? a.id - b.id : b.id - a.id));
 		const off = filter.offset ?? 0;
 		return delay(all.slice(off, off + (filter.limit ?? 500)));
 	},
@@ -977,16 +981,32 @@ export const mock = {
 		return delay(fps.slice(0, limit));
 	},
 
-	fingerprint_history: (ref: ProjectRef, fingerprintId: number, limit = 30) => {
+	fingerprint_histories: (ref: ProjectRef, ids: number[], limit = 30) => {
 		const p = resolveProject(ref);
-		const out: FingerprintHistoryPoint[] = runsOf(p.id)
-			.slice(0, limit)
-			.map((r) => ({
+		const recent = runsOf(p.id).slice(0, limit).reverse();
+		const out: FingerprintHistory[] = ids.map((id) => ({
+			fingerprint_id: id,
+			points: recent.map((r) => ({
 				run_id: r.run.id,
 				started_at: r.run.started_at,
-				count: r.entries.filter((e) => e.fingerprint_id === fingerprintId).length
+				count: r.entries.filter((e) => e.fingerprint_id === id).length
 			}))
-			.reverse();
+		}));
+		return delay(out);
+	},
+
+	run_error_counts: (ref: ProjectRef, runIds: number[]) => {
+		const p = resolveProject(ref);
+		const out: RunErrorCount[] = [];
+		for (const id of runIds) {
+			const errs = findRun(p.id, id).entries.filter((e) => e.is_error);
+			if (errs.length)
+				out.push({
+					run_id: id,
+					total: errs.length,
+					new: errs.filter((e) => e.is_new_signature).length
+				});
+		}
 		return delay(out);
 	},
 

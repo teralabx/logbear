@@ -6,7 +6,7 @@
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
 	import ExitBadge from '$lib/components/ExitBadge.svelte';
 	import ErrorCount from '$lib/components/ErrorCount.svelte';
-	import { apiError, entries, listRuns, projectRef } from '$lib/api';
+	import { apiError, listRuns, projectRef, runErrorCounts } from '$lib/api';
 	import { app } from '$lib/stores/app.svelte';
 	import {
 		fmtCommand,
@@ -38,6 +38,21 @@
 	let selected = $state<number[]>([]);
 	let onlyFailed = $state(false);
 	let filter = $state('');
+	let hasMore = $state(false);
+	let loadingMore = $state(false);
+
+	const PAGE = 100;
+
+	/** Error totals for a page of runs, from one grouped query. */
+	async function countErrors(id: number, rs: Run[]) {
+		const counts = await runErrorCounts(
+			projectRef(id),
+			rs.map((r) => r.id)
+		);
+		const map = { ...errorsByRun };
+		for (const c of counts) map[c.run_id] = { total: c.total, neu: c.new };
+		errorsByRun = map;
+	}
 
 	let now = $state(Date.now());
 	$effect(() => {
@@ -56,21 +71,13 @@
 		(async () => {
 			try {
 				const ref = projectRef(id);
-				const rs = await listRuns(ref, 100, 0);
+				const rs = await listRuns(ref, PAGE, 0);
 				if (cancelled) return;
 				runs = rs;
-
-				// One pass over the project's error entries gives every row its
-				// total and its new-signature count without a call per run.
-				const errs = await entries(ref, { errors_only: true, limit: 6000, ascending: true });
+				hasMore = rs.length === PAGE;
+				errorsByRun = {};
+				await countErrors(id, rs);
 				if (cancelled) return;
-				const map: Record<number, { total: number; neu: number }> = {};
-				for (const e of errs) {
-					const bucket = (map[e.run_id] ??= { total: 0, neu: 0 });
-					bucket.total++;
-					if (e.is_new_signature) bucket.neu++;
-				}
-				errorsByRun = map;
 				loading = false;
 			} catch (err) {
 				if (!cancelled) {
@@ -84,6 +91,22 @@
 			cancelled = true;
 		};
 	});
+
+	async function loadMore() {
+		if (loadingMore) return;
+		loadingMore = true;
+		try {
+			const id = projectId;
+			const next = await listRuns(projectRef(id), PAGE, runs.length);
+			runs = runs.concat(next);
+			hasMore = next.length === PAGE;
+			await countErrors(id, next);
+		} catch (err) {
+			loadError = apiError(err);
+		} finally {
+			loadingMore = false;
+		}
+	}
 
 	const shown = $derived.by(() => {
 		const q = filter.trim().toLowerCase();
@@ -128,7 +151,7 @@
 
 <PageHeader
 	title="Runs"
-	sub={project ? `${project.name} · ${runs.length} stored` : ''}
+	sub={project ? `${project.name} · ${runs.length}${hasMore ? '+' : ''} runs` : ''}
 >
 	{#snippet actions()}
 		<input
@@ -296,6 +319,16 @@
 		</table>
 		{#if shown.length === 0}
 			<p class="meta p-4 text-[12px]">No runs match this filter.</p>
+		{/if}
+		{#if hasMore}
+			<div class="px-4 py-3">
+				<button
+					type="button"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					disabled={loadingMore}
+					onclick={loadMore}>{loadingMore ? 'loading…' : `load ${PAGE} older runs`}</button
+				>
+			</div>
 		{/if}
 	</div>
 
