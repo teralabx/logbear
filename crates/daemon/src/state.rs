@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+/// How long [`Daemon::resume_run`] waits for the abandoned connection to close its run.
+const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Everything about one project the daemon holds open.
 pub struct ProjectHandle {
     pub project: Project,
@@ -221,6 +224,53 @@ impl Daemon {
             self.broadcast_project(handle.project.id, Event::RunStarted { run });
         }
         Ok((handle, live))
+    }
+
+    /// Reopens a run whose shim abandoned the socket mid-run, so its spooled tail lands in
+    /// the same run. `None` when the run cannot be continued and a new one should be
+    /// started instead.
+    pub fn resume_run(
+        &self,
+        stamp: &RunStamp,
+        shim_started_at: i64,
+        run_id: RunId,
+    ) -> Result<Option<(Arc<ProjectHandle>, Arc<LiveRun>)>> {
+        // The connection that started the run closes it when it reads EOF, after landing
+        // whatever was still in the socket. Those bytes precede the spool's, so wait for
+        // it; a connection still stuck after that is left alone and the tail gets a run of
+        // its own rather than interleaving with it.
+        let deadline = std::time::Instant::now() + RESUME_WAIT;
+        while self.is_live(run_id) {
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let cwd = PathBuf::from(&stamp.cwd);
+        let Some(project) = self.index.resolve_path(&cwd)? else {
+            return Ok(None);
+        };
+        let handle = self.handle_for(project)?;
+        let Some(writer) = Writer::resume(&handle.db, run_id, stamp, shim_started_at, self.redactor())? else {
+            return Ok(None);
+        };
+
+        let live = Arc::new(LiveRun {
+            run_id,
+            project_id: handle.project.id,
+            command: stamp.command.join(" "),
+            writer: Mutex::new(writer),
+        });
+        self.runs
+            .lock()
+            .map_err(|_| Error::other("run map poisoned"))?
+            .insert(run_id, live.clone());
+        Ok(Some((handle, live)))
+    }
+
+    fn is_live(&self, run_id: RunId) -> bool {
+        self.runs.lock().map(|r| r.contains_key(&run_id)).unwrap_or(false)
     }
 
     pub fn finish_run(
