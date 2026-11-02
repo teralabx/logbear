@@ -345,11 +345,11 @@
 	/* Collapsed width, and the icon column every row shares. On macOS the strip has
 	   to stay wide enough for the window buttons drawn over the title bar. */
 	.rail {
-		--rail-c: 56px;
-		width: 216px;
+		--rail-c: 52px;
+		width: 184px;
 	}
 	:global(:root[data-platform='macos']) .rail {
-		--rail-c: 80px;
+		--rail-c: 76px;
 	}
 	.rail.collapsed {
 		width: var(--rail-c);
@@ -372,7 +372,7 @@
 		display: grid;
 		flex: none;
 		place-items: center;
-		width: 40px;
+		width: 36px;
 		height: 100%;
 	}
 	/* Collapsed, the column fills the strip so the icon sits centred in it. The 2px
