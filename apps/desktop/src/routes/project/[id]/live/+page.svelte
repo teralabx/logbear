@@ -4,6 +4,7 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import TerminalPane from '$lib/components/TerminalPane.svelte';
 	import EntryRow from '$lib/components/EntryRow.svelte';
+	import { squash } from '$lib/squash';
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
@@ -44,6 +45,7 @@
 	let follow = $state(true);
 	let search = $state('');
 	let levelFilter = $state<Set<Level>>(new Set());
+	let squashed = $state(false);
 	let newOnly = $state(false);
 	let expanded = $state<Set<number>>(new Set());
 	let freshIds = $state<Set<number>>(new Set());
@@ -75,6 +77,11 @@
 			return true;
 		});
 	});
+
+	/** Each distinct entry once, with its repeat count; or every entry, one per row. */
+	const rows = $derived(
+		squashed ? squash(filtered) : filtered.map((entry) => ({ entry, count: 1, lastAt: entry.captured_at }))
+	);
 
 	const newCount = $derived(list.filter((e) => e.is_new_signature).length);
 
@@ -405,6 +412,21 @@
 							>{/if}
 					</button>
 
+					<button
+						type="button"
+						class={[
+							'inline-flex h-[20px] cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[11px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms]',
+							squashed
+								? 'border-hair-strong bg-[color-mix(in_oklch,var(--color-base-content)_6%,transparent)] text-base-content'
+								: 'border-hair bg-transparent text-meta hover:border-hair-strong hover:text-base-content'
+						]}
+						aria-pressed={squashed}
+						onclick={() => (squashed = !squashed)}
+						title="Show each distinct entry once, with how many times it repeated. Timestamps, ids and numbers are ignored when comparing."
+					>
+						squash{#if squashed}<span class="tnum text-meta">{rows.length}/{filtered.length}</span>{/if}
+					</button>
+
 					{#if levelFilter.size || newOnly}
 						<button
 							type="button"
@@ -492,13 +514,15 @@
 							: 'No entries match this filter.'}
 					</p>
 				{:else}
-					{#each filtered as e (e.id)}
+					{#each rows as { entry: e, count, lastAt } (e.id)}
 						<EntryRow
 							entry={e}
 							expanded={expanded.has(e.id)}
 							highlight={search.trim()}
 							onToggle={toggleEntry}
 							fresh={freshIds.has(e.id)}
+							repeats={count}
+							{lastAt}
 						/>
 					{/each}
 				{/if}

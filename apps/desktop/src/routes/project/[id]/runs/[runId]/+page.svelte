@@ -5,6 +5,7 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import TerminalPane from '$lib/components/TerminalPane.svelte';
 	import EntryRow from '$lib/components/EntryRow.svelte';
+	import { squash } from '$lib/squash';
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import ExitBadge from '$lib/components/ExitBadge.svelte';
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
@@ -46,6 +47,7 @@
 	let levelFilter = $state<Set<Level>>(new Set());
 	let expanded = $state<Set<number>>(new Set());
 	let showMeta = $state(true);
+	let squashed = $state(false);
 
 	let termRef = $state<ReturnType<typeof TerminalPane> | undefined>();
 	let replayTruncated = $state(false);
@@ -125,6 +127,11 @@
 			return true;
 		});
 	});
+
+	/** Each distinct entry once, with its repeat count; or every entry, one per row. */
+	const rows = $derived(
+		squashed ? squash(filtered) : filtered.map((entry) => ({ entry, count: 1, lastAt: entry.captured_at }))
+	);
 
 	const newSignatures = $derived(list.filter((e) => e.is_new_signature).length);
 
@@ -335,6 +342,18 @@
 			{/each}
 		</div>
 		<div class="flex items-center gap-2">
+			<button
+				type="button"
+				class="cursor-pointer rounded-[2px] border px-2 py-[4px] text-[10px] tracking-[0.16em] uppercase {squashed
+					? 'border-hair-strong text-base-content'
+					: 'border-hair text-meta hover:border-hair-strong hover:text-base-content'}"
+				aria-pressed={squashed}
+				onclick={() => (squashed = !squashed)}
+				title="Show each distinct entry once, with how many times it repeated. Timestamps, ids and numbers are ignored when comparing."
+				>squash{#if squashed}<span class="tnum ml-1.5 tracking-normal normal-case text-meta"
+						>{rows.length} of {filtered.length}</span
+					>{/if}</button
+			>
 			<input
 				type="search"
 				class="w-[200px] rounded-[2px] border border-hair bg-transparent px-2 py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
@@ -362,12 +381,14 @@
 	</div>
 
 	<div class="pane flex-1 pt-1 pb-6">
-		{#each filtered as e (e.id)}
+		{#each rows as { entry: e, count, lastAt } (e.id)}
 			<EntryRow
 				entry={e}
 				expanded={expanded.has(e.id)}
 				highlight={search.trim()}
 				onToggle={toggleEntry}
+				repeats={count}
+				{lastAt}
 			/>
 		{:else}
 			<p class="px-4 py-[14px] text-[12px] text-meta">No entries match this filter.</p>
@@ -383,8 +404,8 @@
 						? 'loading…'
 						: `load next ${PAGE} · ${list.length} of ${run.counters.n_entries}`}</button
 				>
-				{#if search.trim() || levelFilter.size}
-					<span class="ml-2 text-[11px] text-meta">Filters apply to loaded entries only.</span>
+				{#if search.trim() || levelFilter.size || squashed}
+					<span class="ml-2 text-[11px] text-meta">Filters and squash apply to loaded entries only.</span>
 				{/if}
 			</div>
 		{/if}

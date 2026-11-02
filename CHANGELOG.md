@@ -9,7 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- The sidebar collapses to a narrow strip (⌘\), remembered between launches.
+- The sidebar collapses to a narrow strip (⌘\), remembered between launches, with
+  tooltips on every item while collapsed.
+- A squash toggle on the Live and Run views lists each distinct entry once, with a ×N
+  count and when it last repeated. Timestamps, ids and numbers are ignored when comparing.
 - `FingerprintHistories` and `RunErrorCounts` protocol requests, and `fingerprint_id`,
   `unobserved` and `tail_lines` fields on existing ones.
 - Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
