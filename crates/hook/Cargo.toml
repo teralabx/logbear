@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Claude Code and Codex hook that pushes logbear errors into an agent's context"
+description = "Agent hook for Claude Code, Codex, pi and Hermes that pushes logbear errors into the agent's context"
 
 [lib]
 name = "logbear_hook"

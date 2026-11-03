@@ -1,10 +1,14 @@
-//! Harness hook for Claude Code and Codex.
+//! Harness hook for Claude Code, Codex, pi and Hermes.
 //!
-//! One binary serves both harnesses:
+//! One binary serves all four:
 //!
-//! * Claude Code — `Stop` and `PostToolUse`, configured in `~/.claude/settings.json`.
-//! * Codex — `Stop`, `SubagentStop` and `PostToolUse`, configured in `~/.codex/hooks.json`
-//!   or `[hooks]` in `config.toml`.
+//! * Claude Code — `SessionStart`, `Stop`, `SubagentStop` and `PostToolUse`, configured in
+//!   `~/.claude/settings.json`.
+//! * Codex — the same four, configured in `~/.codex/hooks.json` or `[hooks]` in
+//!   `config.toml`.
+//! * pi — through an extension in `~/.pi/agent/extensions/` that runs this binary with a
+//!   Claude-shaped payload and translates the reply into pi's extension API.
+//! * Hermes — `pre_llm_call` and `pre_verify` shell hooks in `~/.hermes/config.yaml`.
 //!
 //! Both deliver a flat snake_case payload carrying `session_id`, `cwd`, `hook_event_name`
 //! and `stop_hook_active`, and both block with `{"decision":"block","reason":…}`.
@@ -157,7 +161,11 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
         // A stop-time advisory is told once. `Seen` moves the error cursor without
         // charging any budget, so the same errors do not warn again at every later stop;
         // fresh errors start a fresh count.
-        Decision::Context { .. } if payload.event.is_stop() && !unread.is_empty() => {
+        Decision::Context { .. }
+            if payload.event.is_stop()
+                && !unread.is_empty()
+                && payload.harness.has_stop_advisory() =>
+        {
             let watermark = decide::watermark(&unread);
             if let Err(e) =
                 daemon.ack(project, &payload.session_id, harness, watermark, AckKind::Seen)

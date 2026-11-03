@@ -1,0 +1,17 @@
+{
+  "session_id": "codex-sess-0001",
+  "turn_id": "turn_01HZZ",
+  "transcript_path": "/home/dev/.codex/sessions/demo.jsonl",
+  "cwd": "/home/dev/demo",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: README.md\n@@\n-Run it with `mix phx.server`.\n+Run it with `npm run dev`.\n*** End Patch\n"
+  },
+  "tool_use_id": "call_a11",
+  "tool_response": {
+    "output": "Success. Updated the following files:\nM README.md"
+  }
+}

@@ -536,12 +536,27 @@ fn an_uncaptured_dev_server_is_named_with_its_wrapped_form() {
     assert!(d.acks.is_empty(), "an intent nudge reads no entries");
 }
 
-/// Codex sends argv, and wraps the real command in `bash -lc`. `mix compile` finishes, so
-/// nothing should be said about it either way.
 #[test]
-fn a_codex_argv_command_is_understood_rather_than_ignored() {
+fn a_codex_bash_command_is_read_as_a_string() {
     let p = payload::parse(&golden("codex_post_tool_use"), Some(Harness::Codex)).unwrap();
     assert_eq!(p.command.as_deref(), Some("mix compile"));
+}
+
+/// Older Codex builds sent argv and wrapped the real command in `bash -lc`.
+#[test]
+fn a_legacy_codex_argv_command_is_still_understood() {
+    let input = r#"{"session_id":"s","cwd":"/tmp","hook_event_name":"PostToolUse",
+        "tool_name":"shell","tool_input":{"command":["bash","-lc","mix compile"]}}"#;
+    let p = payload::parse(input, Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("mix compile"));
+}
+
+/// Codex's `apply_patch` puts the patch body in `tool_input.command`. A patch is not a shell
+/// command, however much a line of it reads like one.
+#[test]
+fn a_codex_patch_body_is_not_read_as_a_command() {
+    let p = payload::parse(&golden("codex_apply_patch"), Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command, None);
 }
 
 #[test]
@@ -649,6 +664,135 @@ fn emit_config_prints_only_json_on_stdout() {
     // The Codex trust caveat goes to stderr so stdout stays pipeable.
     let codex = invoke(&["--emit-config", "codex"], "");
     assert!(String::from_utf8_lossy(&codex.stderr).contains("/hooks"));
+}
+
+#[test]
+fn emit_config_for_hermes_is_a_yaml_hooks_block() {
+    let out = invoke(&["--emit-config", "hermes"], "");
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("hooks:\n"), "{text}");
+    for event in ["  pre_llm_call:", "  pre_verify:"] {
+        assert!(text.contains(event), "missing {event}: {text}");
+    }
+    assert!(text.contains("--harness hermes"), "{text}");
+    assert!(text.contains("timeout: 10"), "{text}");
+}
+
+#[test]
+fn emit_config_for_pi_is_an_extension_that_calls_this_binary() {
+    let out = invoke(&["--emit-config", "pi"], "");
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let exe = serde_json::to_string(env!("CARGO_BIN_EXE_logbear-hook")).unwrap();
+    assert!(
+        text.contains(&exe),
+        "the hook path must be baked in: {text}"
+    );
+    assert!(
+        !text.contains("__LOGBEAR_HOOK__"),
+        "placeholder left in: {text}"
+    );
+    for event in ["before_agent_start", "tool_result", "agent_before_settle"] {
+        assert!(text.contains(event), "missing {event}");
+    }
+}
+
+// --------------------------------------------------------------------------- hermes
+
+#[test]
+fn hermes_payloads_are_recognised_without_the_flag() {
+    let first = payload::parse(&golden("hermes_pre_llm_call_first"), None).unwrap();
+    assert_eq!(first.harness, Harness::Hermes);
+    assert_eq!(first.event, Event::SessionStart);
+
+    let later = payload::parse(&golden("hermes_pre_llm_call"), None).unwrap();
+    assert_eq!(later.event, Event::PostToolUse);
+    assert_eq!(later.tool_name, None);
+
+    let verify = payload::parse(&golden("hermes_pre_verify"), None).unwrap();
+    assert_eq!(verify.event, Event::Stop);
+    assert!(!verify.stop_hook_active);
+    let again = payload::parse(&golden("hermes_pre_verify_reentrant"), None).unwrap();
+    assert!(
+        again.stop_hook_active,
+        "a nudged pre_verify is the re-entrant stop"
+    );
+}
+
+#[test]
+fn hermes_first_turn_gets_the_standing_rule_as_context() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    let out = run("hermes_pre_llm_call_first", Some(Harness::Hermes), &mut d);
+    let ctx = out["context"].as_str().unwrap_or_else(|| panic!("{out}"));
+    assert!(ctx.contains("logbear npm run dev"), "{ctx}");
+    assert_eq!(d.seen[0].2, "hermes");
+}
+
+/// `pre_verify` only fires on turns that edited code, so errors from any other turn are
+/// told at the start of the next one.
+#[test]
+fn hermes_later_turns_hear_about_unseen_errors() {
+    let mut d = FakeDaemon::with(UnreadState {
+        unseen_lines: 4,
+        ..unread()
+    });
+    let out = run("hermes_pre_llm_call", Some(Harness::Hermes), &mut d);
+    let ctx = out["context"].as_str().unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        ctx.contains("2 new errors") || ctx.contains("2 unread"),
+        "{ctx}"
+    );
+    assert_eq!(d.acks, vec![(None, AckKind::Nudge)]);
+}
+
+#[test]
+fn hermes_quiet_turns_say_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("hermes_pre_llm_call", Some(Harness::Hermes), &mut d),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn hermes_pre_verify_blocks_in_the_claude_dialect_it_accepts() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("hermes_pre_verify", Some(Harness::Hermes), &mut d);
+    assert_eq!(out["decision"], "block", "{out}");
+    assert!(out["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Ecto.NoResultsError"));
+    assert_eq!(d.acks, vec![(Some(1002), AckKind::StopBlock)]);
+}
+
+/// Hermes reads any message on `pre_verify` as "keep going", so a stop-time advisory has
+/// nowhere to go. It must not be marked as told either, or the next turn's context would
+/// skip errors nobody ever saw.
+#[test]
+fn hermes_reentrant_pre_verify_stays_silent_and_leaves_the_errors_unread() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("hermes_pre_verify_reentrant", Some(Harness::Hermes), &mut d);
+    assert_eq!(out, serde_json::json!({}));
+    assert!(d.acks.is_empty(), "{:?}", d.acks);
+}
+
+// --------------------------------------------------------------------------- pi
+
+/// The pi extension speaks Claude's dialect on both sides, so only the harness tag differs.
+#[test]
+fn pi_blocks_like_claude_under_its_own_name() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("claude_stop", Some(Harness::Pi), &mut d);
+    assert_eq!(out["decision"], "block", "{out}");
+    assert_eq!(d.seen[0].2, "pi");
 }
 
 fn invoke(args: &[&str], stdin: &str) -> std::process::Output {

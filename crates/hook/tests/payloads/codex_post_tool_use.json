@@ -6,8 +6,12 @@
   "model": "gpt-5-codex",
   "permission_mode": "default",
   "hook_event_name": "PostToolUse",
-  "tool_name": "shell",
-  "tool_input": { "command": ["bash", "-lc", "mix compile"] },
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "mix compile"
+  },
   "tool_use_id": "call_9f2",
-  "tool_response": { "output": "Compiling 1 file (.ex)" }
+  "tool_response": {
+    "output": "Compiling 1 file (.ex)"
+  }
 }

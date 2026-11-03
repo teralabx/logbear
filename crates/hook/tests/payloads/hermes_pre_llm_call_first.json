@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "pre_llm_call",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "hermes-sess-0001",
+  "cwd": "/home/dev/demo",
+  "profile": "default",
+  "extra": {
+    "task_id": "task_01",
+    "turn_id": "turn_01",
+    "user_message": "Fix the 500 on /api/users",
+    "is_first_turn": true,
+    "model": "hermes-4",
+    "platform": "cli",
+    "kanban_task_id": ""
+  }
+}

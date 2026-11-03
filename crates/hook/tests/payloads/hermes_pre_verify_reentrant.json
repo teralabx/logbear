@@ -1,0 +1,19 @@
+{
+  "hook_event_name": "pre_verify",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "hermes-sess-0001",
+  "cwd": "/home/dev/demo",
+  "profile": "default",
+  "extra": {
+    "platform": "cli",
+    "model": "hermes-4",
+    "coding": true,
+    "attempt": 1,
+    "final_response": "Done \u2014 the endpoint returns 200 now.",
+    "changed_paths": [
+      "lib/demo/repo.ex"
+    ],
+    "kanban_task_id": ""
+  }
+}

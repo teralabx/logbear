@@ -198,17 +198,23 @@ fn verify_nudge(lines: i64) -> String {
 /// * Codex's `Stop` output schema is `additionalProperties: false` and defines no
 ///   `hookSpecificOutput`; emitting `additionalContext` there fails the whole hook, and
 ///   non-empty stdout that does not parse as JSON is a hard hook failure.
-/// * Claude Code does not define `additionalContext` for `Stop`/`SubagentStop` either —
-///   in practice it comes back as "Stop hook feedback" that re-opens the turn and counts
-///   toward the consecutive-block cap. An advisory that keeps the agent running is a
-///   block wearing different clothes.
+/// * Claude Code does accept `hookSpecificOutput.additionalContext` on `Stop` and
+///   `SubagentStop`, but documents that "the conversation continues": it re-opens the turn
+///   and counts toward the consecutive-continuation cap. An advisory that keeps the agent
+///   running is a block wearing different clothes.
 ///
 /// So a stop-time advisory degrades to `systemMessage` everywhere: a UI warning that
 /// reaches the human, not the agent, while the turn is allowed to end.
-pub fn render(_harness: Harness, event: &Event, decision: &Decision) -> Value {
+///
+/// Hermes accepts the Claude block shape on `pre_verify`, but takes advisory text only as
+/// `{"context": …}` on `pre_llm_call`, and has no stop-time advisory at all: any message on
+/// `pre_verify` keeps the agent going. The pi extension translates the Claude shapes itself.
+pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({}),
         Decision::Block { reason, .. } => json!({ "decision": "block", "reason": reason }),
+        Decision::Context { .. } if harness == Harness::Hermes && event.is_stop() => json!({}),
+        Decision::Context { text, .. } if harness == Harness::Hermes => json!({ "context": text }),
         Decision::Context { text, .. } => {
             if event.is_stop() {
                 json!({ "systemMessage": text })
