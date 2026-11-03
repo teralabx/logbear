@@ -18,6 +18,8 @@
 		tildePath
 	} from '$lib/format';
 	import type { Run } from '$lib/api/types';
+	import { INLINE } from '$lib/icons';
+	import { ArrowRight } from '@lucide/svelte';
 
 	/**
 	 * Run history.
@@ -361,9 +363,9 @@
 			>
 			<button
 				type="button"
-				class="cursor-pointer rounded-[2px] bg-base-content px-[12px] py-[5px] text-[11.5px] font-medium text-base-100 disabled:cursor-not-allowed disabled:opacity-40"
+				class="inline-flex cursor-pointer items-center gap-1.5 rounded-[2px] bg-base-content px-[12px] py-[5px] text-[11.5px] font-medium text-base-100 disabled:cursor-not-allowed disabled:opacity-40"
 				disabled={selected.length !== 2}
-				onclick={openDiff}>Diff these two runs →</button
+				onclick={openDiff}>Diff these two runs <ArrowRight {...INLINE} aria-hidden="true" /></button
 			>
 		</div>
 	{/if}

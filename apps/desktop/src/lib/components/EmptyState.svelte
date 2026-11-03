@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { INLINE } from '$lib/icons';
+	import { Check, Copy } from '@lucide/svelte';
 
 	/**
 	 * Empty states teach. Every one of these says what would put content here,
@@ -37,11 +39,17 @@
 			>
 			<button
 				type="button"
-				class="flex-none cursor-pointer border-l border-hair bg-transparent px-2.5 text-[10px] tracking-[0.16em] text-meta uppercase hover:text-base-content"
+				class="grid flex-none cursor-pointer place-items-center border-l border-hair bg-transparent px-2.5 text-meta hover:text-base-content"
+				class:text-success={copied}
 				onclick={copy}
-				aria-label="Copy command to clipboard"
+				aria-label={copied ? 'Copied' : 'Copy command to clipboard'}
+				title={copied ? 'Copied' : 'Copy'}
 			>
-				{copied ? 'copied' : 'copy'}
+				{#if copied}<Check {...INLINE} size={13} aria-hidden="true" />{:else}<Copy
+						{...INLINE}
+						size={13}
+						aria-hidden="true"
+					/>{/if}
 			</button>
 		</div>
 	{/if}

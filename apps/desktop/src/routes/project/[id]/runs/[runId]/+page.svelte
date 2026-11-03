@@ -33,6 +33,8 @@
 		tildePath
 	} from '$lib/format';
 	import { LEVELS, type EntryView, type Level, type Run } from '$lib/api/types';
+	import { INLINE } from '$lib/icons';
+	import { ArrowLeft, ArrowRight } from '@lucide/svelte';
 
 	/** One stored run, replayed. Metadata first, then the output. */
 
@@ -219,12 +221,14 @@
 	sub={project ? `${project.name} · ${run ? fmtCommand(run.command) : ''}` : ''}
 >
 	{#snippet actions()}
-		<a class="text-[11px] text-meta hover:text-base-content" href="/project/{projectId}/runs"
-			>← all runs</a
+		<a
+			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			href="/project/{projectId}/runs"><ArrowLeft {...INLINE} aria-hidden="true" /> all runs</a
 		>
 		<a
-			class="text-[11px] text-meta hover:text-base-content"
-			href="/project/{projectId}/diff?b={runId}">diff against last good →</a
+			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			href="/project/{projectId}/diff?b={runId}"
+			>diff against last good <ArrowRight {...INLINE} aria-hidden="true" /></a
 		>
 		<button
 			type="button"
