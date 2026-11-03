@@ -18,6 +18,9 @@ pub const FLUSH_ENTRIES: usize = 100;
 pub const FLUSH_MICROS: i64 = 100_000;
 pub const FLUSH_BYTES: usize = 64 * 1024;
 
+/// How far a resumed run's start may sit from the moment its shim asked for it.
+pub const RESUME_WINDOW_MICROS: i64 = 60_000_000;
+
 pub struct Writer {
     db: Db,
     run_id: RunId,
@@ -104,6 +107,103 @@ impl Writer {
             mode: DelimiterMode::Fallback,
             mode_written: false,
         })
+    }
+
+    /// Reopens a run that lost its live writer, so the rest of its output lands in it
+    /// rather than in a new run.
+    ///
+    /// Returns `None` when the run cannot be continued: it is gone, its chunks were
+    /// evicted, or it already ended with an outcome, in which case appending would put
+    /// output after an exit the user has already seen.
+    ///
+    /// Run ids are rowids, which SQLite hands out again once the highest one is deleted, so
+    /// the id alone does not prove this is the run the shim started. It must also have the
+    /// same command and directory and have started within [`RESUME_WINDOW_MICROS`] of
+    /// `shim_started_at`, the moment the shim asked for it.
+    ///
+    /// Line count and sequence are read from `chunks` rather than from the run row: a run
+    /// closed by [`close_orphaned_runs`] never had its totals written. Counters come from
+    /// `run_counters`, which every flush keeps current.
+    pub fn resume(
+        db: &Db,
+        run_id: RunId,
+        stamp: &RunStamp,
+        shim_started_at: i64,
+        redactor: Arc<Redactor>,
+    ) -> Result<Option<Writer>> {
+        use rusqlite::OptionalExtension;
+
+        let command = serde_json::to_string(&stamp.command)?;
+        let found = db.with(|conn| {
+            let row: Option<(String, i64, Option<i32>, Option<String>)> = conn
+                .query_row(
+                    "SELECT delimiter_mode, chunks_evicted OR squashed_at IS NOT NULL, exit_code, signal
+                       FROM runs
+                      WHERE id = ?1 AND command = ?2 AND cwd = ?3
+                        AND started_at BETWEEN ?4 - ?5 AND ?4 + ?5",
+                    rusqlite::params![run_id, command, stamp.cwd, shim_started_at, RESUME_WINDOW_MICROS],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let Some((mode, evicted, exit_code, signal)) = row else {
+                return Ok(None);
+            };
+            if evicted != 0 || exit_code.is_some() || signal.is_some() {
+                return Ok(None);
+            }
+            let (total_lines, next_seq, total_bytes): (i64, i64, i64) = conn.query_row(
+                "SELECT COALESCE(max(first_line + n_lines), 0), COALESCE(max(seq) + 1, 0),
+                        COALESCE(sum(length(bytes)), 0)
+                   FROM chunks WHERE run_id = ?1",
+                [run_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            let counters = conn
+                .query_row(
+                    "SELECT n_entries, n_error, n_warn, n_info, n_debug, n_trace, n_unknown
+                       FROM run_counters WHERE run_id = ?1",
+                    [run_id],
+                    |r| {
+                        Ok(Counters {
+                            n_entries: r.get(0)?,
+                            n_error: r.get(1)?,
+                            n_warn: r.get(2)?,
+                            n_info: r.get(3)?,
+                            n_debug: r.get(4)?,
+                            n_trace: r.get(5)?,
+                            n_unknown: r.get(6)?,
+                        })
+                    },
+                )
+                .optional()?
+                .unwrap_or_default();
+            Ok(Some((DelimiterMode::parse(&mode), total_lines, next_seq, total_bytes, counters)))
+        })?;
+
+        let Some((mode, total_lines, next_seq, total_bytes, counters)) = found else {
+            return Ok(None);
+        };
+
+        // Reopened, so the home screen shows it live again until the spool is replayed.
+        db.with(|conn| {
+            conn.execute("UPDATE runs SET ended_at = NULL WHERE id = ?1", [run_id])?;
+            Ok(())
+        })?;
+        Ok(Some(Writer {
+            db: db.clone(),
+            run_id,
+            parser: Parser::resume(total_lines, mode).with_redactor(redactor),
+            buffered_lines: Vec::new(),
+            buffered_bytes: 0,
+            buffered_entries: Vec::new(),
+            next_seq,
+            last_flush: crate::now_micros(),
+            counters,
+            total_lines,
+            total_bytes,
+            mode,
+            mode_written: total_lines > 0,
+        }))
     }
 
     pub fn run_id(&self) -> RunId {

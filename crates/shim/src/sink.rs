@@ -1,6 +1,6 @@
 //! The daemon channel, and the spool it degrades to.
 //!
-//! [`Sink::offer`] is a `try_send` into a bounded queue and nothing else: it cannot block
+//! [`Sink::offer`] is a non-blocking send into a byte-budgeted queue and nothing else: it cannot block
 //! or fail upward, so the wrapped command is never slowed by the daemon's state. Everything
 //! that can block — socket writes, file creation, waiting for a reply — happens on the
 //! sender thread behind the queue, which has one failure response: stop talking to the
@@ -8,10 +8,15 @@
 //!
 //! The queue drops rather than blocks when it fills, which is what happens when the daemon
 //! accepts a connection and then wedges. Drops are counted and set a flag that makes the
-//! sender abandon the socket for the spool, so the loss is bounded by the queue depth and
-//! recorded in the spool header rather than silent.
+//! sender abandon the socket for the spool, so the loss is bounded by the queue's byte
+//! budget and recorded in the spool header rather than silent.
+//!
+//! The budget is in bytes, not messages: a line-buffered child writes one line per pty
+//! read, so a message cap of a thousand was overrun by any ordinary burst — a test runner
+//! printing its summary, a bundler listing modules — while the daemon was healthy and only
+//! a few milliseconds behind. That split the run and lost the overflow.
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 use logbear_core::client::Client;
 use logbear_core::model::{RunId, RunStamp};
 use logbear_core::paths;
@@ -19,13 +24,13 @@ use logbear_core::proto::{Frame, Request, SpoolHeader};
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Deep enough to ride out a scheduler hiccup, shallow enough that a wedged daemon costs a
-/// bounded amount of memory.
-const QUEUE_DEPTH: usize = 1024;
+/// Captured bytes the queue may hold before the daemon is judged wedged. Several seconds of
+/// a firehose at the daemon's ingest rate, and still a bounded cost if it really has hung.
+const QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
 /// How long the sender waits for more bytes before flushing, so a quiet stream does not
 /// leave its last line in a buffer where the live view cannot see it.
@@ -48,6 +53,8 @@ enum Msg {
 
 pub struct Sink {
     tx: Sender<Msg>,
+    /// Payload bytes sitting in the queue, charged by `offer` and refunded by the sender.
+    queued: Arc<AtomicUsize>,
     dropped: Arc<AtomicU64>,
     degrade: Arc<AtomicBool>,
     done: Receiver<()>,
@@ -63,8 +70,9 @@ impl Sink {
         stamp: RunStamp,
         started_at: i64,
     ) -> Sink {
-        let (tx, rx) = bounded(QUEUE_DEPTH);
+        let (tx, rx) = unbounded();
         let (done_tx, done) = bounded(1);
+        let queued = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicU64::new(0));
         let degrade = Arc::new(AtomicBool::new(false));
 
@@ -74,6 +82,7 @@ impl Sink {
             token,
             stamp,
             started_at,
+            queued: queued.clone(),
             dropped: dropped.clone(),
             degrade: degrade.clone(),
             pending: 0,
@@ -89,6 +98,7 @@ impl Sink {
 
         Sink {
             tx,
+            queued,
             dropped,
             degrade,
             done,
@@ -105,15 +115,21 @@ impl Sink {
 
     /// Queues a chunk of captured output. Never blocks.
     pub fn offer(&self, captured_at: i64, bytes: &[u8]) {
-        let msg = Msg::Data {
-            captured_at,
-            bytes: bytes.to_vec(),
-        };
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(msg) {
+        if self.queued.fetch_add(bytes.len(), Ordering::Relaxed) + bytes.len() > QUEUE_BYTES {
+            self.queued.fetch_sub(bytes.len(), Ordering::Relaxed);
             self.dropped.fetch_add(1, Ordering::Relaxed);
             // The sender is stuck on a socket that is not draining; a local spool file
             // cannot wedge the same way.
             self.degrade.store(true, Ordering::Relaxed);
+            return;
+        }
+        let msg = Msg::Data {
+            captured_at,
+            bytes: bytes.to_vec(),
+        };
+        if self.tx.send(msg).is_err() {
+            // The sender has gone; nothing will refund this charge.
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -152,6 +168,7 @@ struct SenderState {
     token: String,
     stamp: RunStamp,
     started_at: i64,
+    queued: Arc<AtomicUsize>,
     dropped: Arc<AtomicU64>,
     degrade: Arc<AtomicBool>,
     pending: usize,
@@ -169,6 +186,7 @@ impl SenderState {
             }
             match rx.recv_timeout(FLUSH_INTERVAL) {
                 Ok(Msg::Data { captured_at, bytes }) => {
+                    self.queued.fetch_sub(bytes.len(), Ordering::Relaxed);
                     self.write_data(captured_at, &bytes);
                 }
                 Ok(Msg::Resize { cols, rows }) => self.write_resize(cols, rows),
@@ -568,7 +586,7 @@ mod tests {
 
         let token = local_token();
         let sink = Sink::start(None, None, token.clone(), RunStamp::default(), 1);
-        for i in 0..(QUEUE_DEPTH * 2) {
+        for i in 0..4096 {
             sink.offer(i as i64, b"line\r\n");
         }
         sink.finish(Some(0), None);
@@ -576,5 +594,44 @@ mod tests {
         let path = paths::spool_file(&token);
         assert!(path.exists(), "no spool file at {}", path.display());
         std::env::remove_var("LOGBEAR_HOME");
+    }
+
+    #[test]
+    fn a_burst_of_short_lines_is_queued_not_dropped() {
+        let (tx, _rx) = unbounded();
+        let (_done_tx, done) = bounded(1);
+        let sink = Sink {
+            tx,
+            queued: Arc::new(AtomicUsize::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            degrade: Arc::new(AtomicBool::new(false)),
+            done,
+        };
+        // Nothing draining at all: tens of thousands of lines still fit the budget.
+        for i in 0..50_000 {
+            sink.offer(i, b"[info] request handled in 12ms\r\n");
+        }
+        assert_eq!(sink.dropped.load(Ordering::Relaxed), 0);
+        assert!(!sink.degrade.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_queue_over_its_byte_budget_degrades() {
+        let (tx, _rx) = unbounded();
+        let (_done_tx, done) = bounded(1);
+        let sink = Sink {
+            tx,
+            queued: Arc::new(AtomicUsize::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            degrade: Arc::new(AtomicBool::new(false)),
+            done,
+        };
+        let chunk = vec![b'x'; 64 * 1024];
+        for i in 0..(QUEUE_BYTES / chunk.len() + 1) {
+            sink.offer(i as i64, &chunk);
+        }
+        assert_eq!(sink.dropped.load(Ordering::Relaxed), 1);
+        assert!(sink.degrade.load(Ordering::Relaxed));
+        assert_eq!(sink.queued.load(Ordering::Relaxed), QUEUE_BYTES);
     }
 }

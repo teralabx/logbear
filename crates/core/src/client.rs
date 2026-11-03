@@ -175,14 +175,14 @@ impl Client {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
         self.call(&Request::Ack {
             project,
             session_id: session_id.to_string(),
             harness: harness.to_string(),
             entry_id,
-            record_block,
+            kind,
         })
     }
 
@@ -212,6 +212,17 @@ impl Client {
         &mut self,
         project: ProjectRef,
         run_id: RunId,
+        sink: impl FnMut(&[u8]) -> std::io::Result<()>,
+    ) -> Result<()> {
+        self.raw_tail(project, run_id, None, sink)
+    }
+
+    /// [`Client::raw_stream`] limited to the last `tail_lines` lines, or all of them.
+    pub fn raw_tail(
+        &mut self,
+        project: ProjectRef,
+        run_id: RunId,
+        tail_lines: Option<i64>,
         mut sink: impl FnMut(&[u8]) -> std::io::Result<()>,
     ) -> Result<()> {
         self.send(&Frame::json(&Request::RawStream {
@@ -219,6 +230,7 @@ impl Client {
             run_id,
             start_line: None,
             end_line: None,
+            tail_lines,
         })?)?;
         loop {
             match self.recv()? {
@@ -328,13 +340,24 @@ pub fn spawn_daemon() -> Result<()> {
         .map_err(|e| Error::io(paths::daemon_log(), e))?;
     let err = log.try_clone()?;
 
-    Command::new(bin)
-        .arg("serve")
+    let mut cmd = Command::new(bin);
+    cmd.arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(err))
-        .spawn()
-        .map_err(|e| Error::io(paths::home(), e))?;
+        .stderr(Stdio::from(err));
+
+    // Its own session, or it inherits the terminal's foreground process group and every
+    // Ctrl-C meant for the wrapped command takes the daemon down with it — which looks like
+    // a daemon that keeps dying, and leaves the next invocation to start another one.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| match libc::setsid() {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        });
+    }
+
+    cmd.spawn().map_err(|e| Error::io(paths::home(), e))?;
     Ok(())
 }
 

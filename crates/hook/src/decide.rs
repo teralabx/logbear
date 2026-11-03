@@ -4,6 +4,7 @@
 //! is a pure function of the decision and the harness. Both are kept free of I/O so the
 //! loop-safety rules are testable without a socket.
 
+use crate::intent::{self, Intent};
 use crate::payload::{Event, Harness};
 use logbear_core::model::EntryView;
 use logbear_core::proto::UnreadState;
@@ -14,61 +15,208 @@ const MAX_ENTRIES: usize = 5;
 /// Per-entry character cap. A single Elixir stack trace can run to several KB.
 const MAX_ENTRY_CHARS: usize = 1_200;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
-    /// Say nothing. The common case.
-    Allow,
-    /// Stop events only: the agent is forced to continue with `reason` in front of it.
-    Block { reason: String },
-    /// Advisory text. Never interrupts the turn.
-    Context { text: String },
+/// Which allowance a block spends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Budget {
+    /// The Stop gate: the last thing standing between a broken change and "done".
+    Stop,
+    /// A mid-turn interruption, on its own smaller allowance.
+    Change,
 }
 
-pub fn decide(event: &Event, unread: &UnreadState) -> Decision {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Say nothing. The common case, and the one most rules end at.
+    Allow,
+    /// The agent is forced to continue with `reason` in front of it.
+    Block { reason: String, budget: Budget },
+    /// Advisory text. Never interrupts the turn.
+    ///
+    /// `ack_nudge` advances the nudge cursor, so mid-turn advice is given once per batch
+    /// of new output rather than on every tool call. The nudge cursor and not the error
+    /// cursor: the errors themselves are still the Stop hook's to consume.
+    Context { text: String, ack_nudge: bool },
+}
+
+/// Everything the rules read, so the signature does not grow a parameter per rule.
+pub struct Input<'a> {
+    pub event: &'a Event,
+    pub tool: Option<&'a str>,
+    pub command: Option<&'a str>,
+    /// The harness's own re-entrancy flag: a hook already blocked the preceding stop.
+    pub stop_hook_active: bool,
+}
+
+impl Input<'_> {
+    /// Tools that change code. Both harnesses' names, since one binary serves both.
+    fn is_change(&self) -> bool {
+        matches!(
+            self.tool,
+            Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch" | "edit_file")
+        )
+    }
+}
+
+pub fn decide(input: &Input, unread: &UnreadState) -> Decision {
     // Push is off for this project; nothing else applies.
     if !unread.push_enabled {
         return Decision::Allow;
     }
-    if unread.is_empty() {
-        return Decision::Allow;
-    }
 
-    match event {
+    match input.event {
+        // Said once, up front, so the agent gets it right the first time rather than being
+        // corrected after the first server's output is already lost.
+        Event::SessionStart => Decision::Context {
+            text: STANDING_RULE.to_string(),
+            ack_nudge: false,
+        },
+
+        Event::Stop | Event::SubagentStop if unread.is_empty() => Decision::Allow,
+        // The harness says a hook already blocked the stop this turn, so the agent has been
+        // told once and blocking again cannot teach it anything new. This outranks the block
+        // budget on purpose: the budget lives in the session cursor, so anything that stops
+        // that cursor persisting — a failed ack, a session id that changes between
+        // invocations — spends an allowance that never depletes and the agent is trapped
+        // until the harness's own consecutive-block cap saves it. This flag arrives on every
+        // payload and needs nothing to have been written down.
+        Event::Stop | Event::SubagentStop if input.stop_hook_active => Decision::Context {
+            text: summary(unread),
+            ack_nudge: false,
+        },
+        // Every unread signature has already been surfaced to this session — by an
+        // earlier block or a read the daemon verified. Re-blocking on them cannot teach
+        // the agent anything new; only an unseen signature is worth a turn.
+        Event::Stop | Event::SubagentStop if unread.new_signatures == 0 => Decision::Context {
+            text: recurring_summary(unread),
+            ack_nudge: false,
+        },
         // Past the block budget, errors degrade to advisory context: blocking without a cap
         // traps the agent forever.
         Event::Stop | Event::SubagentStop if unread.blocks_remaining > 0 => Decision::Block {
             reason: block_reason(unread),
+            budget: Budget::Stop,
         },
         Event::Stop | Event::SubagentStop => Decision::Context {
             text: summary(unread),
+            ack_nudge: false,
         },
-        Event::PostToolUse => Decision::Context {
-            text: summary(unread),
-        },
+
+        Event::PostToolUse => post_tool_use(input, unread),
         Event::Other(_) => Decision::Allow,
     }
+}
+
+/// One message per event, and an error is always the more useful one.
+fn post_tool_use(input: &Input, unread: &UnreadState) -> Decision {
+    if !unread.is_empty() {
+        // A signature this project has never produced, arriving right after a change, is
+        // almost certainly that change — and is cheapest to fix while the agent still has
+        // the context for it. A recurring one is not: it was already there.
+        if input.is_change() && unread.new_signatures > 0 && unread.change_blocks_remaining > 0 {
+            return Decision::Block {
+                reason: block_reason(unread),
+                budget: Budget::Change,
+            };
+        }
+        // Everything unread is behind the nudge cursor, so an earlier advisory or nudge
+        // already mentioned it; saying it again on every tool call teaches the agent to
+        // ignore the whole channel.
+        if unread.unseen_lines == 0 {
+            return Decision::Allow;
+        }
+        return Decision::Context {
+            text: summary(unread),
+            ack_nudge: true,
+        };
+    }
+
+    // Nothing has gone wrong that logbear can see. The change may still be wrong, and the
+    // running process is the only thing that knows.
+    if input.is_change() && unread.server_running && unread.unseen_lines > 0 {
+        return Decision::Context {
+            text: verify_nudge(unread.unseen_lines),
+            ack_nudge: true,
+        };
+    }
+
+    if let Some(command) = input.command {
+        return match intent::classify(command) {
+            Intent::StartsServer { suggested } => Decision::Context {
+                text: format!(
+                    "logbear: that process is running uncaptured, so nothing is recording its \
+                     output and its errors will not reach you. Stop it and start it again as \
+                     `{suggested}`.",
+                ),
+                ack_nudge: false,
+            },
+            // Only worth saying when there is something to redirect to; on a project with
+            // nothing captured the advice points at an empty database.
+            Intent::ChasesBug if unread.server_running => Decision::Context {
+                text: "logbear: this project's output is already captured. \
+                       `logbear logs --level error`, or the logbear MCP tools, cover the whole \
+                       run rather than whatever happened to reach that file."
+                    .to_string(),
+                ack_nudge: false,
+            },
+            _ => Decision::Allow,
+        };
+    }
+
+    Decision::Allow
+}
+
+/// What the agent needs to know before it starts anything.
+///
+/// Deliberately does not claim this project is already being captured: the rule fires in
+/// every session, and the one where it matters most is a project logbear has never seen.
+const STANDING_RULE: &str = "\
+logbear captures long-running processes and surfaces their errors to you. Start dev servers, \
+watchers — anything that runs until you kill it — with `logbear` in front, for example \
+`logbear npm run dev` or `logbear mix phx.server`. Once one is running you can read its \
+output with `logbear logs`. One-off commands like tests and builds do not need it, since you \
+already see their output.";
+
+/// The change landed and the process reacted. Whether it reacted *well* is the part the agent
+/// cannot know without looking, and a clean compile is not an answer.
+fn verify_nudge(lines: i64) -> String {
+    format!(
+        "logbear: the running process logged {lines} new line{} after your change. Read them \
+         with `logbear logs` or the logbear MCP tools to confirm it did what you intended — \
+         a change that compiles can still be wrong.",
+        plural(lines),
+    )
 }
 
 /// The JSON a harness expects on stdout.
 ///
 /// Both dialects agree on `{"decision":"block","reason":...}` and on
-/// `hookSpecificOutput.additionalContext` for advisory text, and diverge in one place:
+/// `hookSpecificOutput.additionalContext` for advisory text on `PostToolUse` (Codex wants
+/// `hookEventName` in camelCase and required even though the input field is snake_case).
+///
+/// Stop events have no model-visible, non-blocking channel in either dialect:
 ///
 /// * Codex's `Stop` output schema is `additionalProperties: false` and defines no
-///   `hookSpecificOutput`; emitting `additionalContext` there fails the whole hook. Its
-///   only non-blocking key is `systemMessage`, which Codex renders as a UI warning and
-///   never puts in front of the model, so a degraded stop reaches the human and not the
-///   agent.
-/// * Codex's `PostToolUse` does carry `hookSpecificOutput`, with `hookEventName` in
-///   camelCase and required even though the input field is snake_case.
+///   `hookSpecificOutput`; emitting `additionalContext` there fails the whole hook, and
+///   non-empty stdout that does not parse as JSON is a hard hook failure.
+/// * Claude Code does accept `hookSpecificOutput.additionalContext` on `Stop` and
+///   `SubagentStop`, but documents that "the conversation continues": it re-opens the turn
+///   and counts toward the consecutive-continuation cap. An advisory that keeps the agent
+///   running is a block wearing different clothes.
 ///
-/// On Codex `Stop`, non-empty stdout that does not parse as JSON is a hard hook failure.
+/// So a stop-time advisory degrades to `systemMessage` everywhere: a UI warning that
+/// reaches the human, not the agent, while the turn is allowed to end.
+///
+/// Hermes accepts the Claude block shape on `pre_verify`, but takes advisory text only as
+/// `{"context": …}` on `pre_llm_call`, and has no stop-time advisory at all: any message on
+/// `pre_verify` keeps the agent going. The pi extension translates the Claude shapes itself.
 pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
     match decision {
         Decision::Allow => json!({}),
-        Decision::Block { reason } => json!({ "decision": "block", "reason": reason }),
-        Decision::Context { text } => {
-            if harness == Harness::Codex && event.is_stop() {
+        Decision::Block { reason, .. } => json!({ "decision": "block", "reason": reason }),
+        Decision::Context { .. } if harness == Harness::Hermes && event.is_stop() => json!({}),
+        Decision::Context { text, .. } if harness == Harness::Hermes => json!({ "context": text }),
+        Decision::Context { text, .. } => {
+            if event.is_stop() {
                 json!({ "systemMessage": text })
             } else {
                 json!({
@@ -80,6 +228,17 @@ pub fn render(harness: Harness, event: &Event, decision: &Decision) -> Value {
             }
         }
     }
+}
+
+/// The degraded stop: errors exist, but this session has seen every signature.
+fn recurring_summary(u: &UnreadState) -> String {
+    format!(
+        "logbear: {} unread error{}, but every signature is one you have already seen \
+         this session — nothing new to account for. Recheck with `logbear logs --level \
+         error` if that seems wrong.",
+        u.new_errors,
+        plural(u.new_errors),
+    )
 }
 
 /// The blocking form: the entries, their templates, whether each is new, and the run.
@@ -94,7 +253,12 @@ fn block_reason(u: &UnreadState) -> String {
         if u.new_errors == 1 { "it" } else { "them" },
     ));
 
-    for (i, e) in u.entries.iter().take(MAX_ENTRIES).enumerate() {
+    let mut entries: Vec<&EntryView> = u.entries.iter().collect();
+    // The new signatures are why this block fired; MAX_ENTRIES must never truncate
+    // them away in favour of recurring ones. Stable, so chronology holds within each group.
+    entries.sort_by_key(|e| !e.is_new_signature);
+
+    for (i, e) in entries.iter().take(MAX_ENTRIES).enumerate() {
         out.push('\n');
         out.push_str(&format!(
             "[{}] {} · run {} · {} · {}\n",
@@ -123,9 +287,9 @@ fn block_reason(u: &UnreadState) -> String {
         }
     }
 
-    let shown = u.entries.len().min(MAX_ENTRIES);
-    if u.entries.len() > shown {
-        out.push_str(&format!("\n… and {} more.\n", u.entries.len() - shown));
+    let shown = entries.len().min(MAX_ENTRIES);
+    if entries.len() > shown {
+        out.push_str(&format!("\n… and {} more.\n", entries.len() - shown));
     }
     out.push_str(
         "\nUse the logbear MCP tools to investigate, or run `logbear logs --level error`. \
@@ -142,12 +306,16 @@ fn summary(u: &UnreadState) -> String {
     let newest = u
         .entries
         .last()
-        .map(|e| {
+        .and_then(|e| {
             let head = e
                 .template
                 .clone()
                 .unwrap_or_else(|| e.text.lines().next().unwrap_or_default().to_string());
-            format!(" Most recent: {}", one_line(&truncate(&head, 200)))
+            let head = one_line(&truncate(&head, 200));
+            let head = head.trim();
+            // An entry whose template and first line are both blank would render as
+            // "Most recent: " followed by nothing, which reads like a bug.
+            (!head.is_empty()).then(|| format!(" Most recent: {head}."))
         })
         .unwrap_or_default();
     format!(

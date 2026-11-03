@@ -82,10 +82,43 @@ pub struct EntryFilter {
     /// Oldest-first instead of newest-first.
     #[serde(default)]
     pub ascending: bool,
+    /// Only instances of this error signature.
+    #[serde(default)]
+    pub fingerprint_id: Option<FingerprintId>,
+    /// Read on behalf of a person rather than an agent, so it leaves no read receipt.
+    /// A human looking at an error in the desktop app has not told the agent about it.
+    #[serde(default)]
+    pub unobserved: bool,
 }
 
 fn default_limit() -> usize {
     100
+}
+
+fn default_history() -> usize {
+    30
+}
+
+/// One run's point on a signature's sparkline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryPoint {
+    pub run_id: RunId,
+    pub count: i64,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintHistory {
+    pub fingerprint_id: FingerprintId,
+    pub points: Vec<HistoryPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunErrorCount {
+    pub run_id: RunId,
+    pub total: i64,
+    /// Errors whose signature was first seen in this project by that entry.
+    pub new: i64,
 }
 
 impl Default for EntryFilter {
@@ -103,7 +136,47 @@ impl Default for EntryFilter {
             limit: default_limit(),
             offset: 0,
             ascending: false,
+            fingerprint_id: None,
+            unobserved: false,
         }
+    }
+}
+
+/// Two mid-turn interruptions per session. Enough to catch the change that just broke
+/// something; few enough that a flapping server cannot hold the agent hostage.
+fn default_change_block_budget() -> i64 {
+    2
+}
+
+/// What an [`Request::Ack`] is acknowledging.
+///
+/// A session keeps two watermarks because it is asked two different questions. "Which errors
+/// are new?" may only advance when errors are reported to the agent; "which lines has the
+/// agent not looked at yet?" advances whenever it is told to go look. One watermark serving
+/// both would let a nudge silently consume errors the Stop hook exists to surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AckKind {
+    /// The agent read these entries. Advances the error cursor, charges nothing.
+    #[default]
+    Seen,
+    /// A Stop block: advance the error cursor and charge the Stop budget.
+    StopBlock,
+    /// A PostToolUse block: advance the error cursor and charge the change budget.
+    ChangeBlock,
+    /// A verify nudge: advance the nudge cursor only.
+    Nudge,
+}
+
+impl AckKind {
+    /// Whether this reports errors to the agent, and so must advance the error cursor.
+    /// A block whose watermark did not move re-fires on the same errors forever.
+    pub fn advances_errors(self) -> bool {
+        !matches!(self, AckKind::Nudge)
+    }
+
+    pub fn is_block(self) -> bool {
+        matches!(self, AckKind::StopBlock | AckKind::ChangeBlock)
     }
 }
 
@@ -162,6 +235,10 @@ pub enum Request {
         run_id: RunId,
         start_line: Option<i64>,
         end_line: Option<i64>,
+        /// Only the last this-many lines of the run. Overrides `start_line`; what a
+        /// terminal replay wants, since its scrollback could not hold more anyway.
+        #[serde(default)]
+        tail_lines: Option<i64>,
     },
     Fingerprints {
         project: ProjectRef,
@@ -169,6 +246,22 @@ pub enum Request {
         limit: usize,
         #[serde(default)]
         errors_only: bool,
+        /// See [`EntryFilter::unobserved`].
+        #[serde(default)]
+        unobserved: bool,
+    },
+    /// Per-run occurrence counts for several signatures over the most recent `limit` runs,
+    /// oldest first, zero-filled. One round trip for a screen of sparklines.
+    FingerprintHistories {
+        project: ProjectRef,
+        fingerprint_ids: Vec<FingerprintId>,
+        #[serde(default = "default_history")]
+        limit: usize,
+    },
+    /// Error totals per run, and how many of those were a signature's first sighting.
+    RunErrorCounts {
+        project: ProjectRef,
+        run_ids: Vec<RunId>,
     },
     /// Read-only SQL, run inside the sandbox described in the design spec §9.4.
     Query {
@@ -202,15 +295,15 @@ pub enum Request {
         session_id: String,
         harness: String,
     },
-    /// Advances the session watermark.
+    /// Advances one of the session's watermarks.
     Ack {
         project: ProjectRef,
         session_id: String,
         harness: String,
         entry_id: Option<EntryId>,
-        /// Set by the hook when it issues a block, so the block budget is charged.
+        /// Which watermark to move, and which budget to charge.
         #[serde(default)]
-        record_block: bool,
+        kind: AckKind,
     },
 
     // ---- settings ----
@@ -237,6 +330,12 @@ pub enum Request {
     DeleteRun {
         project: ProjectRef,
         run_id: RunId,
+    },
+    /// Rewrites one finished run's stored output, or every finished run's, down to the
+    /// first occurrence of each distinct entry. Counts and signatures are kept.
+    Squash {
+        project: ProjectRef,
+        run_id: Option<RunId>,
     },
 
     // ---- live ----
@@ -340,7 +439,20 @@ pub struct UnreadState {
     pub newest_entry_id: Option<EntryId>,
     pub blocks_issued: i64,
     pub blocks_remaining: i64,
+    /// PostToolUse blocks left, on their own allowance. Kept apart from `blocks_remaining`
+    /// so a noisy turn cannot leave the Stop gate unable to block when it matters most.
+    #[serde(default)]
+    pub change_blocks_remaining: i64,
     pub push_enabled: bool,
+    /// Entries of any level after the nudge cursor. The verify nudge fires on this rather
+    /// than on `new_errors`: a change that logged only a clean reload still deserves a look,
+    /// and one that logged nothing at all deserves silence.
+    #[serde(default)]
+    pub unseen_lines: i64,
+    /// Whether a run is open for this project. Nothing is worth checking if nothing is
+    /// running to produce it.
+    #[serde(default)]
+    pub server_running: bool,
     /// Ready-to-inject entries, newest last. Capped by the caller's budget.
     pub entries: Vec<EntryView>,
 }
@@ -395,6 +507,10 @@ pub struct Settings {
     pub quiet_hours: Option<QuietHours>,
     /// Blocks issued per agent session before push degrades to advisory context.
     pub block_budget: i64,
+    /// PostToolUse blocks per session. Deliberately smaller than `block_budget` and charged
+    /// separately: interrupting mid-turn is a bigger imposition than interrupting a stop.
+    #[serde(default = "default_change_block_budget")]
+    pub change_block_budget: i64,
     pub push_enabled: bool,
     /// Commands never captured, being interactive sessions rather than runs.
     pub denylist: Vec<String>,
@@ -409,6 +525,7 @@ impl Default for Settings {
             notifications_enabled: true,
             quiet_hours: None,
             block_budget: 3,
+            change_block_budget: default_change_block_budget(),
             push_enabled: true,
             denylist: [
                 "psql", "mysql", "sqlite3", "redis-cli", "ssh", "vim", "nvim", "vi", "nano",
@@ -484,6 +601,22 @@ pub struct LockfileChange {
     pub hash_b: Option<String>,
 }
 
+/// What a squash did. `bytes_*` are the project database's size on disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquashReport {
+    pub runs: usize,
+    pub entries_dropped: usize,
+    pub bytes_before: i64,
+    pub bytes_after: i64,
+}
+
+/// What a retention sweep did: runs squashed first, then runs evicted if that was not enough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sweep {
+    pub squashed: usize,
+    pub evicted: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetentionState {
     pub project_id: ProjectId,
@@ -491,6 +624,9 @@ pub struct RetentionState {
     pub bytes_cap: i64,
     pub runs_total: i64,
     pub runs_evicted: i64,
+    /// Runs whose stored output was squashed to its unique entries.
+    #[serde(default)]
+    pub runs_squashed: i64,
     pub oldest_run_at: Option<i64>,
 }
 

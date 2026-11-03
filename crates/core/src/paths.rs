@@ -4,7 +4,7 @@
 //! ~/.logbear/
 //!   index.db                  project registry, global run summaries, settings
 //!   logbeard.sock              daemon control socket
-//!   logbeard.pid
+//!   logbeard.pid              the daemon's `flock`ed single-instance lock; holds its pid
 //!   logbeard.log
 //!   projects/<hash>.db        one database per project
 //!   spool/<uuid>.spool        shim fallback when the daemon is unreachable (C2)
@@ -43,6 +43,9 @@ pub fn socket() -> PathBuf {
     home().join("logbeard.sock")
 }
 
+/// The daemon's lock file, which doubles as the record of its pid. Held open and `flock`ed
+/// for as long as the daemon runs, so "is a daemon alive?" is a lock probe rather than a
+/// guess about a file that an unclean kill would have left behind either way.
 pub fn pid_file() -> PathBuf {
     home().join("logbeard.pid")
 }

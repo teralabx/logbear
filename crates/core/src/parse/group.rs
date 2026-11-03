@@ -11,6 +11,7 @@
 //! whereas over-merging destroys the boundary fingerprinting keys on and makes two
 //! different failures share one identity.
 
+use super::severity;
 use crate::model::DelimiterMode;
 use regex::Regex;
 use std::sync::LazyLock;
@@ -83,6 +84,9 @@ pub struct Grouper {
     pending_blanks: i64,
     /// Inside a Python-style block whose terminator has not arrived yet.
     in_python_block: bool,
+    /// The open group's first line declared an error, so an exception banner after it is
+    /// that error's detail rather than a new entry.
+    open_declares_error: bool,
 }
 
 impl Grouper {
@@ -92,6 +96,7 @@ impl Grouper {
             open: None,
             pending_blanks: 0,
             in_python_block: false,
+            open_declares_error: false,
         }
     }
 
@@ -124,6 +129,7 @@ impl Grouper {
             let closed = self.open.take();
             self.pending_blanks = 0;
             self.in_python_block = BLOCK_OPENER.is_match(line.text);
+            self.open_declares_error = severity::declares_error(line.text);
             self.open = Some(Group {
                 start_line: line.index,
                 end_line: line.index,
@@ -145,6 +151,7 @@ impl Grouper {
                     // A continuation with nothing to continue: the run began mid-trace, or
                     // the previous group was flushed on an idle gap. Invariant 1 requires
                     // it to land somewhere, so it opens its own group.
+                    self.open_declares_error = false;
                     self.open = Some(Group {
                         start_line: line.index,
                         end_line: line.index,
@@ -160,6 +167,7 @@ impl Grouper {
     pub fn flush(&mut self) -> Option<Group> {
         self.pending_blanks = 0;
         self.in_python_block = false;
+        self.open_declares_error = false;
         self.open.take()
     }
 
@@ -184,7 +192,13 @@ impl Grouper {
                 t.starts_with('{')
             }
             DelimiterMode::ColourBracket => super::mode::starts_with_sgr(line.raw),
-            DelimiterMode::Prefix => super::mode::LINE_START.is_match(line.text),
+            // An unprefixed exception banner fails LINE_START, and continuing the entry
+            // before it would put the throw under that entry's declared level, usually
+            // `[info]`. It starts its own entry unless that entry already declared an error.
+            DelimiterMode::Prefix => {
+                super::mode::LINE_START.is_match(line.text)
+                    || (!self.open_declares_error && severity::is_structural_banner(line.text))
+            }
             // No delimiter to go on, so break toward a new entry.
             DelimiterMode::Fallback => true,
         }
@@ -329,6 +343,28 @@ mod tests {
         assert_partition(RUBY, &groups);
         assert_whole_groups(RUBY, &groups);
         assert_eq!((groups[1].start_line, groups[1].end_line), (1, 3));
+    }
+
+    const PREFIXED_NODE: &[&[u8]] = &[
+        b"[info] request 1000 handled in 12ms",
+        b"Error: upstream timeout on shard 4",
+        b"    at fetch (/app/net.js:10:5)",
+        b"[info] request 1001 handled in 9ms",
+        b"[error] request 1002 failed",
+        b"Error: upstream timeout on shard 5",
+        b"    at fetch (/app/net.js:10:5)",
+    ];
+
+    #[test]
+    fn an_exception_banner_does_not_continue_a_prefixed_entry() {
+        // Unprefixed, the banner fails LINE_START and would fold into the `[info]` line,
+        // whose declared level then hides the exception.
+        let groups = group_all(DelimiterMode::Prefix, PREFIXED_NODE);
+        assert_partition(PREFIXED_NODE, &groups);
+        assert_whole_groups(PREFIXED_NODE, &groups);
+        let spans: Vec<_> = groups.iter().map(|g| (g.start_line, g.end_line)).collect();
+        // A header that already declared an error keeps its banner: one failure, one entry.
+        assert_eq!(spans, vec![(0, 0), (1, 2), (3, 3), (4, 6)], "{groups:#?}");
     }
 
     #[test]

@@ -13,7 +13,9 @@
 ///
 /// * 2 — severity is read rather than inferred. Adds `entries.evidence` and recomputes
 ///   every existing entry's level.
-pub const DERIVED_VERSION: i64 = 2;
+/// * 3 — in prefix mode an unprefixed exception banner starts its own entry instead of
+///   continuing the one before it, so existing entries are regrouped.
+pub const DERIVED_VERSION: i64 = 3;
 /// Bumped when truth-layer tables change shape. Requires a migration.
 pub const SCHEMA_VERSION: i64 = 1;
 
@@ -30,6 +32,30 @@ DROP TABLE IF EXISTS run_fingerprints;
 DROP TABLE IF EXISTS run_counters;
 DROP TABLE IF EXISTS entries_fts;
 "#;
+
+/// Columns added to existing tables after their table shipped.
+///
+/// `CREATE TABLE IF NOT EXISTS` leaves an older database with the older column set, so the
+/// additions have to be applied separately. They carry defaults and hold no truth of their
+/// own — a session cursor is per-session state, rebuilt on demand — so this is not a
+/// migration and does not move [`SCHEMA_VERSION`].
+const LATE_COLUMNS: &[&str] = &[
+    "ALTER TABLE session_cursors ADD COLUMN nudge_entry_id INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE session_cursors ADD COLUMN change_blocks_issued INTEGER NOT NULL DEFAULT 0",
+    // When the run's stored output was squashed to its unique entries; null if it never was.
+    "ALTER TABLE runs ADD COLUMN squashed_at INTEGER",
+];
+
+/// Adds any of [`LATE_COLUMNS`] this database does not have.
+///
+/// Adding a column that already exists is an error rather than a no-op, so each is attempted
+/// and its rejection ignored — cheaper and harder to get wrong than reading `PRAGMA
+/// table_info` back and diffing it.
+pub fn add_late_columns(conn: &rusqlite::Connection) {
+    for stmt in LATE_COLUMNS {
+        let _ = conn.execute(stmt, []);
+    }
+}
 
 pub const PROJECT_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -135,11 +161,16 @@ CREATE TABLE IF NOT EXISTS run_counters (
 -- One watermark per agent session, never global: two Claude Code windows on the same
 -- project must not steal each other's notifications.
 CREATE TABLE IF NOT EXISTS session_cursors (
-  session_id    TEXT    NOT NULL,
-  harness       TEXT    NOT NULL,                -- claude_code | codex | mcp
-  last_entry_id INTEGER NOT NULL DEFAULT 0,
-  last_seen_at  INTEGER NOT NULL,
-  blocks_issued INTEGER NOT NULL DEFAULT 0,
+  session_id           TEXT    NOT NULL,
+  harness              TEXT    NOT NULL,         -- claude_code | codex | mcp
+  last_entry_id        INTEGER NOT NULL DEFAULT 0,
+  last_seen_at         INTEGER NOT NULL,
+  blocks_issued        INTEGER NOT NULL DEFAULT 0,
+  -- Advanced when a verify nudge fires, never by the error path. Separate from
+  -- last_entry_id so telling the agent to go look cannot consume errors the Stop
+  -- hook has yet to report.
+  nudge_entry_id       INTEGER NOT NULL DEFAULT 0,
+  change_blocks_issued INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (session_id)
 ) WITHOUT ROWID;
 

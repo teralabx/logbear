@@ -1,0 +1,16 @@
+{
+  "session_id": "cc-sess-0001",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440002",
+  "transcript_path": "/home/dev/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/dev/demo",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm run dev",
+    "description": "Start the dev server"
+  },
+  "tool_use_id": "toolu_01ABC456",
+  "tool_result": "",
+  "tool_result_is_error": false
+}

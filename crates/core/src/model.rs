@@ -151,6 +151,10 @@ pub struct Run {
     pub term_cols: u16,
     pub delimiter_mode: DelimiterMode,
     pub chunks_evicted: bool,
+    /// When the stored output was squashed down to the first occurrence of each distinct
+    /// entry. The counters still describe the run as it was captured.
+    #[serde(default)]
+    pub squashed_at: Option<i64>,
     pub counters: Counters,
 }
 

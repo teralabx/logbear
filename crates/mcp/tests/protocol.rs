@@ -40,7 +40,10 @@ impl Backend for Stub {
             newest_entry_id: Some(99),
             blocks_issued: 0,
             blocks_remaining: 3,
+            change_blocks_remaining: 2,
             push_enabled: true,
+            unseen_lines: 0,
+            server_running: false,
             entries: Vec::new(),
         })
     }

@@ -3,12 +3,11 @@
 `logbear.rb` is the formula. It lives here so it is versioned alongside the code it
 builds; Homebrew itself reads it from a separate tap repository.
 
-## Why a tap and not homebrew-core
+## Why a tap first
 
-`homebrew-core` only accepts formulae under an OSI-approved licence. logbear is
-source-available under FSL-1.1-MIT, so it is not eligible, and `brew install logbear`
-will never resolve. A tap has no licence requirement, which makes
-`brew install teralabx/tap/logbear` the supported route.
+logbear is MIT-licensed, so it is eligible for `homebrew-core`. But core also asks for a
+tagged stable release and evidence of use before it accepts a new formula, so the tap,
+`brew install teralabx/tap/logbear`, is the route until then.
 
 ## One-time tap setup
 
@@ -25,11 +24,13 @@ stripping that prefix.
 
 ## Publishing to crates.io
 
-Order matters. Four crates depend on `logbear-core`, and `cargo publish` resolves against
-the real index, so the dependency has to exist there first:
+Order matters. `cargo publish` resolves against the real index, so each crate's
+dependencies have to exist there first: everything depends on `logbear-core`, and
+`logbear` (the CLI) and the desktop app also depend on `logbear-setup`:
 
 ```sh
 cargo publish -p logbear-core
+cargo publish -p logbear-setup
 cargo publish -p logbeard -p logbear-mcp -p logbear-hook -p logbear
 ```
 
@@ -37,10 +38,19 @@ cargo publish -p logbeard -p logbear-mcp -p logbear-hook -p logbear
 
 ## Cutting a release
 
-The formula pins a tarball by hash, so both change together.
+Pushing a tag runs [`release.yml`](../../.github/workflows/release.yml): it checks the tag
+against the workspace version, runs the tests, builds the four binaries for both macOS
+architectures, and publishes them as a GitHub release with a `.sha256` beside each archive.
+Those archives are what [`install.sh`](../../install.sh) downloads.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
+```
+
+The formula pins GitHub's source tarball by hash. The workflow's run summary prints the
+`url` and `sha256` to paste; by hand it is:
+
+```sh
 curl -sL https://github.com/teralabx/logbear/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
 ```
 
@@ -52,9 +62,6 @@ brew install --build-from-source ./Formula/logbear.rb
 brew test logbear
 brew audit --strict --online logbear
 ```
-
-`brew audit` will flag `license :cannot_represent`. That is expected and correct —
-it is the documented value for a licence SPDX cannot express.
 
 ## What the formula does not cover
 

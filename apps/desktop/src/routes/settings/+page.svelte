@@ -11,6 +11,7 @@
 		installStep,
 		projectRef,
 		retention,
+		squash,
 		revealPath,
 		uninstallStep,
 		updateProject,
@@ -37,11 +38,32 @@
 	let saved = $state<Settings | null>(null);
 	let install = $state<InstallStatus | null>(null);
 	let retentions = $state<Record<number, RetentionState>>({});
+	let squashing = $state<Record<number, boolean>>({});
+	let squashed = $state<Record<number, string>>({});
+
+	async function squashProject(id: number) {
+		squashing[id] = true;
+		try {
+			const report = await squash(projectRef(id), null);
+			squashed[id] =
+				report.runs === 0
+					? 'Nothing to squash — every finished run already is.'
+					: `${pluralise(report.runs, 'run')} squashed, ${report.entries_dropped.toLocaleString()} ${report.entries_dropped === 1 ? 'repeat' : 'repeats'} dropped · ${fmtBytes(report.bytes_before)} → ${fmtBytes(report.bytes_after)}.`;
+			retentions[id] = await retention(projectRef(id));
+		} catch (err) {
+			squashed[id] = apiError(err);
+		} finally {
+			squashing[id] = false;
+		}
+	}
 	let loadError = $state<string | null>(null);
 	let saveError = $state<string | null>(null);
 	let saving = $state(false);
 	let stepBusy = $state<InstallStep | null>(null);
 	let justSaved = $state(false);
+	let installingAll = $state(false);
+	let allProgress = $state<{ done: number; total: number } | null>(null);
+	let allFailures = $state<string[]>([]);
 
 	const MB = 1024 * 1024;
 
@@ -143,6 +165,51 @@
 		}
 	}
 
+	/** Steps that could be installed right now: available, and not already done. */
+	const pending = $derived(
+		install ? INSTALL_STEPS.filter((s) => install![s].available && !install![s].installed) : []
+	);
+
+	/**
+	 * Install every outstanding step in one go.
+	 *
+	 * Sequential rather than parallel: several steps write to the same shell profiles and
+	 * harness configs, and two of them racing would interleave their edits. One failure does
+	 * not stop the rest — the steps are independent, and a machine missing Codex should still
+	 * get its Claude Code integration.
+	 */
+	async function installAll() {
+		const steps = pending;
+		if (steps.length === 0) return;
+
+		installingAll = true;
+		saveError = null;
+		allFailures = [];
+		allProgress = { done: 0, total: steps.length };
+
+		for (const step of steps) {
+			stepBusy = step;
+			try {
+				const next = await installStep(step);
+				if (install) install = { ...install, [step]: next };
+			} catch (err) {
+				allFailures = [...allFailures, `${STEP_COPY[step].title}: ${apiError(err)}`];
+			}
+			allProgress = { done: allProgress.done + 1, total: steps.length };
+		}
+
+		stepBusy = null;
+		installingAll = false;
+		allProgress = null;
+		// Re-read rather than trust the per-step replies: installing the PATH shims changes
+		// what the later steps can see about themselves.
+		try {
+			install = await installStatus();
+		} catch {
+			// The individual replies already updated the rows; a failed refresh is cosmetic.
+		}
+	}
+
 	const STEP_COPY: Record<InstallStep, { title: string; what: string }> = {
 		path: {
 			title: 'PATH shims',
@@ -167,6 +234,22 @@
 		hook_codex: {
 			title: 'Session hook — Codex',
 			what: 'The same session summary, wired into the Codex CLI.'
+		},
+		mcp_pi: {
+			title: 'MCP server — pi',
+			what: 'Registers logbear in ~/.pi/agent/mcp.json with direct tool exposure, so pi sees the tools without searching for them. Needs pi 1.0 or later.'
+		},
+		mcp_hermes: {
+			title: 'MCP server — Hermes',
+			what: 'Adds logbear under mcp_servers in ~/.hermes/config.yaml, between marker comments so removing it leaves the rest of the file untouched.'
+		},
+		hook_pi: {
+			title: 'Extension — pi',
+			what: 'pi has no command hooks, so this writes a small extension to ~/.pi/agent/extensions that runs the logbear hook: it states the rule once per session, notes new output after edits, and keeps pi working while errors it has not seen are unread.'
+		},
+		hook_hermes: {
+			title: 'Shell hooks — Hermes',
+			what: 'Adds pre_llm_call and pre_verify hooks to ~/.hermes/config.yaml. Hermes holds back from finishing a turn that edited code while new errors are unread, and hears about errors from other turns when your next message arrives. Approve both when Hermes asks.'
 		}
 	};
 
@@ -194,8 +277,10 @@
 			<div>
 				<h3 class="text-[13px] font-semibold">Storage</h3>
 				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-					logbear stores raw output on disk. When a project passes its cap the oldest runs are
-					evicted — their counts and fingerprints survive, their bytes do not.
+					logbear stores raw output on disk. When a project passes its cap the oldest finished runs
+					are squashed first: each keeps one copy of every distinct entry and drops its repeats.
+					Only if that is not enough are whole runs evicted — their counts and fingerprints
+					survive, their bytes do not.
 				</p>
 			</div>
 
@@ -244,10 +329,26 @@
 										used={r.bytes_used}
 										cap={r.bytes_cap}
 										label="{r.runs_total} runs stored"
-										note={r.runs_evicted > 0
-											? `${pluralise(r.runs_evicted, 'run')} already evicted. Oldest surviving run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
-											: `Nothing evicted yet. Oldest run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`}
+										note={[
+											r.runs_squashed > 0 ? `${pluralise(r.runs_squashed, 'run')} squashed.` : '',
+											r.runs_evicted > 0
+												? `${pluralise(r.runs_evicted, 'run')} already evicted. Oldest surviving run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
+												: `Nothing evicted yet. Oldest run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
+										]
+											.filter(Boolean)
+											.join(' ')}
 									/>
+									<div class="mt-1.5 flex flex-wrap items-baseline gap-2">
+										<button
+											type="button"
+											class="cursor-pointer rounded-[2px] border border-hair px-2 py-[3px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+											disabled={squashing[p.id] === true}
+											onclick={() => void squashProject(p.id)}
+											title="Shrink every finished run to the first occurrence of each distinct entry, now rather than when the cap is reached. Repeats are deleted for good; counts and signatures are kept."
+											>{squashing[p.id] ? 'squashing…' : 'squash finished runs'}</button
+										>
+										{#if squashed[p.id]}<span class="meta text-[11px]">{squashed[p.id]}</span>{/if}
+									</div>
 								{:else}
 									<p class="meta text-[11px]">Reading store size…</p>
 								{/if}
@@ -514,9 +615,38 @@
 				Each step is independent and reversible. Anything logbear edits is backed up first, and the
 				backup path is shown here.
 			</p>
+			{#if install && pending.length > 0}
+				<button
+					type="button"
+					class="btn btn-primary btn-sm mt-3 h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+					disabled={stepBusy !== null || installingAll}
+					onclick={() => void installAll()}
+				>
+					{#if allProgress}
+						Installing… {allProgress.done}/{allProgress.total}
+					{:else}
+						Install all {pending.length} remaining
+					{/if}
+				</button>
+				<p class="meta mt-1.5 text-[11px] leading-[1.6]">
+					Sets up everything below in one go, including the Claude Code and Codex integrations.
+				</p>
+			{/if}
 		</div>
 
 		<div class="min-w-0">
+			{#if allFailures.length > 0}
+				<div class="mb-3 rounded border border-warning/40 px-3 py-2">
+					<p class="text-[11.5px] font-medium text-warning">
+						{pluralise(allFailures.length, 'step')} could not be installed
+					</p>
+					<ul class="mt-1 flex flex-col gap-0.5">
+						{#each allFailures as failure (failure)}
+							<li class="meta text-[10.5px] leading-[1.6]">{failure}</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 			{#if install}
 				<div class="flex flex-col">
 					{#each INSTALL_STEPS as step (step)}

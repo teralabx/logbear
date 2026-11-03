@@ -1,10 +1,14 @@
-//! Harness hook for Claude Code and Codex.
+//! Harness hook for Claude Code, Codex, pi and Hermes.
 //!
-//! One binary serves both harnesses:
+//! One binary serves all four:
 //!
-//! * Claude Code — `Stop` and `PostToolUse`, configured in `~/.claude/settings.json`.
-//! * Codex — `Stop`, `SubagentStop` and `PostToolUse`, configured in `~/.codex/hooks.json`
-//!   or `[hooks]` in `config.toml`.
+//! * Claude Code — `SessionStart`, `Stop`, `SubagentStop` and `PostToolUse`, configured in
+//!   `~/.claude/settings.json`.
+//! * Codex — the same four, configured in `~/.codex/hooks.json` or `[hooks]` in
+//!   `config.toml`.
+//! * pi — through an extension in `~/.pi/agent/extensions/` that runs this binary with a
+//!   Claude-shaped payload and translates the reply into pi's extension API.
+//! * Hermes — `pre_llm_call` and `pre_verify` shell hooks in `~/.hermes/config.yaml`.
 //!
 //! Both deliver a flat snake_case payload carrying `session_id`, `cwd`, `hook_event_name`
 //! and `stop_hook_active`, and both block with `{"decision":"block","reason":…}`.
@@ -15,13 +19,14 @@
 
 pub mod config;
 pub mod decide;
+pub mod intent;
 pub mod payload;
 
 use decide::Decision;
-use payload::Payload;
+use payload::{Event, Payload};
 use logbear_core::client::Client;
 use logbear_core::model::EntryId;
-use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::proto::{AckKind, ProjectRef, UnreadState};
 use logbear_core::Result;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -40,7 +45,7 @@ pub trait Daemon {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState>;
 }
 
@@ -60,9 +65,9 @@ impl Daemon for Client {
         session_id: &str,
         harness: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
-        Client::ack(self, project, session_id, harness, entry_id, record_block)
+        Client::ack(self, project, session_id, harness, entry_id, kind)
     }
 }
 
@@ -83,7 +88,30 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
     let project = ProjectRef::Path(payload.cwd.clone());
     let harness = payload.harness.as_str();
 
-    let unread = match daemon.unread(project.clone(), &payload.session_id, harness) {
+    let state = daemon.unread(project.clone(), &payload.session_id, harness);
+
+    // The standing rule is advice about how to start processes, not a report about this
+    // project — and the moment it matters most is a project logbear has never captured,
+    // which is exactly the case where `unread` fails. Falling back to a blank state keeps
+    // the rule working there, while an explicit opt-out still silences it.
+    if payload.event == Event::SessionStart {
+        let state = state.unwrap_or(UnreadState {
+            push_enabled: true,
+            ..Default::default()
+        });
+        let decision = decide::decide(
+            &decide::Input {
+                event: &payload.event,
+                tool: None,
+                command: None,
+                stop_hook_active: payload.stop_hook_active,
+            },
+            &state,
+        );
+        return decide::render(payload.harness, &payload.event, &decision);
+    }
+
+    let unread = match state {
         Ok(u) => u,
         Err(e) => {
             eprintln!("logbear-hook: unread failed ({e}); allowing");
@@ -91,25 +119,62 @@ pub fn respond<D: Daemon>(payload: &Payload, daemon: &mut D) -> Value {
         }
     };
 
-    let mut decision = decide::decide(&payload.event, &unread);
+    let mut decision = decide::decide(
+        &decide::Input {
+            event: &payload.event,
+            tool: payload.tool_name.as_deref(),
+            command: payload.command.as_deref(),
+            stop_hook_active: payload.stop_hook_active,
+        },
+        &unread,
+    );
 
-    if let Decision::Block { .. } = decision {
-        let watermark = decide::watermark(&unread);
-        if let Err(e) = daemon.ack(
-            project,
-            &payload.session_id,
-            harness,
-            watermark,
-            /* record_block */ true,
-        ) {
-            eprintln!("logbear-hook: could not spend the block budget ({e}); degrading");
-            decision = Decision::Context {
-                text: match &decision {
-                    Decision::Block { reason } => reason.clone(),
-                    _ => unreachable!("checked immediately above"),
-                },
+    match &decision {
+        Decision::Block { budget, .. } => {
+            let kind = match budget {
+                decide::Budget::Stop => AckKind::StopBlock,
+                decide::Budget::Change => AckKind::ChangeBlock,
             };
+            let watermark = decide::watermark(&unread);
+            if let Err(e) = daemon.ack(project, &payload.session_id, harness, watermark, kind) {
+                eprintln!("logbear-hook: could not spend the block budget ({e}); degrading");
+                decision = Decision::Context {
+                    text: match &decision {
+                        Decision::Block { reason, .. } => reason.clone(),
+                        _ => unreachable!("checked immediately above"),
+                    },
+                    ack_nudge: false,
+                };
+            }
         }
+        // A nudge that does not move its cursor fires again on every later change, so the
+        // agent learns to ignore it.
+        Decision::Context {
+            ack_nudge: true, ..
+        } => {
+            if let Err(e) = daemon.ack(project, &payload.session_id, harness, None, AckKind::Nudge)
+            {
+                // Advisory only: the agent still gets told, it may just get told twice.
+                eprintln!("logbear-hook: could not advance the nudge cursor ({e})");
+            }
+        }
+        // A stop-time advisory is told once. `Seen` moves the error cursor without
+        // charging any budget, so the same errors do not warn again at every later stop;
+        // fresh errors start a fresh count.
+        Decision::Context { .. }
+            if payload.event.is_stop()
+                && !unread.is_empty()
+                && payload.harness.has_stop_advisory() =>
+        {
+            let watermark = decide::watermark(&unread);
+            if let Err(e) =
+                daemon.ack(project, &payload.session_id, harness, watermark, AckKind::Seen)
+            {
+                // Advisory only: worst case the warning repeats at the next stop.
+                eprintln!("logbear-hook: could not mark the stop advisory as told ({e})");
+            }
+        }
+        _ => {}
     }
 
     decide::render(payload.harness, &payload.event, &decision)

@@ -7,7 +7,7 @@
 // Argument names are camelCase on the way out — Tauri maps them to the Rust
 // snake_case params. Return values stay snake_case and are never renamed.
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { mock, mockSubscribe } from './mock';
 import type {
@@ -15,7 +15,7 @@ import type {
 	EntryFilter,
 	EntryView,
 	Fingerprint,
-	FingerprintHistoryPoint,
+	FingerprintHistory,
 	InstallStatus,
 	InstallStep,
 	Project,
@@ -24,9 +24,11 @@ import type {
 	RetentionState,
 	Run,
 	RunDiff,
+	RunErrorCount,
 	RunRef,
 	LogbearEvent,
 	Settings,
+	SquashReport,
 	StepState
 } from './types';
 
@@ -78,14 +80,21 @@ export const fingerprints = (
 		? invoke('fingerprints', { project, limit, errorsOnly })
 		: mock.fingerprints(project, limit, errorsOnly);
 
-export const fingerprintHistory = (
+/** Sparkline data for a screen of signatures, in one round trip. */
+export const fingerprintHistories = (
 	project: ProjectRef,
-	fingerprintId: number,
+	fingerprintIds: number[],
 	limit = 30
-): Promise<FingerprintHistoryPoint[]> =>
+): Promise<FingerprintHistory[]> =>
 	isTauri()
-		? invoke('fingerprint_history', { project, fingerprintId, limit })
-		: mock.fingerprint_history(project, fingerprintId, limit);
+		? invoke('fingerprint_histories', { project, fingerprintIds, limit })
+		: mock.fingerprint_histories(project, fingerprintIds, limit);
+
+/** Error totals per run. Runs with none are absent. */
+export const runErrorCounts = (project: ProjectRef, runIds: number[]): Promise<RunErrorCount[]> =>
+	isTauri()
+		? invoke('run_error_counts', { project, runIds })
+		: mock.run_error_counts(project, runIds);
 
 export const runDiff = (
 	project: ProjectRef,
@@ -94,8 +103,24 @@ export const runDiff = (
 ): Promise<RunDiff> =>
 	isTauri() ? invoke('run_diff', { project, a, b }) : mock.run_diff(project, a, b);
 
-export const rawStream = (project: ProjectRef, runId: number): Promise<string> =>
-	isTauri() ? invoke('raw_stream', { project, runId }) : mock.raw_stream(project, runId);
+/**
+ * Streams the tail of a run's stored output into `onChunk` as it arrives, so the
+ * terminal starts painting before the read finishes and the whole log is never held
+ * as one string. Resolves to whether older output was left out of the replay.
+ */
+export async function rawStream(
+	project: ProjectRef,
+	runId: number,
+	onChunk: (bytes: Uint8Array) => void
+): Promise<boolean> {
+	if (!isTauri()) {
+		onChunk(new TextEncoder().encode(await mock.raw_stream(project, runId)));
+		return false;
+	}
+	const channel = new Channel<ArrayBuffer>();
+	channel.onmessage = (buf) => onChunk(new Uint8Array(buf));
+	return invoke('raw_stream', { project, runId, onChunk: channel });
+}
 
 export const getSettings = (): Promise<Settings> =>
 	isTauri() ? invoke('get_settings') : mock.get_settings();
@@ -118,6 +143,10 @@ export const retention = (project: ProjectRef): Promise<RetentionState> =>
 
 export const reparse = (project: ProjectRef, runId: number): Promise<null> =>
 	isTauri() ? invoke('reparse', { project, runId }) : mock.reparse();
+
+/** Squash one finished run, or every finished run in the project when `runId` is null. */
+export const squash = (project: ProjectRef, runId: number | null): Promise<SquashReport> =>
+	isTauri() ? invoke('squash', { project, runId }) : mock.squash(project, runId);
 
 export const deleteRun = (project: ProjectRef, runId: number): Promise<null> =>
 	isTauri() ? invoke('delete_run', { project, runId }) : mock.delete_run(project, runId);

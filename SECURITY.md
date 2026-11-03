@@ -37,8 +37,9 @@ about data escaping where it should not:
 - Output you deliberately captured being readable by your own user account. logbear stores
   it under `LOGBEAR_HOME` (default `~/.logbear`) with your user's permissions by design.
 - Anything requiring an attacker who already has code execution as your user.
-- There is no network code in this repository, so there is no remote attack surface to
-  report against the daemon.
+- The daemon has no network code and listens only on a unix socket, so there is no remote
+  attack surface to report against it. The one outbound request anywhere is the opt-in
+  update check (`logbear updates`), which runs the system `curl` against GitHub.
 
 ## Supported versions
 

@@ -60,6 +60,8 @@ export interface Run {
 	term_cols: number;
 	delimiter_mode: DelimiterMode;
 	chunks_evicted: boolean;
+	/** When the stored output was squashed to its unique entries. Counters still describe the run as captured. */
+	squashed_at: number | null;
 	counters: Counters;
 }
 
@@ -128,6 +130,8 @@ export interface EntryFilter {
 	limit?: number;
 	offset?: number;
 	ascending?: boolean;
+	/** Only instances of this signature. */
+	fingerprint_id?: number | null;
 }
 
 export interface DiffSignature {
@@ -181,7 +185,16 @@ export interface RetentionState {
 	bytes_cap: number;
 	runs_total: number;
 	runs_evicted: number;
+	runs_squashed: number;
 	oldest_run_at: number | null;
+}
+
+/** What a squash did. Bytes are the project database's size on disk. */
+export interface SquashReport {
+	runs: number;
+	entries_dropped: number;
+	bytes_before: number;
+	bytes_after: number;
 }
 
 export interface QuietHours {
@@ -212,8 +225,12 @@ export interface InstallStatus {
 	daemon: StepState;
 	mcp_claude: StepState;
 	mcp_codex: StepState;
+	mcp_pi: StepState;
+	mcp_hermes: StepState;
 	hook_claude: StepState;
 	hook_codex: StepState;
+	hook_pi: StepState;
+	hook_hermes: StepState;
 }
 
 export type InstallStep = keyof InstallStatus;
@@ -235,6 +252,18 @@ export interface FingerprintHistoryPoint {
 	started_at: number;
 }
 
+export interface FingerprintHistory {
+	fingerprint_id: number;
+	points: FingerprintHistoryPoint[];
+}
+
+export interface RunErrorCount {
+	run_id: number;
+	total: number;
+	/** Errors whose signature this project had never seen before. */
+	new: number;
+}
+
 export type LogbearEvent =
 	| { event: 'run_started'; run: Run }
 	| { event: 'run_finished'; run: Run }
@@ -250,6 +279,10 @@ export const INSTALL_STEPS: InstallStep[] = [
 	'daemon',
 	'mcp_claude',
 	'mcp_codex',
+	'mcp_pi',
+	'mcp_hermes',
 	'hook_claude',
-	'hook_codex'
+	'hook_codex',
+	'hook_pi',
+	'hook_hermes'
 ];

@@ -12,8 +12,8 @@ mod install;
 use logbear_core::client::Client;
 use logbear_core::model::*;
 use logbear_core::proto::*;
-use serde::Serialize;
 use std::sync::Mutex;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_notification::NotificationExt;
 
@@ -23,39 +23,63 @@ use tauri_plugin_notification::NotificationExt;
 const EVENT: &str = "logbear://event";
 
 struct Backend {
-    /// Serialised because a `Client` is one socket with request/response ordering.
-    /// Commands are short and local, so contention is not a real cost.
-    client: Mutex<Option<Client>>,
+    /// Idle daemon connections. A `Client` is one socket with request/response ordering,
+    /// so concurrent commands each take their own: behind a single shared connection, one
+    /// slow read (a big replay, a screen of entries) stalled every other command, the
+    /// health poll included, and the whole window read as hung.
+    idle: Mutex<Vec<Client>>,
 }
+
+/// Connections kept open once a command finishes. Bursts beyond this connect and close.
+const MAX_IDLE: usize = 4;
 
 impl Backend {
     fn new() -> Backend {
         Backend {
-            client: Mutex::new(None),
+            idle: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn take(&self) -> Option<Client> {
+        self.idle.lock().ok()?.pop()
+    }
+
+    fn give_back(&self, client: Client) {
+        if let Ok(mut idle) = self.idle.lock() {
+            if idle.len() < MAX_IDLE {
+                idle.push(client);
+            }
         }
     }
 
     /// Run something against the daemon, reconnecting once if the socket has gone away —
     /// which happens routinely when the daemon is upgraded or restarted underneath us.
-    fn with<T>(&self, f: impl Fn(&mut Client) -> logbear_core::Result<T>) -> Result<T, String> {
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "backend lock poisoned".to_string())?;
-        if guard.is_none() {
-            *guard = Some(Client::connect_or_start().map_err(fmt_daemon_error)?);
-        }
-        if let Some(client) = guard.as_mut() {
-            match f(client) {
-                Ok(v) => return Ok(v),
-                Err(e) if is_disconnect(&e) => *guard = None,
-                Err(e) => return Err(e.to_string()),
+    fn with<T>(&self, mut f: impl FnMut(&mut Client) -> logbear_core::Result<T>) -> Result<T, String> {
+        if let Some(mut client) = self.take() {
+            match f(&mut client) {
+                Ok(v) => {
+                    self.give_back(client);
+                    return Ok(v);
+                }
+                // A dead pooled socket means the daemon restarted; the rest are dead too.
+                Err(e) if is_disconnect(&e) => {
+                    if let Ok(mut idle) = self.idle.lock() {
+                        idle.clear();
+                    }
+                }
+                Err(e) => {
+                    self.give_back(client);
+                    return Err(e.to_string());
+                }
             }
         }
         let mut fresh = Client::connect_or_start().map_err(fmt_daemon_error)?;
-        let out = f(&mut fresh).map_err(|e| e.to_string());
-        *guard = Some(fresh);
-        out
+        let out = f(&mut fresh);
+        match &out {
+            Err(e) if is_disconnect(e) => {}
+            _ => self.give_back(fresh),
+        }
+        out.map_err(|e| e.to_string())
     }
 }
 
@@ -128,7 +152,10 @@ fn entries(
     project: ProjectRef,
     filter: Option<EntryFilter>,
 ) -> Result<Vec<EntryView>, String> {
-    let filter = filter.unwrap_or_default();
+    let filter = EntryFilter {
+        unobserved: true,
+        ..filter.unwrap_or_default()
+    };
     backend.with(|c| c.entries(project.clone(), filter.clone()))
 }
 
@@ -145,57 +172,40 @@ fn fingerprints(
             project: project.clone(),
             limit,
             errors_only,
+            unobserved: true,
         })
     })
 }
 
-#[derive(Serialize)]
-struct HistoryPoint {
-    run_id: RunId,
-    count: i64,
-    started_at: i64,
+#[tauri::command(async)]
+fn fingerprint_histories(
+    backend: State<'_, Backend>,
+    project: ProjectRef,
+    fingerprint_ids: Vec<FingerprintId>,
+    limit: Option<usize>,
+) -> Result<Vec<FingerprintHistory>, String> {
+    let limit = limit.unwrap_or(30);
+    backend.with(|c| {
+        c.call(&Request::FingerprintHistories {
+            project: project.clone(),
+            fingerprint_ids: fingerprint_ids.clone(),
+            limit,
+        })
+    })
 }
 
 #[tauri::command(async)]
-fn fingerprint_history(
+fn run_error_counts(
     backend: State<'_, Backend>,
     project: ProjectRef,
-    fingerprint_id: FingerprintId,
-    limit: Option<usize>,
-) -> Result<Vec<HistoryPoint>, String> {
-    let limit = limit.unwrap_or(30);
-    // Expressed as SQL rather than as another protocol verb: this is exactly the kind of
-    // question the query endpoint exists for, and adding a request per chart would make
-    // the protocol grow without bound.
-    let result = backend.with(|c| {
-        c.query(
-            project.clone(),
-            "SELECT r.id, COALESCE(rf.count, 0), r.started_at
-               FROM runs r
-               LEFT JOIN run_fingerprints rf
-                 ON rf.run_id = r.id AND rf.fingerprint_id = ?1
-              ORDER BY r.started_at DESC LIMIT ?2",
-            vec![
-                serde_json::json!(fingerprint_id),
-                serde_json::json!(limit as i64),
-            ],
-            Some(limit),
-        )
-    })?;
-
-    let mut points: Vec<HistoryPoint> = result
-        .rows
-        .iter()
-        .filter_map(|row| {
-            Some(HistoryPoint {
-                run_id: row.first()?.as_i64()?,
-                count: row.get(1)?.as_i64()?,
-                started_at: row.get(2)?.as_i64()?,
-            })
+    run_ids: Vec<RunId>,
+) -> Result<Vec<RunErrorCount>, String> {
+    backend.with(|c| {
+        c.call(&Request::RunErrorCounts {
+            project: project.clone(),
+            run_ids: run_ids.clone(),
         })
-        .collect();
-    points.reverse();
-    Ok(points)
+    })
 }
 
 #[tauri::command(async)]
@@ -208,23 +218,34 @@ fn run_diff(
     backend.with(|c| c.diff(project.clone(), a.clone(), b.clone()))
 }
 
+/// Lines of stored output a replay starts from. The terminal keeps 20 000 lines of
+/// scrollback, so anything older would be parsed by xterm only to be thrown away — and on a
+/// dev server left running all day, that parse is what froze the window.
+const REPLAY_TAIL_LINES: i64 = 20_000;
+
+/// Streams a run's stored output to the webview as raw byte frames.
+///
+/// Streamed rather than returned: a single string meant holding the whole log in Rust, then
+/// again as JSON, then as a JS string, before painting anything. Returns whether older
+/// output was left out.
 #[tauri::command(async)]
 fn raw_stream(
     backend: State<'_, Backend>,
     project: ProjectRef,
     run_id: RunId,
-) -> Result<String, String> {
-    let bytes = backend.with(|c| {
-        let mut buf: Vec<u8> = Vec::new();
-        c.raw_stream(project.clone(), run_id, |chunk| {
-            buf.extend_from_slice(chunk);
-            Ok(())
-        })?;
-        Ok(buf)
+    on_chunk: Channel,
+) -> Result<bool, String> {
+    let mut sent_lines: i64 = 0;
+    backend.with(|c| {
+        sent_lines = 0;
+        c.raw_tail(project.clone(), run_id, Some(REPLAY_TAIL_LINES), |chunk| {
+            sent_lines += chunk.iter().filter(|b| **b == b'\n').count() as i64;
+            on_chunk
+                .send(InvokeResponseBody::Raw(chunk.to_vec()))
+                .map_err(std::io::Error::other)
+        })
     })?;
-    // Lossy on purpose: a dev log can carry a half-written multi-byte character at a
-    // flush boundary, and refusing to show the run over one bad byte helps nobody.
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(sent_lines >= REPLAY_TAIL_LINES)
 }
 
 #[tauri::command(async)]
@@ -269,7 +290,8 @@ fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<Retenti
             project.clone(),
             "SELECT (SELECT count(*) FROM runs),
                     (SELECT COALESCE(sum(chunks_evicted), 0) FROM runs),
-                    (SELECT min(started_at) FROM runs)",
+                    (SELECT min(started_at) FROM runs),
+                    (SELECT count(*) FROM runs WHERE squashed_at IS NOT NULL)",
             vec![],
             Some(1),
         )
@@ -287,6 +309,7 @@ fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<Retenti
         bytes_cap: status.project.retention_bytes.unwrap_or(default_cap),
         runs_total: num(0).unwrap_or(0),
         runs_evicted: num(1).unwrap_or(0),
+        runs_squashed: num(3).unwrap_or(0),
         oldest_run_at: num(2),
     })
 }
@@ -299,6 +322,20 @@ fn reparse(
 ) -> Result<usize, String> {
     backend.with(|c| {
         c.call(&Request::Reparse {
+            project: project.clone(),
+            run_id,
+        })
+    })
+}
+
+#[tauri::command(async)]
+fn squash(
+    backend: State<'_, Backend>,
+    project: ProjectRef,
+    run_id: Option<RunId>,
+) -> Result<SquashReport, String> {
+    backend.with(|c| {
+        c.call(&Request::Squash {
             project: project.clone(),
             run_id,
         })
@@ -440,7 +477,8 @@ pub fn run() {
             get_run,
             entries,
             fingerprints,
-            fingerprint_history,
+            fingerprint_histories,
+            run_error_counts,
             run_diff,
             raw_stream,
             get_settings,
@@ -448,6 +486,7 @@ pub fn run() {
             update_project,
             retention,
             reparse,
+            squash,
             delete_run,
             query,
             install_status,

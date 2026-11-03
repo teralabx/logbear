@@ -61,7 +61,8 @@
 		return () => clearInterval(t);
 	});
 
-	const MAX_BUFFER = 5000;
+	/** Entries kept in view. The live tail is for now; history is on the run page. */
+	const MAX_BUFFER = 2000;
 
 	const counters = $derived(run ? (app.counters[run.id] ?? run.counters) : null);
 
@@ -95,25 +96,32 @@
 				const target = active[0] ?? runs[0] ?? null;
 				if (cancelled) return;
 				run = target;
+				list = [];
 				if (!target) {
-					list = [];
 					loading = false;
 					return;
 				}
-				const [es, raw] = await Promise.all([
-					entries(ref, { run_id: target.id, limit: MAX_BUFFER, ascending: true }),
-					rawStream(ref, target.id).catch(() => '')
-				]);
+				// The newest entries, not the oldest: on a server that has been up all
+				// day, the first few thousand are hours stale.
+				const es = (
+					await entries(ref, { run_id: target.id, limit: MAX_BUFFER, ascending: false })
+				).reverse();
 				if (cancelled) return;
-				list = es;
+				// Anything the live tail appended while that was in flight is newer.
+				const newest = es.at(-1)?.id ?? 0;
+				list = es.concat(list.filter((e) => e.id > newest)).slice(-MAX_BUFFER);
 				// The terminal only exists once `loading` is false, so the pane has
 				// to be mounted before the stored bytes can be written into it.
 				loading = false;
 				await tick();
 				if (cancelled) return;
-				termRef?.replace(raw);
-				termRef?.scrollToBottom();
 				scrollListToBottom();
+				termRef?.clear();
+				await rawStream(ref, target.id, (bytes) => {
+					if (!cancelled) termRef?.write(bytes);
+				}).catch(() => false);
+				if (cancelled) return;
+				termRef?.scrollToBottom();
 			} catch (err) {
 				if (!cancelled) {
 					loadError = apiError(err);

@@ -1,0 +1,91 @@
+name: Release
+
+# Pushing a `v*` tag builds the four binaries for both macOS architectures, publishes them
+# as a GitHub release with a SHA-256 beside each archive, and reports the source tarball's
+# hash for the Homebrew formula. `install.sh` downloads from exactly these assets.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # A tag that disagrees with the manifest ships binaries whose `--version` lies, and
+      # `logbear updates` compares against that version.
+      - name: Check the tag matches the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag v$tag does not match workspace version $manifest" >&2
+            exit 1
+          fi
+
+      # tauri-build refuses to compile the desktop crate unless every `externalBin` sidecar
+      # exists, and those are build outputs (`scripts/sidecars.sh`), never committed.
+      # Nothing here bundles the app, so empty stand-ins are enough to let it compile.
+      - name: Stub the Tauri sidecars
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries
+          for bin in logbear logbeard logbear-mcp logbear-hook; do
+            touch "apps/desktop/src-tauri/binaries/$bin-$triple"
+          done
+
+      - run: cargo test --workspace
+
+      - name: Build and package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$target" \
+              -p logbear -p logbeard -p logbear-mcp -p logbear-hook
+            stage="logbear-$version-$target"
+            mkdir -p "$stage"
+            for bin in logbear logbeard logbear-mcp logbear-hook; do
+              cp "target/$target/release/$bin" "$stage/"
+            done
+            cp LICENSE.md README.md "$stage/"
+            tar -czf "dist/$stage.tar.gz" "$stage"
+            (cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256")
+          done
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "logbear ${GITHUB_REF_NAME#v}" --generate-notes
+
+      # The formula pins GitHub's own source archive, which only exists once the tag does.
+      - name: Report the source tarball hash for the formula
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sha="$(curl -fsSL "$url" | shasum -a 256 | cut -d' ' -f1)"
+          {
+            echo "### Homebrew"
+            echo
+            echo "Set these in \`packaging/homebrew/logbear.rb\` and in the tap:"
+            echo
+            echo '```ruby'
+            echo "url \"$url\""
+            echo "sha256 \"$sha\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

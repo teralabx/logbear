@@ -4,7 +4,7 @@
 //! generated schemas, so a wire-format change fails here rather than silently.
 
 use logbear_core::model::{Boundaries, Entry, EntryId, EntryView, Level};
-use logbear_core::proto::{ProjectRef, UnreadState};
+use logbear_core::proto::{AckKind, ProjectRef, UnreadState};
 use logbear_core::{Error, Result};
 use logbear_hook::payload::{self, Event, Harness};
 use logbear_hook::{respond, Daemon};
@@ -49,7 +49,10 @@ fn unread() -> UnreadState {
         newest_entry_id: Some(1002),
         blocks_issued: 0,
         blocks_remaining: 3,
+        change_blocks_remaining: 2,
         push_enabled: true,
+        unseen_lines: 0,
+        server_running: false,
         entries: vec![
             entry(
                 1001,
@@ -72,7 +75,7 @@ struct FakeDaemon {
     state: UnreadState,
     unread_fails: bool,
     ack_fails: bool,
-    acks: Vec<(Option<EntryId>, bool)>,
+    acks: Vec<(Option<EntryId>, AckKind)>,
     seen: Vec<(String, String, String)>,
 }
 
@@ -103,9 +106,9 @@ impl Daemon for FakeDaemon {
         _s: &str,
         _h: &str,
         entry_id: Option<EntryId>,
-        record_block: bool,
+        kind: AckKind,
     ) -> Result<UnreadState> {
-        self.acks.push((entry_id, record_block));
+        self.acks.push((entry_id, kind));
         if self.ack_fails {
             return Err(Error::other("write refused"));
         }
@@ -237,7 +240,7 @@ fn subagent_stop_blocks_too() {
 fn issuing_a_block_spends_the_budget_and_advances_the_cursor() {
     let mut d = FakeDaemon::with(unread());
     run("claude_stop", None, &mut d);
-    assert_eq!(d.acks, vec![(Some(1002), true)]);
+    assert_eq!(d.acks, vec![(Some(1002), AckKind::StopBlock)]);
 }
 
 #[test]
@@ -256,8 +259,13 @@ fn the_project_and_session_reach_the_daemon_unmangled() {
 
 // --------------------------------------------------------------------------- degrade
 
+/// Claude Code has no model-visible, non-blocking channel at a stop: `additionalContext`
+/// is not a supported Stop field, and in practice it comes back as "Stop hook feedback"
+/// that re-opens the turn and counts toward the consecutive-block cap. An advisory that
+/// blocks nine turns in a row is a block. `systemMessage` is the one field both harnesses
+/// render as a plain warning to the human while letting the turn end.
 #[test]
-fn past_the_block_budget_claude_degrades_to_context() {
+fn past_the_block_budget_claude_degrades_to_a_user_visible_warning() {
     let mut d = FakeDaemon::with(UnreadState {
         blocks_issued: 3,
         blocks_remaining: 0,
@@ -266,12 +274,87 @@ fn past_the_block_budget_claude_degrades_to_context() {
     let out = run("claude_stop", None, &mut d);
 
     assert!(out.get("decision").is_none(), "must not block: {out}");
-    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "Stop");
-    let ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert!(
+        out.get("hookSpecificOutput").is_none(),
+        "additionalContext at a stop re-opens the turn: {out}"
+    );
+    let msg = out["systemMessage"].as_str().expect("systemMessage");
+    assert!(msg.contains("2 new errors"), "{msg}");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "told once: the advisory must consume what it reported without spending budget"
+    );
+}
+
+/// The budget lives in the session cursor, so any failure to persist it — a rejected ack, a
+/// session id that differs between invocations — leaves `blocks_remaining` full forever and
+/// the agent blocked on the same errors until the harness's own cap intervenes. The harness
+/// tells us it already blocked this turn on every payload, which needs nothing written down.
+#[test]
+fn a_stop_the_hook_already_blocked_does_not_block_again() {
+    let mut d = FakeDaemon::with(UnreadState {
+        blocks_issued: 0,
+        blocks_remaining: 3,
+        ..unread()
+    });
+    let out = run("claude_stop_reentrant", None, &mut d);
+
+    assert!(out.get("decision").is_none(), "must not block a second time: {out}");
+    assert!(out.get("hookSpecificOutput").is_none(), "{out}");
+    let msg = out["systemMessage"]
         .as_str()
-        .expect("additionalContext");
-    assert!(ctx.contains("2 new errors"), "{ctx}");
-    assert!(d.acks.is_empty(), "a degraded response must not spend budget");
+        .expect("the errors must still reach the human, just not as a block");
+    assert!(msg.contains("2 new errors"), "{msg}");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "a block it declined to issue must not spend the Stop budget, but the warning \
+         it emitted instead must not repeat at every later stop either"
+    );
+}
+
+/// Every unread signature was already surfaced to this session — by an earlier block or a
+/// verified read — so re-blocking cannot teach the agent anything new.
+#[test]
+fn recurring_only_errors_never_block_a_stop() {
+    let mut d = FakeDaemon::with(UnreadState {
+        new_signatures: 0,
+        ..unread()
+    });
+    let v = run("claude_stop", None, &mut d);
+    assert!(v.get("decision").is_none(), "recurring-only must not block: {v}");
+    assert!(v.get("hookSpecificOutput").is_none(), "{v}");
+    let text = v["systemMessage"].as_str().unwrap();
+    assert!(text.contains("already seen"), "{text}");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::Seen)],
+        "told once: the next stop must be silent unless new errors arrive"
+    );
+}
+
+#[test]
+fn a_new_signature_still_blocks_a_stop() {
+    let mut d = FakeDaemon::with(unread()); // new_signatures: 1
+    let v = run("claude_stop", None, &mut d);
+    assert_eq!(v["decision"], "block");
+}
+
+#[test]
+fn the_block_reason_lists_new_signatures_first() {
+    // Recurring entry first in the state; the reason must reorder it behind the new one.
+    let mut state = unread();
+    state.entries = vec![
+        entry(1001, false, "[error] old friend", "[error] old friend"),
+        entry(1002, true, "Error: brand new", "Error: brand new"),
+    ];
+    let mut d = FakeDaemon::with(state);
+    let v = run("claude_stop", None, &mut d);
+    let reason = v["reason"].as_str().unwrap();
+    let new_at = reason.find("NEW SIGNATURE").expect("new entry shown");
+    let old_at = reason.find("recurring").expect("recurring entry shown");
+    assert!(new_at < old_at, "new signatures must precede recurring ones:\n{reason}");
 }
 
 /// Codex's `Stop` output schema has no `hookSpecificOutput`, so a degraded stop can only
@@ -298,29 +381,234 @@ fn a_failed_ack_downgrades_the_block_instead_of_looping() {
     };
     let out = run("claude_stop", None, &mut d);
     assert!(out.get("decision").is_none(), "must not block: {out}");
-    assert!(out["hookSpecificOutput"]["additionalContext"].is_string());
+    assert!(out["systemMessage"].is_string(), "{out}");
 }
 
 // --------------------------------------------------------------------------- drip
 
+/// A recurring error was already there before this edit, so it is worth mentioning and not
+/// worth interrupting for.
 #[test]
-fn post_tool_use_never_blocks_and_never_moves_the_cursor() {
+fn post_tool_use_with_only_recurring_errors_stays_a_short_advisory() {
     for (name, harness) in [
         ("claude_post_tool_use", Harness::ClaudeCode),
         ("codex_post_tool_use", Harness::Codex),
     ] {
-        let mut d = FakeDaemon::with(unread());
+        let mut d = FakeDaemon::with(UnreadState {
+            new_signatures: 0,
+            unseen_lines: 3,
+            ..unread()
+        });
         let out = run(name, Some(harness), &mut d);
 
-        assert!(out.get("decision").is_none(), "{name} must never block: {out}");
+        assert!(out.get("decision").is_none(), "{name} must not block: {out}");
         assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PostToolUse");
         let ctx = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap_or_else(|| panic!("{name}: {out}"));
-        // Fires after every edit, so it must stay a line rather than a stack trace.
+        // Fires after an edit, so it must stay a line rather than a stack trace.
         assert!(ctx.len() < 400, "{name}: {} chars", ctx.len());
         assert!(ctx.contains("2 new errors"), "{name}: {ctx}");
-        assert!(d.acks.is_empty(), "{name} must not advance the cursor");
+        assert_eq!(
+            d.acks,
+            vec![(None, AckKind::Nudge)],
+            "{name}: the advisory must advance the nudge cursor — not the error cursor, \
+             which the Stop hook still needs — or it repeats on every later tool call"
+        );
+    }
+}
+
+/// Everything unread was already mentioned by an earlier advisory or nudge; saying it
+/// again on every tool call teaches the agent to ignore the whole channel.
+#[test]
+fn a_mid_turn_advisory_already_given_stays_silent() {
+    let mut d = FakeDaemon::with(UnreadState {
+        new_signatures: 0,
+        unseen_lines: 0,
+        ..unread()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+    assert_eq!(out, serde_json::json!({}), "nothing new since the last advisory: {out}");
+    assert!(d.acks.is_empty());
+}
+
+/// The escalation: a signature this project has never produced, arriving immediately after
+/// an edit, is almost certainly that edit.
+#[test]
+fn post_tool_use_escalates_for_a_signature_the_project_has_never_seen() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    assert_eq!(out["decision"], "block", "a new signature should interrupt");
+    let reason = out["reason"].as_str().expect("a reason");
+    assert!(reason.contains("NEW SIGNATURE"), "{reason}");
+    assert_eq!(
+        d.acks,
+        vec![(Some(1002), AckKind::ChangeBlock)],
+        "it must charge the change budget, never the Stop gate's"
+    );
+}
+
+/// Once the change budget is gone the same errors must still be reported, just without
+/// interrupting: a cap that turned into silence would hide them entirely.
+#[test]
+fn an_exhausted_change_budget_degrades_to_advisory() {
+    let mut d = FakeDaemon::with(UnreadState {
+        change_blocks_remaining: 0,
+        unseen_lines: 3,
+        ..unread()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    assert!(out.get("decision").is_none(), "must not block: {out}");
+    assert!(out["hookSpecificOutput"]["additionalContext"].is_string());
+    assert_eq!(d.acks, vec![(None, AckKind::Nudge)]);
+}
+
+// --------------------------------------------------------------------------- verify loop
+
+#[test]
+fn an_edit_with_unseen_server_output_asks_the_agent_to_look() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: true,
+        unseen_lines: 4,
+        ..Default::default()
+    });
+    let out = run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d);
+
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a nudge: {out}"));
+    assert!(ctx.contains('4'), "the count belongs in the message: {ctx}");
+    assert!(ctx.contains("logbear logs"), "it must say how to look: {ctx}");
+    assert_eq!(
+        d.acks,
+        vec![(None, AckKind::Nudge)],
+        "the nudge cursor must advance, or this repeats after every later edit"
+    );
+}
+
+#[test]
+fn an_edit_with_a_silent_server_says_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: true,
+        unseen_lines: 0,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({})
+    );
+    assert!(d.acks.is_empty());
+}
+
+#[test]
+fn an_edit_with_nothing_running_says_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        server_running: false,
+        unseen_lines: 12,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_post_tool_use", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({}),
+        "nothing is running, so there is nothing to verify against"
+    );
+}
+
+// --------------------------------------------------------------------------- intent
+
+#[test]
+fn an_uncaptured_dev_server_is_named_with_its_wrapped_form() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    let out = run("claude_bash_dev_server", Some(Harness::ClaudeCode), &mut d);
+
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected a nudge: {out}"));
+    assert!(ctx.contains("logbear npm run dev"), "must show the fix: {ctx}");
+    assert!(d.acks.is_empty(), "an intent nudge reads no entries");
+}
+
+#[test]
+fn a_codex_bash_command_is_read_as_a_string() {
+    let p = payload::parse(&golden("codex_post_tool_use"), Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("mix compile"));
+}
+
+/// Older Codex builds sent argv and wrapped the real command in `bash -lc`.
+#[test]
+fn a_legacy_codex_argv_command_is_still_understood() {
+    let input = r#"{"session_id":"s","cwd":"/tmp","hook_event_name":"PostToolUse",
+        "tool_name":"shell","tool_input":{"command":["bash","-lc","mix compile"]}}"#;
+    let p = payload::parse(input, Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("mix compile"));
+}
+
+/// Codex's `apply_patch` puts the patch body in `tool_input.command`. A patch is not a shell
+/// command, however much a line of it reads like one.
+#[test]
+fn a_codex_patch_body_is_not_read_as_a_command() {
+    let p = payload::parse(&golden("codex_apply_patch"), Some(Harness::Codex)).unwrap();
+    assert_eq!(p.command, None);
+}
+
+#[test]
+fn a_claude_bash_command_is_read_as_a_string() {
+    let p = payload::parse(&golden("claude_bash_dev_server"), Some(Harness::ClaudeCode)).unwrap();
+    assert_eq!(p.command.as_deref(), Some("npm run dev"));
+}
+
+// --------------------------------------------------------------------------- session start
+
+/// The case the rule exists for: a project logbear has never captured. The daemon answers
+/// that it knows nothing about it, and that must not swallow the one piece of advice that
+/// would get the next server captured.
+#[test]
+fn session_start_still_speaks_on_a_project_the_daemon_has_never_seen() {
+    let mut d = FakeDaemon {
+        unread_fails: true,
+        ..FakeDaemon::with(UnreadState::default())
+    };
+    let out = run("claude_session_start", Some(Harness::ClaudeCode), &mut d);
+    let ctx = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected the standing rule: {out}"));
+    assert!(ctx.contains("logbear"), "{ctx}");
+}
+
+#[test]
+fn session_start_respects_an_explicit_opt_out() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: false,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("claude_session_start", Some(Harness::ClaudeCode), &mut d),
+        serde_json::json!({}),
+        "push off means silence, including the standing rule"
+    );
+}
+
+#[test]
+fn session_start_teaches_the_agent_to_wrap_long_running_commands() {
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        let mut d = FakeDaemon::with(UnreadState {
+            push_enabled: true,
+            ..Default::default()
+        });
+        let out = run("claude_session_start", Some(harness), &mut d);
+        let ctx = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{harness:?}: {out}"));
+        assert!(ctx.contains("logbear npm run dev"), "{ctx}");
+        assert!(d.acks.is_empty(), "saying hello writes nothing");
     }
 }
 
@@ -376,6 +664,135 @@ fn emit_config_prints_only_json_on_stdout() {
     // The Codex trust caveat goes to stderr so stdout stays pipeable.
     let codex = invoke(&["--emit-config", "codex"], "");
     assert!(String::from_utf8_lossy(&codex.stderr).contains("/hooks"));
+}
+
+#[test]
+fn emit_config_for_hermes_is_a_yaml_hooks_block() {
+    let out = invoke(&["--emit-config", "hermes"], "");
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("hooks:\n"), "{text}");
+    for event in ["  pre_llm_call:", "  pre_verify:"] {
+        assert!(text.contains(event), "missing {event}: {text}");
+    }
+    assert!(text.contains("--harness hermes"), "{text}");
+    assert!(text.contains("timeout: 10"), "{text}");
+}
+
+#[test]
+fn emit_config_for_pi_is_an_extension_that_calls_this_binary() {
+    let out = invoke(&["--emit-config", "pi"], "");
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let exe = serde_json::to_string(env!("CARGO_BIN_EXE_logbear-hook")).unwrap();
+    assert!(
+        text.contains(&exe),
+        "the hook path must be baked in: {text}"
+    );
+    assert!(
+        !text.contains("__LOGBEAR_HOOK__"),
+        "placeholder left in: {text}"
+    );
+    for event in ["before_agent_start", "tool_result", "agent_before_settle"] {
+        assert!(text.contains(event), "missing {event}");
+    }
+}
+
+// --------------------------------------------------------------------------- hermes
+
+#[test]
+fn hermes_payloads_are_recognised_without_the_flag() {
+    let first = payload::parse(&golden("hermes_pre_llm_call_first"), None).unwrap();
+    assert_eq!(first.harness, Harness::Hermes);
+    assert_eq!(first.event, Event::SessionStart);
+
+    let later = payload::parse(&golden("hermes_pre_llm_call"), None).unwrap();
+    assert_eq!(later.event, Event::PostToolUse);
+    assert_eq!(later.tool_name, None);
+
+    let verify = payload::parse(&golden("hermes_pre_verify"), None).unwrap();
+    assert_eq!(verify.event, Event::Stop);
+    assert!(!verify.stop_hook_active);
+    let again = payload::parse(&golden("hermes_pre_verify_reentrant"), None).unwrap();
+    assert!(
+        again.stop_hook_active,
+        "a nudged pre_verify is the re-entrant stop"
+    );
+}
+
+#[test]
+fn hermes_first_turn_gets_the_standing_rule_as_context() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    let out = run("hermes_pre_llm_call_first", Some(Harness::Hermes), &mut d);
+    let ctx = out["context"].as_str().unwrap_or_else(|| panic!("{out}"));
+    assert!(ctx.contains("logbear npm run dev"), "{ctx}");
+    assert_eq!(d.seen[0].2, "hermes");
+}
+
+/// `pre_verify` only fires on turns that edited code, so errors from any other turn are
+/// told at the start of the next one.
+#[test]
+fn hermes_later_turns_hear_about_unseen_errors() {
+    let mut d = FakeDaemon::with(UnreadState {
+        unseen_lines: 4,
+        ..unread()
+    });
+    let out = run("hermes_pre_llm_call", Some(Harness::Hermes), &mut d);
+    let ctx = out["context"].as_str().unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        ctx.contains("2 new errors") || ctx.contains("2 unread"),
+        "{ctx}"
+    );
+    assert_eq!(d.acks, vec![(None, AckKind::Nudge)]);
+}
+
+#[test]
+fn hermes_quiet_turns_say_nothing() {
+    let mut d = FakeDaemon::with(UnreadState {
+        push_enabled: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        run("hermes_pre_llm_call", Some(Harness::Hermes), &mut d),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn hermes_pre_verify_blocks_in_the_claude_dialect_it_accepts() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("hermes_pre_verify", Some(Harness::Hermes), &mut d);
+    assert_eq!(out["decision"], "block", "{out}");
+    assert!(out["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Ecto.NoResultsError"));
+    assert_eq!(d.acks, vec![(Some(1002), AckKind::StopBlock)]);
+}
+
+/// Hermes reads any message on `pre_verify` as "keep going", so a stop-time advisory has
+/// nowhere to go. It must not be marked as told either, or the next turn's context would
+/// skip errors nobody ever saw.
+#[test]
+fn hermes_reentrant_pre_verify_stays_silent_and_leaves_the_errors_unread() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("hermes_pre_verify_reentrant", Some(Harness::Hermes), &mut d);
+    assert_eq!(out, serde_json::json!({}));
+    assert!(d.acks.is_empty(), "{:?}", d.acks);
+}
+
+// --------------------------------------------------------------------------- pi
+
+/// The pi extension speaks Claude's dialect on both sides, so only the harness tag differs.
+#[test]
+fn pi_blocks_like_claude_under_its_own_name() {
+    let mut d = FakeDaemon::with(unread());
+    let out = run("claude_stop", Some(Harness::Pi), &mut d);
+    assert_eq!(out["decision"], "block", "{out}");
+    assert_eq!(d.seen[0].2, "pi");
 }
 
 fn invoke(args: &[&str], stdin: &str) -> std::process::Output {

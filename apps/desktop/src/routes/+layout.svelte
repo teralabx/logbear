@@ -5,6 +5,7 @@
 	import NoticeStack from '$lib/components/NoticeStack.svelte';
 	import { app } from '$lib/stores/app.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
+	import { rail } from '$lib/stores/rail.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -19,7 +20,9 @@
 		}
 		const stopTheme = theme.init();
 		const stopApp = app.init();
+		const stopRail = rail.init();
 		return () => {
+			stopRail();
 			stopApp();
 			stopTheme();
 		};

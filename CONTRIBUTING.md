@@ -76,7 +76,7 @@ else should stay a thin adapter over it.
 ## Licensing of contributions
 
 By submitting a pull request you agree that your contribution is licensed under the terms
-in [LICENSE.md](LICENSE.md) (FSL-1.1-MIT, converting to MIT two years after each release).
+in [LICENSE.md](LICENSE.md) (MIT).
 
 ## Code of Conduct
 

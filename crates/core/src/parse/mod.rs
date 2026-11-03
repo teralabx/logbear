@@ -24,7 +24,8 @@ use crate::parse::severity::Evidence;
 /// One physical line of the captured stream, verbatim.
 #[derive(Debug, Clone)]
 pub struct RawLine {
-    /// Index within the run, from zero. Stable for the life of the run; entries point at it.
+    /// Index within the run, from zero. Stable for the life of the run, which squashing
+    /// ends: it renumbers the surviving lines. Entries point at it.
     pub index: i64,
     pub captured_at: i64,
     /// Bytes with the trailing newline removed, everything else intact, ANSI included.
@@ -175,6 +176,21 @@ impl Parser {
             last_activity: 0,
             redactor: None,
         }
+    }
+
+    /// A parser that carries on a run already holding `next_index` lines.
+    ///
+    /// A run with lines has had its mode settled, so the mode is locked rather than
+    /// sampled again from the tail, which would group the two halves under different rules.
+    pub fn resume(next_index: i64, mode: DelimiterMode) -> Parser {
+        let mut p = Parser::new();
+        p.splitter.next_index = next_index;
+        if next_index > 0 {
+            p.mode = mode;
+            p.mode_locked = true;
+            p.grouper.set_mode(mode);
+        }
+        p
     }
 
     pub fn with_redactor(mut self, r: std::sync::Arc<crate::redact::Redactor>) -> Parser {
@@ -466,6 +482,30 @@ mod tests {
         assert_eq!(entries.len(), 9, "{:#?}", entries.len());
         assert_eq!(entries.iter().filter(|e| e.is_error).count(), 1);
         assert_eq!(entries.last().unwrap().boundaries, Boundaries::Exact);
+    }
+
+    #[test]
+    fn an_unprefixed_exception_amid_prefixed_logs_is_its_own_error() {
+        let mut stream = Vec::new();
+        for i in 0..3 {
+            for j in 0..20 {
+                stream.extend_from_slice(format!("[info] request {i}{j:02} handled in 12ms\n").as_bytes());
+            }
+            stream.extend_from_slice(
+                format!("Error: upstream timeout on shard {i}\n    at fetch (/app/net.js:10:5)\n").as_bytes(),
+            );
+        }
+        let mut p = Parser::new();
+        let mut entries = p.push(&stream, 0).entries;
+        entries.extend(p.finish(1).entries);
+        assert_eq!(p.mode(), DelimiterMode::Prefix);
+        let errs: Vec<_> = entries.iter().filter(|e| e.is_error).collect();
+        assert_eq!(errs.len(), 3, "{entries:#?}");
+        for e in errs {
+            assert_eq!(e.level, Level::Error);
+            assert!(e.text.starts_with("Error: upstream timeout"), "{:?}", e.text);
+            assert!(e.text.contains("at fetch"), "frames stay with their banner: {:?}", e.text);
+        }
     }
 
     #[test]

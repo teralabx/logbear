@@ -16,7 +16,8 @@ import type {
 	EntryView,
 	Evidence,
 	Fingerprint,
-	FingerprintHistoryPoint,
+	FingerprintHistory,
+	RunErrorCount,
 	GitCommit,
 	InstallStatus,
 	InstallStep,
@@ -28,6 +29,7 @@ import type {
 	Run,
 	RunDiff,
 	RunRef,
+	SquashReport,
 	LogbearEvent,
 	Settings,
 	StepState
@@ -627,6 +629,7 @@ function buildRun(project: Project, startedAt: number, opts: { active?: boolean 
 		term_cols: pick([80, 120, 132, 164]),
 		delimiter_mode: pid === 1 ? pick(['colour_bracket', 'prefix']) : pick(['json', 'prefix', 'fallback']),
 		chunks_evicted: false,
+		squashed_at: null,
 		counters: emptyCounters()
 	};
 
@@ -883,6 +886,30 @@ const installStatus: InstallStatus = {
 		available: false,
 		detail: 'Codex CLI not found on PATH — install it first, then re-check',
 		backup: null
+	},
+	mcp_pi: {
+		installed: false,
+		available: true,
+		detail: 'not registered in ~/.pi/agent/mcp.json',
+		backup: null
+	},
+	hook_pi: {
+		installed: false,
+		available: true,
+		detail: 'not installed in ~/.pi/agent/extensions/logbear.ts',
+		backup: null
+	},
+	mcp_hermes: {
+		installed: false,
+		available: false,
+		detail: 'Hermes was not detected on this machine',
+		backup: null
+	},
+	hook_hermes: {
+		installed: false,
+		available: false,
+		detail: 'Hermes was not detected on this machine',
+		backup: null
 	}
 };
 
@@ -956,7 +983,10 @@ export const mock = {
 			const q = filter.search.toLowerCase();
 			all = all.filter((e) => e.text.toLowerCase().includes(q));
 		}
-		all.sort((a, b) => (filter.ascending === false ? b.id - a.id : a.id - b.id));
+		if (filter.fingerprint_id != null)
+			all = all.filter((e) => e.fingerprint_id === filter.fingerprint_id);
+		// Newest first unless asked otherwise, as the daemon does.
+		all.sort((a, b) => (filter.ascending ? a.id - b.id : b.id - a.id));
 		const off = filter.offset ?? 0;
 		return delay(all.slice(off, off + (filter.limit ?? 500)));
 	},
@@ -977,16 +1007,32 @@ export const mock = {
 		return delay(fps.slice(0, limit));
 	},
 
-	fingerprint_history: (ref: ProjectRef, fingerprintId: number, limit = 30) => {
+	fingerprint_histories: (ref: ProjectRef, ids: number[], limit = 30) => {
 		const p = resolveProject(ref);
-		const out: FingerprintHistoryPoint[] = runsOf(p.id)
-			.slice(0, limit)
-			.map((r) => ({
+		const recent = runsOf(p.id).slice(0, limit).reverse();
+		const out: FingerprintHistory[] = ids.map((id) => ({
+			fingerprint_id: id,
+			points: recent.map((r) => ({
 				run_id: r.run.id,
 				started_at: r.run.started_at,
-				count: r.entries.filter((e) => e.fingerprint_id === fingerprintId).length
+				count: r.entries.filter((e) => e.fingerprint_id === id).length
 			}))
-			.reverse();
+		}));
+		return delay(out);
+	},
+
+	run_error_counts: (ref: ProjectRef, runIds: number[]) => {
+		const p = resolveProject(ref);
+		const out: RunErrorCount[] = [];
+		for (const id of runIds) {
+			const errs = findRun(p.id, id).entries.filter((e) => e.is_error);
+			if (errs.length)
+				out.push({
+					run_id: id,
+					total: errs.length,
+					new: errs.filter((e) => e.is_new_signature).length
+				});
+		}
 		return delay(out);
 	},
 
@@ -1031,11 +1077,38 @@ export const mock = {
 			bytes_cap: p.retention_bytes ?? settings.retention_bytes,
 			runs_total: rs.length,
 			runs_evicted: p.id === 1 ? 14 : 0,
+			runs_squashed: rs.filter((x) => x.run.squashed_at !== null).length,
 			oldest_run_at: rs.length ? rs[rs.length - 1].run.started_at : null
 		});
 	},
 
 	reparse: () => delay(null, 400),
+
+	squash: (ref: ProjectRef, runId: number | null) => {
+		const p = resolveProject(ref);
+		const before = dbBytes(p.id);
+		let runs = 0;
+		let dropped = 0;
+		for (const d of runsOf(p.id)) {
+			const r = d.run;
+			if ((runId !== null && r.id !== runId) || r.ended_at === null || r.squashed_at !== null) continue;
+			const seen = new Set<string>();
+			const kept = d.entries.filter((e) => {
+				const key = `${e.level}\u0000${e.fingerprint_id ?? e.text}`;
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			});
+			dropped += d.entries.length - kept.length;
+			d.entries = kept;
+			r.squashed_at = Date.now() * 1000;
+			runs += 1;
+		}
+		return delay<SquashReport>(
+			{ runs, entries_dropped: dropped, bytes_before: before, bytes_after: Math.round(before * (runs ? 0.4 : 1)) },
+			500
+		);
+	},
 
 	delete_run: (ref: ProjectRef, runId: number) => {
 		const p = resolveProject(ref);

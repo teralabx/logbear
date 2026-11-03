@@ -23,7 +23,9 @@ fn main() {
                 match args.get(i + 1).and_then(|s| Harness::parse(s)) {
                     Some(h) => forced = Some(h),
                     None => {
-                        eprintln!("logbear-hook: --harness takes `claude` or `codex`");
+                        eprintln!(
+                            "logbear-hook: --harness takes `claude`, `codex`, `pi` or `hermes`"
+                        );
                         // Still allow: a misconfigured hook must not break the agent.
                         return emit(&logbear_hook::allow());
                     }
@@ -80,34 +82,37 @@ fn emit_config(which: &str) {
     let harness = match Harness::parse(which) {
         Some(h) => h,
         None => {
-            eprintln!("logbear-hook: --emit-config takes `claude` or `codex`");
+            eprintln!("logbear-hook: --emit-config takes `claude`, `codex`, `pi` or `hermes`");
             std::process::exit(2);
         }
     };
-    let block = config::emit(harness, &config::self_command());
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&block).expect("a literal json value serialises")
-    );
-    if harness == Harness::Codex {
-        // stdout stays pure JSON so it can be piped into a merge; the trust caveat goes to
-        // stderr for the installer and `doctor`.
-        eprintln!("note: {}", config::CODEX_TRUST_NOTE);
+    // stdout carries only the config, so it can be piped into a merge; trust caveats go to
+    // stderr for the installer and `doctor`.
+    print!("{}", config::render(harness, &config::self_path()));
+    if !matches!(harness, Harness::Hermes | Harness::Pi) {
+        println!();
+    }
+    match harness {
+        Harness::Codex => eprintln!("note: {}", config::CODEX_TRUST_NOTE),
+        Harness::Hermes => eprintln!("note: {}", config::HERMES_TRUST_NOTE),
+        _ => {}
     }
 }
 
 fn help() {
     println!(
         "logbear-hook {}\n\n\
-         Invoked by Claude Code and Codex, not by hand. Reads the harness's hook payload on\n\
-         stdin and writes a hook response on stdout.\n\n\
+         Invoked by Claude Code, Codex, pi and Hermes, not by hand. Reads the harness's hook\n\
+         payload on stdin and writes a hook response on stdout.\n\n\
          Options:\n  \
-           --harness <claude|codex>      Which harness is calling. Auto-detected if omitted.\n  \
-           --emit-config <claude|codex>  Print the config block to merge into that harness.\n  \
+           --harness <claude|codex|pi|hermes>      Which harness is calling. Auto-detected if omitted.\n  \
+           --emit-config <claude|codex|pi|hermes>  Print what registers the hook with that harness.\n  \
            --version, --help\n\n\
          Config locations:\n  \
            claude   ~/.claude/settings.json\n  \
-           codex    ~/.codex/hooks.json  (or [hooks] in ~/.codex/config.toml)\n",
+           codex    ~/.codex/hooks.json  (or [hooks] in ~/.codex/config.toml)\n  \
+           pi       ~/.pi/agent/extensions/logbear.ts  (an extension, not a config block)\n  \
+           hermes   the hooks: block of ~/.hermes/config.yaml\n",
         env!("CARGO_PKG_VERSION")
     );
 }

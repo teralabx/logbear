@@ -28,6 +28,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # tauri-build refuses to compile the desktop crate unless every `externalBin` sidecar
+      # exists, and those are build outputs (`scripts/sidecars.sh`), never committed.
+      # Nothing here bundles the app, so empty stand-ins are enough to let it compile.
+      - name: Stub the Tauri sidecars
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries
+          for bin in logbear logbeard logbear-mcp logbear-hook; do
+            touch "apps/desktop/src-tauri/binaries/$bin-$triple"
+          done
+
       # No `cargo fmt --check`: this codebase is hand-formatted wider than rustfmt's
       # defaults, and adopting them is a 36-file mechanical diff nobody has asked for.
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -52,6 +63,8 @@ jobs:
 
       - run: bun run check
 
+      - run: bun run test
+
       - run: bun run build
 
   manifest:
@@ -68,6 +81,6 @@ jobs:
       # file that does not resolve — before a release depends on it.
       #
       # Only `logbear-core` for now: `cargo package` resolves dependencies against the
-      # real index, so the four crates that depend on it cannot be packaged until it has
-      # been published once. Add them to this list after the first release.
+      # real index, so every crate that depends on it — `logbear-setup` first — cannot be
+      # packaged until it has been published once. Add them after the first release.
       - run: cargo package -p logbear-core --no-verify

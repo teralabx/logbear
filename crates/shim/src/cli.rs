@@ -19,8 +19,11 @@ pub const SUBCOMMANDS: &[&str] = &[
     "diff",
     "status",
     "doctor",
+    "setup",
+    "updates",
     "query",
     "sql-schema",
+    "squash",
 ];
 
 const TOP_LEVEL_FLAGS: &[&str] = &["-h", "--help", "-V", "--version", "help"];
@@ -173,6 +176,28 @@ pub enum Cmd {
         json: bool,
     },
 
+    /// Connect logbear to the coding agents on this machine: MCP server and hook for each of
+    /// Claude Code, Codex, pi and Hermes found, plus the daemon service. Shows the plan and
+    /// asks before writing anything; every config is backed up and merged.
+    Setup {
+        /// Only these agents. Repeatable. Without it, every agent found, and the daemon.
+        #[arg(long = "agent", value_enum)]
+        agents: Vec<crate::setup::Agent>,
+        /// Apply without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Undo instead: take logbear back out of each agent's config.
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// Opt-in update checks: `on`, `off`, or `check` now. Off by default; when on,
+    /// `logbear doctor` asks GitHub for the latest release at most once a day.
+    Updates {
+        /// on | off | check. Without it, the current state.
+        action: Option<String>,
+    },
+
     /// Read-only SQL against the current project's database.
     Query {
         sql: String,
@@ -182,6 +207,16 @@ pub enum Cmd {
 
     /// Print the schema, views and worked examples an agent needs before writing SQL.
     SqlSchema,
+
+    /// Shrink finished runs to the first occurrence of each distinct entry. Repeats that
+    /// differ only in timestamps, ids or numbers are dropped; counts are kept. Retention
+    /// does this on its own before evicting anything; this does it now.
+    Squash {
+        /// One run. Without it, every finished run in the current project.
+        run_id: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Runs a subcommand and returns the process exit code. clap's `--help` and `--version`

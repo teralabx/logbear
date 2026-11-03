@@ -88,9 +88,17 @@ pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
                         run_id,
                         start_line,
                         end_line,
+                        tail_lines,
                     } => {
-                        let outcome =
-                            stream_raw(&daemon, &mut writer, &project, run_id, start_line, end_line);
+                        let outcome = stream_raw(
+                            &daemon,
+                            &mut writer,
+                            &project,
+                            run_id,
+                            start_line,
+                            end_line,
+                            tail_lines,
+                        );
                         let response = match outcome {
                             Ok(()) => Response::ok(()),
                             Err(e) => Response::err("raw_stream", e.to_string()),
@@ -146,6 +154,27 @@ fn reply(w: &mut BufWriter<UnixStream>, response: Response) -> Result<()> {
     Ok(())
 }
 
+/// How recently a hook session must have been seen for a read receipt to apply to it.
+const RECEIPT_WINDOW_MICROS: i64 = 30 * 60 * 1_000_000;
+
+/// Best-effort by design: a receipt failure must never fail the read that produced it.
+fn receipt(h: &ProjectHandle, fps: Vec<FingerprintId>) {
+    if fps.is_empty() {
+        return;
+    }
+    if let Err(e) = read::record_seen_for_active(&h.db, &fps, RECEIPT_WINDOW_MICROS) {
+        eprintln!("logbeard: read receipt failed ({e})");
+    }
+}
+
+fn error_fps(views: &[EntryView]) -> Vec<FingerprintId> {
+    views
+        .iter()
+        .filter(|v| v.entry.is_error)
+        .filter_map(|v| v.entry.fingerprint_id)
+        .collect()
+}
+
 fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
     use serde_json::to_value;
 
@@ -198,16 +227,44 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
 
         Request::Entries { project, filter } => {
             let h = daemon.resolve(&project)?;
-            to_value(read::entries(&h.db, &filter)?)?
+            let views = read::entries(&h.db, &filter)?;
+            if !filter.unobserved {
+                receipt(&h, error_fps(&views));
+            }
+            to_value(views)?
         }
 
         Request::Fingerprints {
             project,
             limit,
             errors_only,
+            unobserved,
         } => {
             let h = daemon.resolve(&project)?;
-            to_value(read::fingerprints(&h.db, limit, errors_only)?)?
+            let fps = read::fingerprints(&h.db, limit, errors_only)?;
+            if !unobserved {
+                let ids: Vec<FingerprintId> = fps
+                    .iter()
+                    .filter(|f| matches!(f.level, Level::Error))
+                    .map(|f| f.id)
+                    .collect();
+                receipt(&h, ids);
+            }
+            to_value(fps)?
+        }
+
+        Request::FingerprintHistories {
+            project,
+            fingerprint_ids,
+            limit,
+        } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::fingerprint_histories(&h.db, &fingerprint_ids, limit.min(500))?)?
+        }
+
+        Request::RunErrorCounts { project, run_ids } => {
+            let h = daemon.resolve(&project)?;
+            to_value(read::run_error_counts(&h.db, &run_ids)?)?
         }
 
         Request::Query {
@@ -219,7 +276,12 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             let h = daemon.resolve(&project)?;
             // Runs on its own read-only connection, so an agent's SQL cannot touch the
             // daemon's write handle or any other project.
-            to_value(sandbox::query(h.db.path(), &sql, &params, max_rows)?)?
+            let result = sandbox::query(h.db.path(), &sql, &params, max_rows)?;
+            match read::query_receipt_fps(&h.db, &result.columns, &result.rows) {
+                Ok(fps) => receipt(&h, fps),
+                Err(e) => eprintln!("logbeard: query receipt failed ({e})"),
+            }
+            to_value(result)?
         }
 
         Request::Schema { project } => {
@@ -248,7 +310,17 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
 
         Request::Diff { project, a, b } => {
             let h = daemon.resolve(&project)?;
-            to_value(diff::diff(&h.db, a, b)?)?
+            let d = diff::diff(&h.db, a, b)?;
+            let fps: Vec<FingerprintId> = d
+                .new_signatures
+                .iter()
+                .chain(d.resolved_signatures.iter())
+                .chain(d.changed_counts.iter())
+                .filter(|s| matches!(s.level, Level::Error))
+                .map(|s| s.fingerprint_id)
+                .collect();
+            receipt(&h, fps);
+            to_value(d)?
         }
 
         Request::Wait {
@@ -271,11 +343,13 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                     ..Default::default()
                 },
             )?;
-            if !already.is_empty() && after_entry.is_some() {
-                to_value(already)?
+            let served = if !already.is_empty() && after_entry.is_some() {
+                already
             } else {
-                to_value(daemon.wait(h.project.id, timeout_ms.min(600_000), level, after_entry))?
-            }
+                daemon.wait(h.project.id, timeout_ms.min(600_000), level, after_entry)
+            };
+            receipt(&h, error_fps(&served));
+            to_value(served)?
         }
 
         Request::Unread {
@@ -284,9 +358,16 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             harness,
         } => {
             let h = daemon.resolve(&project)?;
-            let budget = daemon.settings().block_budget;
-            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
-            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            let s = daemon.settings();
+            let mut state = read::unread(
+                &h.db,
+                &session_id,
+                &harness,
+                s.block_budget,
+                s.change_block_budget,
+                20,
+            )?;
+            state.push_enabled = h.project.push_enabled && s.push_enabled;
             to_value(state)?
         }
 
@@ -295,14 +376,21 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
             session_id,
             harness,
             entry_id,
-            record_block,
+            kind,
         } => {
             let h = daemon.resolve(&project)?;
-            let budget = daemon.settings().block_budget;
-            if record_block {
+            let s = daemon.settings();
+            if kind.is_block() {
                 // Record the reported signatures before advancing, so a repeat of the same
                 // one can never block this session twice.
-                let reported = read::unread(&h.db, &session_id, &harness, budget, 50)?;
+                let reported = read::unread(
+                    &h.db,
+                    &session_id,
+                    &harness,
+                    s.block_budget,
+                    s.change_block_budget,
+                    50,
+                )?;
                 let fps: Vec<FingerprintId> = reported
                     .entries
                     .iter()
@@ -310,9 +398,16 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                     .collect();
                 read::record_block(&h.db, &session_id, &fps)?;
             }
-            read::ack(&h.db, &session_id, &harness, entry_id, record_block)?;
-            let mut state = read::unread(&h.db, &session_id, &harness, budget, 20)?;
-            state.push_enabled = h.project.push_enabled && daemon.settings().push_enabled;
+            read::ack(&h.db, &session_id, &harness, entry_id, kind)?;
+            let mut state = read::unread(
+                &h.db,
+                &session_id,
+                &harness,
+                s.block_budget,
+                s.change_block_budget,
+                20,
+            )?;
+            state.push_enabled = h.project.push_enabled && s.push_enabled;
             to_value(state)?
         }
 
@@ -344,9 +439,9 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
         Request::Vacuum { project } => {
             let h = daemon.resolve(&project)?;
             let cap = daemon.retention_cap(&h.project);
-            let evicted = retention::enforce(&h.db, cap)?;
+            let sweep = retention::enforce(&h.db, cap)?;
             retention::reclaim(&h.db)?;
-            to_value(evicted)?
+            to_value(sweep)?
         }
 
         Request::Reparse { project, run_id } => {
@@ -356,6 +451,18 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                 None => retention::reparse_all(&h.db)?,
             };
             to_value(n)?
+        }
+
+        Request::Squash { project, run_id } => {
+            let h = daemon.resolve(&project)?;
+            let report = match run_id {
+                Some(id) => retention::squash_one(&h.db, id)?,
+                None => retention::squash_all(&h.db)?,
+            };
+            if report.runs > 0 {
+                daemon.broadcast(Event::ProjectsChanged);
+            }
+            to_value(report)?
         }
 
         Request::DeleteRun { project, run_id } => {
@@ -384,6 +491,7 @@ fn stream_raw(
     run_id: RunId,
     start_line: Option<i64>,
     end_line: Option<i64>,
+    tail_lines: Option<i64>,
 ) -> Result<()> {
     let h = daemon.resolve(project)?;
     let run = read::get_run(&h.db, run_id)?;
@@ -392,8 +500,11 @@ fn stream_raw(
             "the raw log for this run was evicted by the retention cap; its summary and error signatures are still available",
         ));
     }
-    let start = start_line.unwrap_or(0);
     let end = end_line.unwrap_or(i64::MAX);
+    let start = match tail_lines {
+        Some(n) => (read::line_count(&h.db, run_id)?.min(end.saturating_add(1)) - n.max(0)).max(0),
+        None => start_line.unwrap_or(0),
+    };
 
     // Paged rather than one enormous frame: a long dev-server run is hundreds of megabytes
     // and the reader wants to start painting before it has all of it.
@@ -401,7 +512,7 @@ fn stream_raw(
     let mut at = start;
     loop {
         let stop = at.saturating_add(PAGE).min(end);
-        let bytes = h.db.with(|c| logbear_core::store::raw_range(c, run_id, at, stop))?;
+        let bytes = h.db.read(|c| logbear_core::store::raw_range(c, run_id, at, stop))?;
         if bytes.is_empty() {
             break;
         }

@@ -5,7 +5,7 @@
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
-	import { apiError, entries, fingerprintHistory, fingerprints, projectRef } from '$lib/api';
+	import { apiError, entries, fingerprintHistories, fingerprints, projectRef } from '$lib/api';
 	import { app } from '$lib/stores/app.svelte';
 	import { fmtAgo, fmtStamp, pluralise } from '$lib/format';
 	import type { EntryView, Fingerprint, FingerprintHistoryPoint } from '$lib/api/types';
@@ -46,20 +46,17 @@
 				if (cancelled) return;
 				fps = list;
 
-				const all = await entries(ref, { limit: 8000, ascending: false });
-				if (cancelled) return;
-				const byFp: Record<number, EntryView[]> = {};
-				for (const e of all) {
-					if (e.fingerprint_id === null) continue;
-					(byFp[e.fingerprint_id] ??= []).push(e);
-				}
-				instances = byFp;
-
-				const hist = await Promise.all(
-					list.map(async (f) => [f.id, await fingerprintHistory(ref, f.id, 30)] as const)
+				// Instances are fetched when a signature is opened, not up front: reading
+				// every stored entry to group it client-side was most of this screen's
+				// load time, for rows nobody had clicked.
+				instances = {};
+				const hist = await fingerprintHistories(
+					ref,
+					list.map((f) => f.id),
+					30
 				);
 				if (cancelled) return;
-				history = Object.fromEntries(hist);
+				history = Object.fromEntries(hist.map((h) => [h.fingerprint_id, h.points]));
 				loading = false;
 			} catch (err) {
 				if (!cancelled) {
@@ -69,6 +66,28 @@
 			}
 		})();
 
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	/** Instances shown when a signature is opened. One more is fetched to know if there are more. */
+	const INSTANCES = 40;
+	let instancesError = $state<string | null>(null);
+
+	$effect(() => {
+		const id = open;
+		const pid = projectId;
+		if (id === null || instances[id]) return;
+		let cancelled = false;
+		instancesError = null;
+		entries(projectRef(pid), { fingerprint_id: id, limit: INSTANCES + 1, ascending: false })
+			.then((es) => {
+				if (!cancelled) instances = { ...instances, [id]: es };
+			})
+			.catch((err) => {
+				if (!cancelled) instancesError = apiError(err);
+			});
 		return () => {
 			cancelled = true;
 		};
@@ -219,15 +238,22 @@
 				</button>
 
 				{#if open === f.id}
-					{@const rows = (instances[f.id] ?? []).slice(0, 40)}
+					{@const fetched = instances[f.id]}
+					{@const rows = (fetched ?? []).slice(0, INSTANCES)}
 					<div class="border-t border-dashed border-hair-strong px-4 pt-1 pb-[14px]">
 						<div class="flex items-baseline justify-between pt-2 pb-[6px]">
 							<span class="label-xs"
-								>{pluralise(instances[f.id]?.length ?? 0, 'stored instance')}, newest first</span
+								>{fetched && fetched.length > INSTANCES
+									? `${INSTANCES} newest stored instances`
+									: pluralise(rows.length, 'stored instance') + ', newest first'}</span
 							>
 							<span class="tnum text-[10.5px] text-meta">fingerprint {f.hash.slice(0, 12)}</span>
 						</div>
-						{#if rows.length === 0}
+						{#if instancesError && !fetched}
+							<ErrorNote what="Could not read this signature's instances." detail={instancesError} />
+						{:else if !fetched}
+							<p class="mt-[6px] text-[11.5px] text-meta">Reading instances…</p>
+						{:else if rows.length === 0}
 							<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
 								The instances for this signature have been evicted by the retention cap. The
 								signature's counts survive eviction; the text does not.
@@ -251,9 +277,10 @@
 									</li>
 								{/each}
 							</ul>
-							{#if (instances[f.id]?.length ?? 0) > rows.length}
+							{#if fetched.length > rows.length}
 								<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
-									Showing the {rows.length} newest of {instances[f.id].length} stored instances.
+									Showing the {rows.length} newest. Older instances are on each run's page, or
+									<code>logbear query</code> reaches all of them.
 								</p>
 							{/if}
 						{/if}

@@ -130,9 +130,10 @@ static STRUCTURAL: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r(r"(?m)^Caused by: "), "exception_cause_chain"),
         (r(r"(?m)^Unhandled (?:exception|rejection|promise rejection)"), "unhandled_exception"),
         // Column-zero `SomeError: message`: how Python terminates a traceback and how Node
-        // prints an uncaught throw. Anchored and capitalised so it cannot fire on prose.
+        // prints an uncaught throw, including the bare `Error:` of `throw new Error()` and
+        // Python's `Exception:`. Anchored and capitalised so it cannot fire on prose.
         (
-            r(r"(?m)^[A-Z][A-Za-z0-9_.]*(?:Error|Exception|Fault|Interrupt):[ \t]"),
+            r(r"(?m)^(?:[A-Z][A-Za-z0-9_.]*(?:Error|Exception|Fault|Interrupt)|Error|Exception):[ \t]"),
             "exception_banner",
         ),
         // Emitted by the kernel or the shell, not by application code.
@@ -348,6 +349,17 @@ pub fn from_numeric_level(n: i64) -> Level {
     }
 }
 
+/// Whether one line is itself a structural banner. Grouping uses this to keep a banner
+/// from continuing an unrelated entry; it never sets a level.
+pub fn is_structural_banner(line: &str) -> bool {
+    structural(line).is_some()
+}
+
+/// Whether a line's own severity token declares an error.
+pub fn declares_error(line: &str) -> bool {
+    matches!(declared(line), Some((Level::Error, _)))
+}
+
 fn structural(text: &str) -> Option<&'static str> {
     STRUCTURAL
         .iter()
@@ -447,6 +459,7 @@ mod tests {
             ("Exception in thread \"main\" java.lang.NullPointerException", "java_exception"),
             ("TypeError: x is not a function", "exception_banner"),
             ("ValueError: boom", "exception_banner"),
+            ("Exception: boom", "exception_banner"),
         ] {
             let s = d(text);
             assert_eq!(s.level, Level::Error, "{text}");
