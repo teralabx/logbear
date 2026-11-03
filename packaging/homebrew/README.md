@@ -24,11 +24,13 @@ stripping that prefix.
 
 ## Publishing to crates.io
 
-Order matters. Four crates depend on `logbear-core`, and `cargo publish` resolves against
-the real index, so the dependency has to exist there first:
+Order matters. `cargo publish` resolves against the real index, so each crate's
+dependencies have to exist there first: everything depends on `logbear-core`, and
+`logbear` (the CLI) and the desktop app also depend on `logbear-setup`:
 
 ```sh
 cargo publish -p logbear-core
+cargo publish -p logbear-setup
 cargo publish -p logbeard -p logbear-mcp -p logbear-hook -p logbear
 ```
 
@@ -36,10 +38,19 @@ cargo publish -p logbeard -p logbear-mcp -p logbear-hook -p logbear
 
 ## Cutting a release
 
-The formula pins a tarball by hash, so both change together.
+Pushing a tag runs [`release.yml`](../../.github/workflows/release.yml): it checks the tag
+against the workspace version, runs the tests, builds the four binaries for both macOS
+architectures, and publishes them as a GitHub release with a `.sha256` beside each archive.
+Those archives are what [`install.sh`](../../install.sh) downloads.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
+```
+
+The formula pins GitHub's source tarball by hash. The workflow's run summary prints the
+`url` and `sha256` to paste; by hand it is:
+
+```sh
 curl -sL https://github.com/teralabx/logbear/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
 ```
 

@@ -225,8 +225,12 @@ export interface InstallStatus {
 	daemon: StepState;
 	mcp_claude: StepState;
 	mcp_codex: StepState;
+	mcp_pi: StepState;
+	mcp_hermes: StepState;
 	hook_claude: StepState;
 	hook_codex: StepState;
+	hook_pi: StepState;
+	hook_hermes: StepState;
 }
 
 export type InstallStep = keyof InstallStatus;
@@ -275,6 +279,10 @@ export const INSTALL_STEPS: InstallStep[] = [
 	'daemon',
 	'mcp_claude',
 	'mcp_codex',
+	'mcp_pi',
+	'mcp_hermes',
 	'hook_claude',
-	'hook_codex'
+	'hook_codex',
+	'hook_pi',
+	'hook_hermes'
 ];

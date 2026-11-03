@@ -234,6 +234,22 @@
 		hook_codex: {
 			title: 'Session hook — Codex',
 			what: 'The same session summary, wired into the Codex CLI.'
+		},
+		mcp_pi: {
+			title: 'MCP server — pi',
+			what: 'Registers logbear in ~/.pi/agent/mcp.json with direct tool exposure, so pi sees the tools without searching for them. Needs pi 1.0 or later.'
+		},
+		mcp_hermes: {
+			title: 'MCP server — Hermes',
+			what: 'Adds logbear under mcp_servers in ~/.hermes/config.yaml, between marker comments so removing it leaves the rest of the file untouched.'
+		},
+		hook_pi: {
+			title: 'Extension — pi',
+			what: 'pi has no command hooks, so this writes a small extension to ~/.pi/agent/extensions that runs the logbear hook: it states the rule once per session, notes new output after edits, and keeps pi working while errors it has not seen are unread.'
+		},
+		hook_hermes: {
+			title: 'Shell hooks — Hermes',
+			what: 'Adds pre_llm_call and pre_verify hooks to ~/.hermes/config.yaml. Hermes holds back from finishing a turn that edited code while new errors are unread, and hears about errors from other turns when your next message arrives. Approve both when Hermes asks.'
 		}
 	};
 

@@ -886,6 +886,30 @@ const installStatus: InstallStatus = {
 		available: false,
 		detail: 'Codex CLI not found on PATH — install it first, then re-check',
 		backup: null
+	},
+	mcp_pi: {
+		installed: false,
+		available: true,
+		detail: 'not registered in ~/.pi/agent/mcp.json',
+		backup: null
+	},
+	hook_pi: {
+		installed: false,
+		available: true,
+		detail: 'not installed in ~/.pi/agent/extensions/logbear.ts',
+		backup: null
+	},
+	mcp_hermes: {
+		installed: false,
+		available: false,
+		detail: 'Hermes was not detected on this machine',
+		backup: null
+	},
+	hook_hermes: {
+		installed: false,
+		available: false,
+		detail: 'Hermes was not detected on this machine',
+		backup: null
 	}
 };
 

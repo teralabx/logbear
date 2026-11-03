@@ -70,6 +70,6 @@ jobs:
       # file that does not resolve — before a release depends on it.
       #
       # Only `logbear-core` for now: `cargo package` resolves dependencies against the
-      # real index, so the four crates that depend on it cannot be packaged until it has
-      # been published once. Add them to this list after the first release.
+      # real index, so every crate that depends on it — `logbear-setup` first — cannot be
+      # packaged until it has been published once. Add them after the first release.
       - run: cargo package -p logbear-core --no-verify

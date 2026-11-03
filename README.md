@@ -81,30 +81,49 @@ and the diff view.
 ```sh
 brew install teralabx/tap/logbear
 brew services start logbear
-logbear doctor            # register the MCP server and the agent hook
+logbear setup             # connect your coding agents
 ```
 
-It lives in its own tap until it qualifies for `homebrew-core`. See
-[`packaging/homebrew`](packaging/homebrew).
+It lives in its own tap until it qualifies for `homebrew-core`; Homebrew may ask you to
+`brew trust` the tap the first time. See [`packaging/homebrew`](packaging/homebrew).
+
+**Install script** — the same four binaries, prebuilt, into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/teralabx/logbear/master/install.sh | sh
+logbear setup             # connect your coding agents and start the daemon
+```
+
+The script checks each download against the SHA-256 published with the release and changes
+nothing else on your machine. Read it first if you like: it is [`install.sh`](install.sh).
 
 **Cargo** — the same four binaries, built from source:
 
 ```sh
 cargo install logbear logbeard logbear-mcp logbear-hook
+logbear setup
 ```
+
+`logbear setup` finds Claude Code, Codex, pi and Hermes, shows exactly which files it would
+change, and asks before touching anything. `logbear setup --remove` takes it all back out.
 
 **The desktop app** is the easiest path, because it is also the installer. On first launch
 it offers, with confirmation for each step:
 
 1. `logbear` on your PATH
 2. `logbeard` as a background service that survives reboots
-3. the MCP server registered with Claude Code and Codex
-4. the hook installed in both
+3. the MCP server registered with each agent it finds: Claude Code, Codex, pi and Hermes
+4. the hook installed in each of them
+
+pi has no command hooks, so for pi the "hook" is a small extension written to
+`~/.pi/agent/extensions/logbear.ts`. Hermes gets two shell hooks in `~/.hermes/config.yaml`,
+added between marker comments so removing them leaves the rest of the file alone.
 
 Every config file is backed up before it is touched, every write **merges** rather than
 overwrites, and each step can be reverted individually. Nothing is done without asking.
 
-`logbear doctor` reports the state of all four and tells you how to fix whatever is broken.
+`logbear doctor` reports the state of every integration and tells you how to fix whatever is
+broken. It checks pi and Hermes only where they are installed.
 
 ### Platform support
 
@@ -127,6 +146,8 @@ logbear cat 42                  # replay a run byte for byte, ANSI intact
 logbear query "SELECT template, count(*) FROM v_errors GROUP BY 1"
 logbear status                  # daemon health, project, retention
 logbear doctor                  # check every integration
+logbear setup                   # connect agents: MCP server and hook for each one found
+logbear updates on              # opt in to a daily check for new releases (off by default)
 ```
 
 `logbear diff` with no arguments compares the **last known good** run — the most recent one
@@ -274,7 +295,11 @@ agent because our daemon is down is far worse than one that misses a notificatio
   replay stays aligned.
 - **Interactive programs are not captured.** `psql`, `ssh`, `vim` and friends are sessions
   rather than runs; they are denylisted by default and run untouched.
-- **Nothing leaves your machine.** There is no network code in this repository.
+- **Nothing leaves your machine.** Nothing you capture is ever sent anywhere. The only
+  network request logbear can make is the update check, and it is **off unless you turn it
+  on** with `logbear updates on`: then, at most once a day, one GET to GitHub's releases
+  API carrying a `User-Agent` with the installed version, and nothing else. It is the
+  whole of [`crates/shim/src/updates.rs`](crates/shim/src/updates.rs).
 
 ---
 
@@ -285,7 +310,7 @@ crates/core      capture, parsing, storage, query, diff, notification policy
 crates/shim      the `logbear` binary: PTY wrapper and CLI
 crates/daemon    `logbeard`
 crates/mcp       `logbear-mcp`, the stdio MCP server
-crates/hook      `logbear-hook`, one binary for both harnesses
+crates/hook      `logbear-hook`, one binary for every harness (and the pi extension)
 apps/desktop     Tauri v2 + SvelteKit
 packaging/       the Homebrew formula
 docs/            implementation notes
@@ -327,7 +352,8 @@ bug. Please report vulnerabilities privately rather than in a public issue — s
 **MIT** — the full text is in [`LICENSE.md`](LICENSE.md).
 
 Use it, modify it, redistribute it, sell it, build on it, fork it. Everything you install
-from this repository runs entirely on your machine, with no account and no network calls.
+from this repository runs entirely on your machine, with no account, and makes no network
+calls unless you opt in to update checks.
 
 The **logbear** name and the Delta mark are not covered by the licence grant. Fork the
 code freely; ship it under your own name.

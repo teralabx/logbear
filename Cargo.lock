@@ -2148,6 +2148,7 @@ dependencies = [
  "crossbeam-channel",
  "libc",
  "logbear-core",
+ "logbear-setup",
  "portable-pty",
  "serde",
  "serde_json",
@@ -2178,6 +2179,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "logbear-core",
+ "logbear-setup",
  "serde",
  "serde_json",
  "tauri",
@@ -2207,6 +2209,16 @@ dependencies = [
  "logbear-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "logbear-setup"
+version = "0.1.0"
+dependencies = [
+ "logbear-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -30,6 +30,12 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
         Cmd::Diff { a, b, json } => diff(a, b, json),
         Cmd::Status { json } => status(json),
         Cmd::Doctor { json } => crate::doctor::run(json),
+        Cmd::Setup {
+            agents,
+            yes,
+            remove,
+        } => crate::setup::run(agents, yes, remove),
+        Cmd::Updates { action } => crate::updates::run(action),
         Cmd::Query { sql, json } => query(&sql, json),
         Cmd::SqlSchema => sql_schema(),
         Cmd::Squash { run_id, json } => squash(run_id, json),

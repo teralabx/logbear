@@ -8,9 +8,11 @@
 mod cli;
 mod cmds;
 mod doctor;
+mod setup;
 mod sink;
 mod term;
 mod ui;
+mod updates;
 mod wrap;
 
 fn main() {
