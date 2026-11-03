@@ -39,6 +39,17 @@ jobs:
             exit 1
           fi
 
+      # tauri-build refuses to compile the desktop crate unless every `externalBin` sidecar
+      # exists, and those are build outputs (`scripts/sidecars.sh`), never committed.
+      # Nothing here bundles the app, so empty stand-ins are enough to let it compile.
+      - name: Stub the Tauri sidecars
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries
+          for bin in logbear logbeard logbear-mcp logbear-hook; do
+            touch "apps/desktop/src-tauri/binaries/$bin-$triple"
+          done
+
       - run: cargo test --workspace
 
       - name: Build and package

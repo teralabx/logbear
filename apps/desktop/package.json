@@ -1,7 +1,7 @@
 {
   "name": "logbear-desktop",
   "version": "0.1.0",
-  "description": "logbear \u2014 local run history and agent memory",
+  "description": "logbear — local run history and agent memory",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -27,6 +27,7 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.6",
     "daisyui": "5.7.4",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",

@@ -28,6 +28,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # tauri-build refuses to compile the desktop crate unless every `externalBin` sidecar
+      # exists, and those are build outputs (`scripts/sidecars.sh`), never committed.
+      # Nothing here bundles the app, so empty stand-ins are enough to let it compile.
+      - name: Stub the Tauri sidecars
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries
+          for bin in logbear logbeard logbear-mcp logbear-hook; do
+            touch "apps/desktop/src-tauri/binaries/$bin-$triple"
+          done
+
       # No `cargo fmt --check`: this codebase is hand-formatted wider than rustfmt's
       # defaults, and adopting them is a 36-file mechanical diff nobody has asked for.
       - run: cargo clippy --workspace --all-targets -- -D warnings
