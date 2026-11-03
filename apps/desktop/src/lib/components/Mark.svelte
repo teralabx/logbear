@@ -1,14 +1,13 @@
 <script lang="ts">
 	/**
 	 * The LogBear mark. A bear silhouette with three logged rows knocked out of
-	 * the face; the middle row carries the delta bar, shifted 3 units right and
-	 * recoloured to flare.
+	 * the face; the middle row carries the delta bar, which travels the length of
+	 * its slot when animated and parks at the right end when not.
 	 *
 	 * The rows are holes punched through the silhouette rather than shapes drawn
-	 * on top. That is what keeps the delta bar legible in both states — neutral
-	 * inside its slot while it animates, flare once it settles — and it means the
-	 * mark works unchanged on the ink and bone grounds, since the holes show
-	 * whatever is behind them.
+	 * on top. That is what keeps the delta bar legible across the whole travel,
+	 * and it means the mark works unchanged on the ink and bone grounds, since
+	 * the holes show whatever is behind them.
 	 *
 	 * The middle slot is both wider and taller than the bar it holds. That gap is
 	 * load-bearing: at equal height, or with the bar long enough to reach the end
@@ -35,16 +34,21 @@
 	const silhouette: Rect[] = [rect(9, 11, 14, 14), rect(41, 11, 14, 14), rect(8, 17, 48, 39)];
 	const radii = [7, 7, 15];
 
+	/* `delta` is the bar at the left end of its travel and `travel` is how far it
+	   slides to reach the right end. Both slots keep a padding of 2 on every side
+	   the bar can touch, so the two geometries travel different distances: the
+	   heavy row is wider but carries a wider bar. */
 	const geometry = $derived.by(() => {
 		if (size < 20) {
 			// One heavy row: at this size ragged edges read as noise.
-			return { rows: [rect(14, 31, 36, 10)], delta: rect(22, 33, 24, 6) };
+			return { rows: [rect(14, 31, 36, 10)], delta: rect(16, 33, 24, 6), travel: 8 };
 		}
 		// Ragged right edges, so the rows read as logged lines rather than as a
 		// menu icon.
 		return {
 			rows: [rect(16, 23, 30, 7), rect(16, 32, 34, 8), rect(16, 43, 21, 7)],
-			delta: rect(24, 34, 21, 4)
+			delta: rect(18, 34, 21, 4),
+			travel: 9
 		};
 	});
 
@@ -65,10 +69,12 @@
 
 	<rect width="64" height="64" fill="currentColor" mask="url(#{maskId})" />
 
-	<!-- At rest the bar is already offset and flared: the settled state is the
-	     correct one, and the animation ends exactly there. -->
+	<!-- A still mark parks at the right end, which is where the icon files in
+	     static/brand sit. -->
 	<rect
 		class:delta={animate}
+		class:parked={!animate}
+		style="--delta-travel: {geometry.travel}px"
 		x={geometry.delta.x}
 		y={geometry.delta.y}
 		width={geometry.delta.w}
@@ -79,28 +85,29 @@
 </svg>
 
 <style>
-	.delta {
-		animation: delta-shift 620ms cubic-bezier(0.16, 1, 0.3, 1) 260ms both;
+	.parked {
+		transform: translateX(var(--delta-travel));
 	}
 
-	/* Starts aligned and neutral, so the shift is what carries the meaning. */
+	.delta {
+		animation: delta-shift 2600ms ease-in-out infinite alternate;
+	}
+
+	/* Travel is in SVG user units, so it holds against the 64 viewBox at any
+	   rendered size. */
 	@keyframes delta-shift {
 		from {
-			transform: translateX(-3px);
-			fill: currentColor;
-		}
-		60% {
-			fill: currentColor;
+			transform: translateX(0);
 		}
 		to {
-			transform: translateX(0);
-			fill: var(--color-flare);
+			transform: translateX(var(--delta-travel));
 		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {
 		.delta {
 			animation: none;
+			transform: translateX(var(--delta-travel));
 		}
 	}
 </style>
