@@ -6,6 +6,18 @@
 	import { theme } from '$lib/stores/theme.svelte';
 	import { rail } from '$lib/stores/rail.svelte';
 	import { fmtBytes, tildePath } from '$lib/format';
+	import { ICON } from '$lib/icons';
+	import {
+		Activity,
+		GitCompareArrows,
+		History,
+		Moon,
+		PanelLeftClose,
+		PanelLeftOpen,
+		SlidersHorizontal,
+		Sun,
+		TriangleAlert
+	} from '@lucide/svelte';
 
 	/**
 	 * The persistent left rail. Always shows: where you are, which projects are
@@ -23,6 +35,14 @@
 	);
 
 	type Icon = 'live' | 'runs' | 'errors' | 'diff';
+	const ICONS = {
+		live: Activity,
+		runs: History,
+		errors: TriangleAlert,
+		diff: GitCompareArrows,
+		// Sliders rather than a cog: a cog drawn this small reads as the sun beside it.
+		settings: SlidersHorizontal
+	};
 	const sections = $derived(
 		currentId === null
 			? []
@@ -39,6 +59,8 @@
 	function isRunning(projectId: number): boolean {
 		return (app.statuses[projectId]?.active_runs.length ?? 0) > 0;
 	}
+
+	const themeTip = $derived(theme.isDark ? 'Dark theme · switch to light' : 'Light theme · switch to dark');
 
 	const daemonTip = $derived(
 		app.connected
@@ -111,39 +133,9 @@
 		'text-meta hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)] hover:text-base-content';
 </script>
 
-{#snippet icon(name: Icon | 'settings' | 'theme')}
-	<svg
-		viewBox="0 0 16 16"
-		width="15"
-		height="15"
-		fill="none"
-		stroke="currentColor"
-		stroke-width="1.4"
-		stroke-linecap="round"
-		stroke-linejoin="round"
-		aria-hidden="true"
-	>
-		{#if name === 'live'}
-			<path d="M1.5 8h3l2-4.5 3 9 2-4.5h3" />
-		{:else if name === 'runs'}
-			<path d="M5.5 4h9M5.5 8h9M5.5 12h9" /><path d="M1.5 4h1M1.5 8h1M1.5 12h1" />
-		{:else if name === 'errors'}
-			<path d="M8 1.8 14.6 13.5H1.4Z" /><path d="M8 6.2v3.4M8 11.6v.1" />
-		{:else if name === 'diff'}
-			<path d="M4.5 1.5v13M11.5 1.5v13" /><path d="M2 5h5M9 11h5M11.5 8.5v5" />
-		{:else if name === 'settings'}
-			<!-- Sliders rather than a cog: a cog drawn this small reads as the sun beside it. -->
-			<path d="M2 4h6.5M11.5 4H14M2 8h2M7 8h7M2 12h7.5M12.5 12H14" />
-			<circle cx="10" cy="4" r="1.5" /><circle cx="5.5" cy="8" r="1.5" /><circle cx="11" cy="12" r="1.5" />
-		{:else if theme.isDark}
-			<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z" />
-		{:else}
-			<circle cx="8" cy="8" r="3" />
-			<path
-				d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9 13 13M3 13l1.1-1.1M11.9 4.1 13 3"
-			/>
-		{/if}
-	</svg>
+{#snippet icon(name: Icon | 'settings')}
+	{@const Glyph = ICONS[name]}
+	<Glyph {...ICON} aria-hidden="true" />
 {/snippet}
 
 <nav
@@ -166,9 +158,7 @@
 			aria-expanded="true"
 			tabindex={rail.collapsed ? -1 : 0}
 		>
-			<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-				<rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" />
-			</svg>
+			<PanelLeftClose {...ICON} aria-hidden="true" />
 		</button>
 	</div>
 
@@ -185,9 +175,9 @@
 		>
 			<span class="ico">
 				<span class="group-hover:hidden group-focus-visible:hidden"><Mark size={22} animate /></span>
-				<svg class="hidden text-meta group-hover:block group-focus-visible:block" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-					<rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M6 2.5v11" />
-				</svg>
+				<span class="hidden text-meta group-hover:block group-focus-visible:block"
+					><PanelLeftOpen {...ICON} size={16} aria-hidden="true" /></span
+				>
 			</span>
 		</button>
 	{:else}
@@ -298,25 +288,34 @@
 			</span>
 			<span class="lbl">{app.connected ? `daemon ${app.daemon?.version}` : 'daemon down'}</span>
 		</a>
-		<a
-			class="{linkBase} {active.startsWith('/settings') ? linkOn : linkOff}"
-			href="/settings"
-			aria-label="Settings"
-			use:tip={'Settings'}
-		>
-			<span class="ico">{@render icon('settings')}</span>
-			<span class="lbl">Settings</span>
-		</a>
-		<button
-			type="button"
-			class="item w-full cursor-pointer border-l-2 border-l-transparent bg-transparent text-[12.5px] {quiet}"
-			onclick={() => theme.toggle()}
-			aria-label={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
-			use:tip={theme.isDark ? 'Ink theme · switch to bone' : 'Bone theme · switch to ink'}
-		>
-			<span class="ico">{@render icon('theme')}</span>
-			<span class="lbl">{theme.isDark ? 'Ink' : 'Bone'}</span>
-		</button>
+		<!-- Settings and the theme share a row: the theme is one icon, not a labelled row
+		     of its own. Collapsed, the strip is one icon wide, so they stack. -->
+		<div class="flex" class:flex-col={rail.collapsed}>
+			<a
+				class="{linkBase} min-w-0 flex-1 {active.startsWith('/settings') ? linkOn : linkOff}"
+				href="/settings"
+				aria-label="Settings"
+				use:tip={'Settings'}
+			>
+				<span class="ico">{@render icon('settings')}</span>
+				<span class="lbl">Settings</span>
+			</a>
+			<button
+				type="button"
+				class="item flex-none cursor-pointer border-l-2 border-l-transparent bg-transparent {quiet}"
+				onclick={() => theme.toggle()}
+				aria-label={theme.isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+				title={rail.collapsed ? undefined : themeTip}
+				use:tip={themeTip}
+			>
+				<span class="ico">
+					{#if theme.isDark}<Moon {...ICON} aria-hidden="true" />{:else}<Sun
+							{...ICON}
+							aria-hidden="true"
+						/>{/if}
+				</span>
+			</button>
+		</div>
 
 		{#if app.mock}
 			<p

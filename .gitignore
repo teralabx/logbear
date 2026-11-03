@@ -25,3 +25,7 @@ apps/desktop/src-tauri/gen
 
 # Staged Tauri sidecars are build artifacts
 apps/desktop/src-tauri/binaries/
+
+# Claude Code: per-machine permissions, session worktrees and preview config, which
+# carries absolute paths.
+.claude/

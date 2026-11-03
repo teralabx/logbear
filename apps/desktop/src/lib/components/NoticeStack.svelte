@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { app } from '$lib/stores/app.svelte';
 	import { fmtAgo } from '$lib/format';
+	import { INLINE } from '$lib/icons';
+	import { X } from '@lucide/svelte';
 
 	/**
 	 * Transient notices from the daemon, bottom-right. Repeats of the same
@@ -32,9 +34,10 @@
 							>{/if}
 						<button
 							type="button"
-							class="cursor-pointer bg-transparent px-0.5 text-[15px] leading-none text-meta hover:text-base-content"
+							class="grid cursor-pointer place-items-center self-center bg-transparent px-0.5 text-meta hover:text-base-content"
 							onclick={() => app.dismissNotice(n.at)}
-							aria-label="Dismiss">×</button
+							aria-label="Dismiss"
+							title="Dismiss"><X {...INLINE} aria-hidden="true" /></button
 						>
 					</div>
 					<p class="mt-[3px] mb-1 line-clamp-3 text-[11.5px] text-meta [overflow-wrap:anywhere]">

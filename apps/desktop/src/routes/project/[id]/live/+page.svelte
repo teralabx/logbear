@@ -21,6 +21,8 @@
 		tildePath
 	} from '$lib/format';
 	import { LEVELS, type EntryView, type Level, type Run } from '$lib/api/types';
+	import { INLINE } from '$lib/icons';
+	import { ArrowRight, ChevronDown, ChevronUp } from '@lucide/svelte';
 
 	/**
 	 * The screen people leave open.
@@ -318,8 +320,8 @@
 			>delimiter: {run.delimiter_mode}</span
 		>
 		<a
-			class="ml-auto pl-[12px] text-meta no-underline hover:text-base-content"
-			href="/project/{projectId}/runs/{run.id}">run detail →</a
+			class="ml-auto inline-flex items-center gap-1 pl-[12px] text-meta no-underline hover:text-base-content"
+			href="/project/{projectId}/runs/{run.id}">run detail <ArrowRight {...INLINE} aria-hidden="true" /></a
 		>
 	</div>
 {/if}
@@ -435,15 +437,19 @@
 							<span class="tnum pr-[6px] text-[10px] text-meta">{filtered.length}</span>
 							<button
 								type="button"
-								class="rule-l h-full w-[20px] cursor-pointer text-[11px] text-meta hover:text-base-content"
+								class="rule-l grid h-full w-[20px] cursor-pointer place-items-center text-meta hover:text-base-content"
 								onclick={() => searchTerminal(-1)}
-								title="Find previous match in the terminal pane">↑</button
+								aria-label="Find previous match in the terminal pane"
+								title="Find previous match in the terminal pane"
+								><ChevronUp {...INLINE} aria-hidden="true" /></button
 							>
 							<button
 								type="button"
-								class="rule-l h-full w-[20px] cursor-pointer text-[11px] text-meta hover:text-base-content"
+								class="rule-l grid h-full w-[20px] cursor-pointer place-items-center text-meta hover:text-base-content"
 								onclick={() => searchTerminal(1)}
-								title="Find next match in the terminal pane">↓</button
+								aria-label="Find next match in the terminal pane"
+								title="Find next match in the terminal pane"
+								><ChevronDown {...INLINE} aria-hidden="true" /></button
 							>
 						{/if}
 					</div>

@@ -18,6 +18,8 @@
 		shortSha
 	} from '$lib/format';
 	import type { RunDiff, RunRef } from '$lib/api/types';
+	import { INLINE } from '$lib/icons';
+	import { ArrowRight } from '@lucide/svelte';
 
 	/**
 	 * "It worked two days ago. What changed?"
@@ -188,8 +190,9 @@
 				onclick={clearPins}>reset to default</button
 			>
 		{/if}
-		<a class="text-[11px] text-meta hover:text-base-content" href="/project/{projectId}/runs"
-			>pick runs →</a
+		<a
+			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			href="/project/{projectId}/runs">pick runs <ArrowRight {...INLINE} aria-hidden="true" /></a
 		>
 	{/snippet}
 </PageHeader>
@@ -258,10 +261,10 @@
 				</div>
 			{/each}
 			<div
-				class="absolute top-1/2 left-1/2 grid h-[22px] w-[22px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-hair bg-base-200 text-[12px] text-meta"
+				class="absolute top-1/2 left-1/2 grid h-[22px] w-[22px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border border-hair bg-base-200 text-meta"
 				aria-hidden="true"
 			>
-				→
+				<ArrowRight {...INLINE} />
 			</div>
 		</section>
 

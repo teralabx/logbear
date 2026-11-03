@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { fmtClock } from '$lib/format';
+	import { INLINE } from '$lib/icons';
+	import { ChevronRight } from '@lucide/svelte';
 	import type { EntryView } from '$lib/api/types';
 
 	/**
@@ -74,8 +76,8 @@
 		onclick={() => onToggle?.(entry)}
 	>
 		{#if multiline}<span
-				class="inline-block text-[13px] leading-none transition-transform duration-[120ms]"
-				class:rotate-90={expanded}>›</span
+				class="inline-grid transition-transform duration-[120ms]"
+				class:rotate-90={expanded}><ChevronRight {...INLINE} aria-hidden="true" /></span
 			>{/if}
 	</button>
 
