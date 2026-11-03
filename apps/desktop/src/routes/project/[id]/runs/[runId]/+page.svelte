@@ -5,7 +5,6 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import TerminalPane from '$lib/components/TerminalPane.svelte';
 	import EntryRow from '$lib/components/EntryRow.svelte';
-	import { squash } from '$lib/squash';
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import ExitBadge from '$lib/components/ExitBadge.svelte';
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
@@ -17,11 +16,14 @@
 		projectRef,
 		rawStream,
 		reparse,
-		revealPath
+		revealPath,
+		squash
 	} from '$lib/api';
 	import { app } from '$lib/stores/app.svelte';
 	import {
+		fmtBytes,
 		fmtCommand,
+		fmtAgo,
 		fmtDuration,
 		fmtFull,
 		fmtStamp,
@@ -47,10 +49,10 @@
 	let levelFilter = $state<Set<Level>>(new Set());
 	let expanded = $state<Set<number>>(new Set());
 	let showMeta = $state(true);
-	let squashed = $state(false);
 
 	let termRef = $state<ReturnType<typeof TerminalPane> | undefined>();
 	let replayTruncated = $state(false);
+	let squashNote = $state<string | null>(null);
 	let hasMore = $state(false);
 	let loadingMore = $state(false);
 
@@ -68,6 +70,7 @@
 		loading = true;
 		loadError = null;
 		replayTruncated = false;
+		squashNote = null;
 		expanded = new Set();
 
 		(async () => {
@@ -128,11 +131,6 @@
 		});
 	});
 
-	/** Each distinct entry once, with its repeat count; or every entry, one per row. */
-	const rows = $derived(
-		squashed ? squash(filtered) : filtered.map((entry) => ({ entry, count: 1, lastAt: entry.captured_at }))
-	);
-
 	const newSignatures = $derived(list.filter((e) => e.is_new_signature).length);
 
 	/** From the run's counters, so the chips are right before every page is loaded. */
@@ -168,6 +166,34 @@
 			run = r;
 			list = es;
 			hasMore = es.length === PAGE;
+		} catch (err) {
+			loadError = apiError(err);
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function doSquash() {
+		if (!run) return;
+		busy = 'squash';
+		try {
+			const report = await squash(projectRef(projectId), run.id);
+			const [r, es] = await Promise.all([
+				getRun(projectRef(projectId), run.id),
+				firstPage(projectId, run.id)
+			]);
+			run = r;
+			list = es;
+			hasMore = es.length === PAGE;
+			expanded = new Set();
+			squashNote =
+				report.runs === 0
+					? 'Nothing to squash.'
+					: `Dropped ${report.entries_dropped.toLocaleString()} repeated ${report.entries_dropped === 1 ? 'entry' : 'entries'} · ${fmtBytes(report.bytes_before)} → ${fmtBytes(report.bytes_after)} on disk.`;
+			termRef?.clear();
+			replayTruncated = await rawStream(projectRef(projectId), run.id, (bytes) => termRef?.write(bytes)).catch(
+				() => false
+			);
 		} catch (err) {
 			loadError = apiError(err);
 		} finally {
@@ -316,6 +342,15 @@
 		</p>
 	{/if}
 
+	{#if run.squashed_at !== null}
+		<p class="rule-b flex-none px-4 py-[6px] text-[11.5px]">
+			<span class="label-xs mr-2">squashed</span>
+			Repeats were dropped from this run's stored output {fmtAgo(run.squashed_at)}, keeping the first
+			of each distinct entry. The counts above still describe the run as it was captured.
+			{#if squashNote}<span class="text-meta">{squashNote}</span>{/if}
+		</p>
+	{/if}
+
 	{#if replayTruncated}
 		<p class="rule-b flex-none px-4 py-[5px] text-[11px] text-meta">
 			The replay starts at the last 20,000 lines. Every entry is still listed below, and
@@ -342,18 +377,6 @@
 			{/each}
 		</div>
 		<div class="flex items-center gap-2">
-			<button
-				type="button"
-				class="cursor-pointer rounded-[2px] border px-2 py-[4px] text-[10px] tracking-[0.16em] uppercase {squashed
-					? 'border-hair-strong text-base-content'
-					: 'border-hair text-meta hover:border-hair-strong hover:text-base-content'}"
-				aria-pressed={squashed}
-				onclick={() => (squashed = !squashed)}
-				title="Show each distinct entry once, with how many times it repeated. Timestamps, ids and numbers are ignored when comparing."
-				>squash{#if squashed}<span class="tnum ml-1.5 tracking-normal normal-case text-meta"
-						>{rows.length} of {filtered.length}</span
-					>{/if}</button
-			>
 			<input
 				type="search"
 				class="w-[200px] rounded-[2px] border border-hair bg-transparent px-2 py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
@@ -369,6 +392,16 @@
 				title="Re-run the fingerprinter over this run's stored bytes. Nothing is re-executed."
 				>{busy === 'reparse' ? 'reparsing…' : 're-parse'}</button
 			>
+			{#if run.ended_at !== null && run.squashed_at === null && !run.chunks_evicted}
+				<button
+					type="button"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					disabled={busy !== null}
+					onclick={doSquash}
+					title="Rewrite this run's stored output to the first occurrence of each distinct entry. Repeats that differ only in timestamps, ids or numbers are deleted for good; counts and signatures are kept."
+					>{busy === 'squash' ? 'squashing…' : 'squash run'}</button
+				>
+			{/if}
 			<button
 				type="button"
 				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-flare enabled:hover:text-flare disabled:cursor-default disabled:opacity-50"
@@ -381,14 +414,12 @@
 	</div>
 
 	<div class="pane flex-1 pt-1 pb-6">
-		{#each rows as { entry: e, count, lastAt } (e.id)}
+		{#each filtered as e (e.id)}
 			<EntryRow
 				entry={e}
 				expanded={expanded.has(e.id)}
 				highlight={search.trim()}
 				onToggle={toggleEntry}
-				repeats={count}
-				{lastAt}
 			/>
 		{:else}
 			<p class="px-4 py-[14px] text-[12px] text-meta">No entries match this filter.</p>
@@ -404,8 +435,8 @@
 						? 'loading…'
 						: `load next ${PAGE} · ${list.length} of ${run.counters.n_entries}`}</button
 				>
-				{#if search.trim() || levelFilter.size || squashed}
-					<span class="ml-2 text-[11px] text-meta">Filters and squash apply to loaded entries only.</span>
+				{#if search.trim() || levelFilter.size}
+					<span class="ml-2 text-[11px] text-meta">Filters apply to loaded entries only.</span>
 				{/if}
 			</div>
 		{/if}

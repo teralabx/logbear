@@ -42,6 +42,8 @@ DROP TABLE IF EXISTS entries_fts;
 const LATE_COLUMNS: &[&str] = &[
     "ALTER TABLE session_cursors ADD COLUMN nudge_entry_id INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE session_cursors ADD COLUMN change_blocks_issued INTEGER NOT NULL DEFAULT 0",
+    // When the run's stored output was squashed to its unique entries; null if it never was.
+    "ALTER TABLE runs ADD COLUMN squashed_at INTEGER",
 ];
 
 /// Adds any of [`LATE_COLUMNS`] this database does not have.

@@ -17,7 +17,7 @@ const RUN_COLUMNS: &str = "r.id, r.project_id, r.command, r.cwd, r.session_group
                            r.delimiter_mode, r.chunks_evicted,
                            COALESCE(c.n_entries,0), COALESCE(c.n_error,0), COALESCE(c.n_warn,0),
                            COALESCE(c.n_info,0), COALESCE(c.n_debug,0), COALESCE(c.n_trace,0),
-                           COALESCE(c.n_unknown,0)";
+                           COALESCE(c.n_unknown,0), r.squashed_at";
 
 const RUN_FROM: &str = "FROM runs r LEFT JOIN run_counters c ON c.run_id = r.id";
 
@@ -49,6 +49,7 @@ fn map_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
             n_trace: r.get(22)?,
             n_unknown: r.get(23)?,
         },
+        squashed_at: r.get(24)?,
     })
 }
 

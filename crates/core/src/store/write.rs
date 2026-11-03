@@ -137,7 +137,7 @@ impl Writer {
         let found = db.with(|conn| {
             let row: Option<(String, i64, Option<i32>, Option<String>)> = conn
                 .query_row(
-                    "SELECT delimiter_mode, chunks_evicted, exit_code, signal
+                    "SELECT delimiter_mode, chunks_evicted OR squashed_at IS NOT NULL, exit_code, signal
                        FROM runs
                       WHERE id = ?1 AND command = ?2 AND cwd = ?3
                         AND started_at BETWEEN ?4 - ?5 AND ?4 + ?5",

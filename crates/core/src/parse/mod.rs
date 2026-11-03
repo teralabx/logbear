@@ -24,7 +24,8 @@ use crate::parse::severity::Evidence;
 /// One physical line of the captured stream, verbatim.
 #[derive(Debug, Clone)]
 pub struct RawLine {
-    /// Index within the run, from zero. Stable for the life of the run; entries point at it.
+    /// Index within the run, from zero. Stable for the life of the run, which squashing
+    /// ends: it renumbers the surviving lines. Entries point at it.
     pub index: i64,
     pub captured_at: i64,
     /// Bytes with the trailing newline removed, everything else intact, ANSI included.

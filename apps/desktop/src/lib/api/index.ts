@@ -28,6 +28,7 @@ import type {
 	RunRef,
 	LogbearEvent,
 	Settings,
+	SquashReport,
 	StepState
 } from './types';
 
@@ -142,6 +143,10 @@ export const retention = (project: ProjectRef): Promise<RetentionState> =>
 
 export const reparse = (project: ProjectRef, runId: number): Promise<null> =>
 	isTauri() ? invoke('reparse', { project, runId }) : mock.reparse();
+
+/** Squash one finished run, or every finished run in the project when `runId` is null. */
+export const squash = (project: ProjectRef, runId: number | null): Promise<SquashReport> =>
+	isTauri() ? invoke('squash', { project, runId }) : mock.squash(project, runId);
 
 export const deleteRun = (project: ProjectRef, runId: number): Promise<null> =>
 	isTauri() ? invoke('delete_run', { project, runId }) : mock.delete_run(project, runId);

@@ -11,6 +11,7 @@
 		installStep,
 		projectRef,
 		retention,
+		squash,
 		revealPath,
 		uninstallStep,
 		updateProject,
@@ -37,6 +38,24 @@
 	let saved = $state<Settings | null>(null);
 	let install = $state<InstallStatus | null>(null);
 	let retentions = $state<Record<number, RetentionState>>({});
+	let squashing = $state<Record<number, boolean>>({});
+	let squashed = $state<Record<number, string>>({});
+
+	async function squashProject(id: number) {
+		squashing[id] = true;
+		try {
+			const report = await squash(projectRef(id), null);
+			squashed[id] =
+				report.runs === 0
+					? 'Nothing to squash — every finished run already is.'
+					: `${pluralise(report.runs, 'run')} squashed, ${report.entries_dropped.toLocaleString()} ${report.entries_dropped === 1 ? 'repeat' : 'repeats'} dropped · ${fmtBytes(report.bytes_before)} → ${fmtBytes(report.bytes_after)}.`;
+			retentions[id] = await retention(projectRef(id));
+		} catch (err) {
+			squashed[id] = apiError(err);
+		} finally {
+			squashing[id] = false;
+		}
+	}
 	let loadError = $state<string | null>(null);
 	let saveError = $state<string | null>(null);
 	let saving = $state(false);
@@ -242,8 +261,10 @@
 			<div>
 				<h3 class="text-[13px] font-semibold">Storage</h3>
 				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-					logbear stores raw output on disk. When a project passes its cap the oldest runs are
-					evicted — their counts and fingerprints survive, their bytes do not.
+					logbear stores raw output on disk. When a project passes its cap the oldest finished runs
+					are squashed first: each keeps one copy of every distinct entry and drops its repeats.
+					Only if that is not enough are whole runs evicted — their counts and fingerprints
+					survive, their bytes do not.
 				</p>
 			</div>
 
@@ -292,10 +313,26 @@
 										used={r.bytes_used}
 										cap={r.bytes_cap}
 										label="{r.runs_total} runs stored"
-										note={r.runs_evicted > 0
-											? `${pluralise(r.runs_evicted, 'run')} already evicted. Oldest surviving run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
-											: `Nothing evicted yet. Oldest run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`}
+										note={[
+											r.runs_squashed > 0 ? `${pluralise(r.runs_squashed, 'run')} squashed.` : '',
+											r.runs_evicted > 0
+												? `${pluralise(r.runs_evicted, 'run')} already evicted. Oldest surviving run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
+												: `Nothing evicted yet. Oldest run: ${r.oldest_run_at ? fmtAgo(r.oldest_run_at) : 'unknown'}.`
+										]
+											.filter(Boolean)
+											.join(' ')}
 									/>
+									<div class="mt-1.5 flex flex-wrap items-baseline gap-2">
+										<button
+											type="button"
+											class="cursor-pointer rounded-[2px] border border-hair px-2 py-[3px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+											disabled={squashing[p.id] === true}
+											onclick={() => void squashProject(p.id)}
+											title="Shrink every finished run to the first occurrence of each distinct entry, now rather than when the cap is reached. Repeats are deleted for good; counts and signatures are kept."
+											>{squashing[p.id] ? 'squashing…' : 'squash finished runs'}</button
+										>
+										{#if squashed[p.id]}<span class="meta text-[11px]">{squashed[p.id]}</span>{/if}
+									</div>
 								{:else}
 									<p class="meta text-[11px]">Reading store size…</p>
 								{/if}

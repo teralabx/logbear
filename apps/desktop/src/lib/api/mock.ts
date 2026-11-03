@@ -29,6 +29,7 @@ import type {
 	Run,
 	RunDiff,
 	RunRef,
+	SquashReport,
 	LogbearEvent,
 	Settings,
 	StepState
@@ -628,6 +629,7 @@ function buildRun(project: Project, startedAt: number, opts: { active?: boolean 
 		term_cols: pick([80, 120, 132, 164]),
 		delimiter_mode: pid === 1 ? pick(['colour_bracket', 'prefix']) : pick(['json', 'prefix', 'fallback']),
 		chunks_evicted: false,
+		squashed_at: null,
 		counters: emptyCounters()
 	};
 
@@ -1051,11 +1053,38 @@ export const mock = {
 			bytes_cap: p.retention_bytes ?? settings.retention_bytes,
 			runs_total: rs.length,
 			runs_evicted: p.id === 1 ? 14 : 0,
+			runs_squashed: rs.filter((x) => x.run.squashed_at !== null).length,
 			oldest_run_at: rs.length ? rs[rs.length - 1].run.started_at : null
 		});
 	},
 
 	reparse: () => delay(null, 400),
+
+	squash: (ref: ProjectRef, runId: number | null) => {
+		const p = resolveProject(ref);
+		const before = dbBytes(p.id);
+		let runs = 0;
+		let dropped = 0;
+		for (const d of runsOf(p.id)) {
+			const r = d.run;
+			if ((runId !== null && r.id !== runId) || r.ended_at === null || r.squashed_at !== null) continue;
+			const seen = new Set<string>();
+			const kept = d.entries.filter((e) => {
+				const key = `${e.level}\u0000${e.fingerprint_id ?? e.text}`;
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			});
+			dropped += d.entries.length - kept.length;
+			d.entries = kept;
+			r.squashed_at = Date.now() * 1000;
+			runs += 1;
+		}
+		return delay<SquashReport>(
+			{ runs, entries_dropped: dropped, bytes_before: before, bytes_after: Math.round(before * (runs ? 0.4 : 1)) },
+			500
+		);
+	},
 
 	delete_run: (ref: ProjectRef, runId: number) => {
 		const p = resolveProject(ref);

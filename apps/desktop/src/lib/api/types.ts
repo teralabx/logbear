@@ -60,6 +60,8 @@ export interface Run {
 	term_cols: number;
 	delimiter_mode: DelimiterMode;
 	chunks_evicted: boolean;
+	/** When the stored output was squashed to its unique entries. Counters still describe the run as captured. */
+	squashed_at: number | null;
 	counters: Counters;
 }
 
@@ -183,7 +185,16 @@ export interface RetentionState {
 	bytes_cap: number;
 	runs_total: number;
 	runs_evicted: number;
+	runs_squashed: number;
 	oldest_run_at: number | null;
+}
+
+/** What a squash did. Bytes are the project database's size on disk. */
+export interface SquashReport {
+	runs: number;
+	entries_dropped: number;
+	bytes_before: number;
+	bytes_after: number;
 }
 
 export interface QuietHours {

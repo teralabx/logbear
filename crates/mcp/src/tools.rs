@@ -406,6 +406,7 @@ fn diff_json(d: &RunDiff) -> Value {
             "clean": r.is_clean(),
             "n_error": r.counters.n_error,
             "chunks_evicted": r.chunks_evicted,
+            "squashed": r.squashed_at.is_some(),
         }),
     };
     let sigs = |v: &Vec<logbear_core::proto::DiffSignature>| {

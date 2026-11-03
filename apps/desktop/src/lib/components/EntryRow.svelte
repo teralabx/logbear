@@ -13,26 +13,19 @@
 	 * entries by delimiter when it can and by heuristic when it cannot, and the
 	 * difference matters: an inferred grouping may have swallowed the start of
 	 * the next entry. Showing it makes the confidence legible instead of assumed.
-	 *
-	 * `repeats` above 1 means the list is squashed and this row stands for that
-	 * many identical entries; the badge says so and when the last one arrived.
 	 */
 	let {
 		entry,
 		expanded = false,
 		highlight = '',
 		onToggle = undefined,
-		fresh = false,
-		repeats = 1,
-		lastAt = undefined
+		fresh = false
 	}: {
 		entry: EntryView;
 		expanded?: boolean;
 		highlight?: string;
 		onToggle?: ((e: EntryView) => void) | undefined;
 		fresh?: boolean;
-		repeats?: number;
-		lastAt?: number;
 	} = $props();
 
 	const lines = $derived(entry.text.split('\n'));
@@ -97,14 +90,6 @@
 						>{s.t}</mark
 					>{:else}{s.t}{/if}{/each}
 		</span>
-
-		{#if repeats > 1}
-			<span
-				class="tnum ml-1.5 inline-block rounded-[2px] border border-hair-strong px-1 align-[1px] text-[10px] text-base-content"
-				title="{repeats} identical entries{lastAt !== undefined ? ` · last at ${fmtClock(lastAt)}` : ''}"
-				>×{repeats}</span
-			>
-		{/if}
 
 		{#if entry.is_new_signature}
 			<span

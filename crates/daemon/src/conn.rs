@@ -439,9 +439,9 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
         Request::Vacuum { project } => {
             let h = daemon.resolve(&project)?;
             let cap = daemon.retention_cap(&h.project);
-            let evicted = retention::enforce(&h.db, cap)?;
+            let sweep = retention::enforce(&h.db, cap)?;
             retention::reclaim(&h.db)?;
-            to_value(evicted)?
+            to_value(sweep)?
         }
 
         Request::Reparse { project, run_id } => {
@@ -451,6 +451,18 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                 None => retention::reparse_all(&h.db)?,
             };
             to_value(n)?
+        }
+
+        Request::Squash { project, run_id } => {
+            let h = daemon.resolve(&project)?;
+            let report = match run_id {
+                Some(id) => retention::squash_one(&h.db, id)?,
+                None => retention::squash_all(&h.db)?,
+            };
+            if report.runs > 0 {
+                daemon.broadcast(Event::ProjectsChanged);
+            }
+            to_value(report)?
         }
 
         Request::DeleteRun { project, run_id } => {

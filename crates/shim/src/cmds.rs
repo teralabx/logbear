@@ -8,7 +8,9 @@ use crate::ui::{self, Cell};
 use logbear_core::client::Client;
 use logbear_core::model::*;
 use logbear_core::paths;
-use logbear_core::proto::{EntryFilter, ProjectRef, QueryResult, RunDiff, RunRef};
+use logbear_core::proto::{
+    EntryFilter, ProjectRef, QueryResult, Request, RunDiff, RunRef, SquashReport,
+};
 use std::io::Write;
 
 pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
@@ -30,6 +32,7 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
         Cmd::Doctor { json } => crate::doctor::run(json),
         Cmd::Query { sql, json } => query(&sql, json),
         Cmd::SqlSchema => sql_schema(),
+        Cmd::Squash { run_id, json } => squash(run_id, json),
     }
 }
 
@@ -598,6 +601,43 @@ fn sql_schema() -> Result<i32, String> {
     let mut client = connect()?;
     let schema = client.schema(ProjectRef::cwd()).map_err(failed)?;
     println!("{schema}");
+    Ok(0)
+}
+
+fn squash(run_id: Option<RunId>, json: bool) -> Result<i32, String> {
+    let mut client = connect()?;
+    let report: SquashReport = client
+        .call(&Request::Squash {
+            project: ProjectRef::cwd(),
+            run_id,
+        })
+        .map_err(failed)?;
+    if json {
+        return print_json(&report);
+    }
+    if report.runs == 0 {
+        let why = match run_id {
+            Some(id) => {
+                format!("run {id} is still running, already squashed, or its log was evicted")
+            }
+            None => "nothing to squash — every finished run already is".to_string(),
+        };
+        println!("{}", ui::ash(&why));
+        return Ok(0);
+    }
+    println!(
+        "squashed {} run{}: dropped {} repeated entr{} · {} → {}",
+        report.runs,
+        if report.runs == 1 { "" } else { "s" },
+        report.entries_dropped,
+        if report.entries_dropped == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        ui::bytes(report.bytes_before),
+        ui::bytes(report.bytes_after),
+    );
     Ok(0)
 }
 

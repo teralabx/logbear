@@ -201,9 +201,9 @@ fn spawn_maintenance(daemon: Arc<Daemon>) {
                 for handle in daemon.open_projects() {
                     let cap = daemon.retention_cap(&handle.project);
                     match logbear_core::store::retention::enforce(&handle.db, cap) {
-                        Ok(n) if n > 0 => log(&format!(
-                            "{}: evicted the raw log of {n} old run(s) to stay under {} bytes",
-                            handle.project.name, cap
+                        Ok(s) if s.squashed > 0 || s.evicted > 0 => log(&format!(
+                            "{}: squashed {} and evicted the raw log of {} old run(s) to stay under {} bytes",
+                            handle.project.name, s.squashed, s.evicted, cap
                         )),
                         Err(e) => log(&format!("{}: retention failed: {e}", handle.project.name)),
                         _ => {}

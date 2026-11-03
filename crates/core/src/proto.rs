@@ -331,6 +331,12 @@ pub enum Request {
         project: ProjectRef,
         run_id: RunId,
     },
+    /// Rewrites one finished run's stored output, or every finished run's, down to the
+    /// first occurrence of each distinct entry. Counts and signatures are kept.
+    Squash {
+        project: ProjectRef,
+        run_id: Option<RunId>,
+    },
 
     // ---- live ----
     /// Converts this connection into an event stream; no further requests are read.
@@ -595,6 +601,22 @@ pub struct LockfileChange {
     pub hash_b: Option<String>,
 }
 
+/// What a squash did. `bytes_*` are the project database's size on disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SquashReport {
+    pub runs: usize,
+    pub entries_dropped: usize,
+    pub bytes_before: i64,
+    pub bytes_after: i64,
+}
+
+/// What a retention sweep did: runs squashed first, then runs evicted if that was not enough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sweep {
+    pub squashed: usize,
+    pub evicted: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetentionState {
     pub project_id: ProjectId,
@@ -602,6 +624,9 @@ pub struct RetentionState {
     pub bytes_cap: i64,
     pub runs_total: i64,
     pub runs_evicted: i64,
+    /// Runs whose stored output was squashed to its unique entries.
+    #[serde(default)]
+    pub runs_squashed: i64,
     pub oldest_run_at: Option<i64>,
 }
 

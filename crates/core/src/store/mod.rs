@@ -155,6 +155,21 @@ impl Db {
 const MAX_IDLE_READERS: usize = 4;
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
+    // Incremental rather than full: a bulk DELETE plus VACUUM would stall the daemon, and
+    // until vacuumed would not return any disk space.
+    //
+    // It has to be set before anything is written, and switching to WAL writes the header,
+    // so it comes first. Databases created by builds that set it afterwards never took it:
+    // every page eviction freed stayed in the file, the file never shrank, and retention
+    // read that as still over the cap and evicted run after run. Those are converted once,
+    // with a VACUUM, which mostly copies free space away and so is quick on exactly the
+    // files that need it.
+    conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+    let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap_or(0);
+    if mode != 2 {
+        conn.execute_batch("VACUUM;")?;
+    }
+
     // WAL so readers never block the capture writer. NORMAL synchronous trades the last
     // few milliseconds of a log on power loss for not fsyncing every batch.
     conn.execute_batch(
@@ -165,12 +180,6 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;
          PRAGMA cache_size = -8000;",
     )?;
-    // Incremental rather than full: a bulk DELETE plus VACUUM would stall the daemon, and
-    // until vacuumed would not return any disk space.
-    let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap_or(0);
-    if mode != 2 {
-        conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
-    }
     Ok(())
 }
 

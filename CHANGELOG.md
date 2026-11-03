@@ -11,8 +11,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The sidebar collapses to a narrow strip (⌘\), remembered between launches, with
   tooltips on every item while collapsed.
-- A squash toggle on the Live and Run views lists each distinct entry once, with a ×N
-  count and when it last repeated. Timestamps, ids and numbers are ignored when comparing.
+- Squashing: a finished run's stored output can be shrunk to the first occurrence of each
+  distinct entry, dropping repeats that differ only in timestamps, ids or numbers. The
+  run's counts and signatures still describe it as captured. Retention squashes the oldest
+  runs before evicting any; `logbear squash`, a "squash run" button and a per-project
+  "squash finished runs" button in Settings do it on demand.
 - `FingerprintHistories` and `RunErrorCounts` protocol requests, and `fingerprint_id`,
   `unobserved` and `tail_lines` fields on existing ones.
 - Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
@@ -45,6 +48,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Project databases never returned freed space to disk: `auto_vacuum` was set after WAL
+  mode, when it can no longer take effect, so files only grew and retention, reading them
+  as permanently over the cap, evicted run after run. Existing databases are converted
+  once on open (a 1 GB file of mostly free pages shrinks in well under a second), and
+  `incremental_vacuum` is now run to completion rather than stepped once.
 - Viewing errors in the desktop app no longer marks them as seen for agent sessions, which
   could stop the hook from surfacing them.
 - The Live screen opens on a run's newest entries rather than its oldest.

@@ -21,6 +21,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "doctor",
     "query",
     "sql-schema",
+    "squash",
 ];
 
 const TOP_LEVEL_FLAGS: &[&str] = &["-h", "--help", "-V", "--version", "help"];
@@ -182,6 +183,16 @@ pub enum Cmd {
 
     /// Print the schema, views and worked examples an agent needs before writing SQL.
     SqlSchema,
+
+    /// Shrink finished runs to the first occurrence of each distinct entry. Repeats that
+    /// differ only in timestamps, ids or numbers are dropped; counts are kept. Retention
+    /// does this on its own before evicting anything; this does it now.
+    Squash {
+        /// One run. Without it, every finished run in the current project.
+        run_id: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Runs a subcommand and returns the process exit code. clap's `--help` and `--version`

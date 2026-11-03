@@ -132,10 +132,9 @@
 		{:else if name === 'diff'}
 			<path d="M4.5 1.5v13M11.5 1.5v13" /><path d="M2 5h5M9 11h5M11.5 8.5v5" />
 		{:else if name === 'settings'}
-			<circle cx="8" cy="8" r="2.2" />
-			<path
-				d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"
-			/>
+			<!-- Sliders rather than a cog: a cog drawn this small reads as the sun beside it. -->
+			<path d="M2 4h6.5M11.5 4H14M2 8h2M7 8h7M2 12h7.5M12.5 12H14" />
+			<circle cx="10" cy="4" r="1.5" /><circle cx="5.5" cy="8" r="1.5" /><circle cx="11" cy="12" r="1.5" />
 		{:else if theme.isDark}
 			<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z" />
 		{:else}

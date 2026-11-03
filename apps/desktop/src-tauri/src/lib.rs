@@ -290,7 +290,8 @@ fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<Retenti
             project.clone(),
             "SELECT (SELECT count(*) FROM runs),
                     (SELECT COALESCE(sum(chunks_evicted), 0) FROM runs),
-                    (SELECT min(started_at) FROM runs)",
+                    (SELECT min(started_at) FROM runs),
+                    (SELECT count(*) FROM runs WHERE squashed_at IS NOT NULL)",
             vec![],
             Some(1),
         )
@@ -308,6 +309,7 @@ fn retention(backend: State<'_, Backend>, project: ProjectRef) -> Result<Retenti
         bytes_cap: status.project.retention_bytes.unwrap_or(default_cap),
         runs_total: num(0).unwrap_or(0),
         runs_evicted: num(1).unwrap_or(0),
+        runs_squashed: num(3).unwrap_or(0),
         oldest_run_at: num(2),
     })
 }
@@ -320,6 +322,20 @@ fn reparse(
 ) -> Result<usize, String> {
     backend.with(|c| {
         c.call(&Request::Reparse {
+            project: project.clone(),
+            run_id,
+        })
+    })
+}
+
+#[tauri::command(async)]
+fn squash(
+    backend: State<'_, Backend>,
+    project: ProjectRef,
+    run_id: Option<RunId>,
+) -> Result<SquashReport, String> {
+    backend.with(|c| {
+        c.call(&Request::Squash {
             project: project.clone(),
             run_id,
         })
@@ -470,6 +486,7 @@ pub fn run() {
             update_project,
             retention,
             reparse,
+            squash,
             delete_run,
             query,
             install_status,
