@@ -18,12 +18,12 @@
 	<div class="min-w-0 flex-1 py-[9px]">
 		<p class="text-[12.5px] font-medium">{what}</p>
 		{#if detail}<pre
-				class="mt-[5px] text-[11px] whitespace-pre-wrap text-meta [overflow-wrap:anywhere]">{detail}</pre>{/if}
+				class="mt-[5px] text-[12px] whitespace-pre-wrap text-meta [overflow-wrap:anywhere]">{detail}</pre>{/if}
 	</div>
 	{#if retry}
 		<button
 			type="button"
-			class="my-[9px] mr-2.5 flex-none cursor-pointer rounded-[2px] border border-hair-strong bg-transparent px-[9px] py-[3px] text-[11px] text-base-content hover:border-base-content"
+			class="my-[9px] mr-2.5 flex-none cursor-pointer rounded-[2px] border border-hair-strong bg-transparent px-[9px] py-[3px] text-[12px] text-base-content hover:border-base-content"
 			onclick={retry}>Try again</button
 		>
 	{/if}

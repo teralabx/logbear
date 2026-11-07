@@ -1,26 +1,43 @@
 //! `logbear <cmd> [args...]` — wrap a command and capture what it emits.
 //!
-//! The ordering is load-bearing: read from the pty, write to the user's stdout, flush, and
-//! only then hand a copy to [`crate::sink`], which cannot block. Whatever state the daemon
-//! is in, it cannot add latency, change the exit code, or swallow a signal.
+//! The child starts first, before anything else is attempted, and nothing it does can wait
+//! on the daemon: contact is made in the background by [`crate::sink`]. Output is read, then
+//! written to the user's stream, and only then copied to the sink, which cannot block.
+//!
+//! Each standard stream is treated on its own, so the child sees exactly what it would have
+//! seen without logbear:
+//!
+//! - A stream on a terminal gets a pty, sized to match, so colours, progress bars and line
+//!   buffering all behave.
+//! - Any other stdin is inherited untouched, so EOF, binary bytes and long lines all reach
+//!   the child with no line discipline in the way.
+//! - Any other stdout or stderr gets a pipe that logbear copies to the real destination, so
+//!   `isatty` is false and the bytes are exact. When the reader downstream goes away, logbear
+//!   closes the pipe, and the child gets its SIGPIPE just as it would have.
 //!
 //! The wrapped process is never modified. No environment variable is set and nothing is
-//! injected; the child inherits exactly what the shell would have given it, and the only
-//! observable difference is that its terminal is a pty logbear opened.
+//! injected.
 
 use crate::cli::WrapArgs;
-use crate::sink::Sink;
+use crate::sink::{RunInfo, Sink, SinkHandle};
 use crate::term;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use logbear_core::client::Client;
-use logbear_core::model::RunId;
-use logbear_core::proto::{Request, Settings};
-use std::ffi::CStr;
+use logbear_core::denylist::is_denied_command;
+use logbear_core::proto::Settings;
 use std::io::{Read, Write};
+use std::mem::ManuallyDrop;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Exit code for "could not start it", matching the shell's convention.
 const EXIT_CANNOT_RUN: i32 = 127;
+
+/// How long output keeps being read once the child has exited. A background process it left
+/// holding the stream open must not hold the command open too.
+const AFTER_EXIT: Duration = Duration::from_millis(250);
 
 /// Runs the wrapped command and exits with the child's exit code, verbatim.
 pub fn run(args: WrapArgs) -> ! {
@@ -48,78 +65,34 @@ fn execute(args: WrapArgs) -> Result<i32, String> {
     if resolve_program(&args.command[0]).is_none() {
         return Err(format!("cannot run {}: command not found", args.command[0]));
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let (cols, rows) = term::size();
 
-    // Settings are fetched without starting the daemon, so a denylisted command does not
-    // spin one up only to refuse to capture the session.
-    let mut client = Client::connect().ok();
-    let settings = client
-        .as_mut()
-        .and_then(|c| c.call::<Settings>(&Request::GetSettings).ok())
-        .unwrap_or_default();
-
-    if !args.force && is_denied(&args.command[0], &settings) {
+    // Read from disk rather than asked of the daemon, which may be down or wedged.
+    if !args.force && is_denied_command(&args.command, &Settings::load()) {
         // A denylisted command is a session, not a run: no pty, no run record, and no
         // process left in between.
         exec_direct(&args.command);
     }
 
-    if client.is_none() {
-        client = Client::connect_or_start().ok();
-    }
-
-    let token = crate::sink::local_token();
-    if client.is_some() {
-        // Drain the backlog on its own connection and thread, so it never delays the
-        // command the user just typed.
-        let skip = token.clone();
-        std::thread::Builder::new()
-            .name("logbear-drain".into())
-            .spawn(move || crate::sink::drain(&skip))
-            .ok();
-    }
-
-    let stamp = logbear_core::project::stamp(args.command.clone(), &cwd, cols, rows);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let (cols, rows) = term::size();
+    let plan = Plan::detect(args.no_pty);
     let started_at = logbear_core::now_micros();
+    let mut spawned = spawn(&args.command, &cwd, cols, rows, &plan)?;
 
-    let run_id = client.as_mut().and_then(|c| start_run(c, &stamp));
-    if run_id.is_none() {
-        // Registered nowhere: spool from the first byte rather than lose the run.
-        client = None;
-    }
+    let sink = Sink::start(RunInfo {
+        command: args.command.clone(),
+        cwd,
+        cols,
+        rows,
+        started_at,
+        token: crate::sink::local_token(),
+    });
 
-    let sink = Sink::start(client, run_id, token, stamp, started_at);
-    let outcome = if args.no_pty {
-        run_piped(&args.command, &cwd, &sink)
-    } else {
-        run_pty(&args.command, &cwd, cols, rows, &sink)
-    };
-
-    match outcome {
-        Ok(o) => {
-            sink.finish(Some(o.code as i32), o.signal.map(signal_name));
-            Ok(o.exit_code())
-        }
-        Err(e) => {
-            sink.finish(Some(EXIT_CANNOT_RUN), None);
-            Err(e)
-        }
-    }
-}
-
-fn start_run(client: &mut Client, stamp: &logbear_core::model::RunStamp) -> Option<RunId> {
-    let value = client
-        .call_value(&Request::StartRun {
-            stamp: stamp.clone(),
-        })
-        .ok()?;
-    // Accepts a bare id or `{"run_id": n}`, so a daemon that changes its response shape
-    // does not silently turn every run into a spool file.
-    value
-        .as_i64()
-        .or_else(|| value.get("run_id").and_then(|v| v.as_i64()))
-        .or_else(|| value.get("id").and_then(|v| v.as_i64()))
+    let status = supervise(&mut spawned, &sink, &plan)?;
+    let signal = status.signal();
+    let code = status.code().unwrap_or(1) as u32;
+    sink.finish(Some(code as i32), signal.map(signal_name));
+    Ok(exit_code_for(code, signal))
 }
 
 /// Resolves `program` the way a shell would, returning the path that would be executed.
@@ -146,16 +119,6 @@ pub fn resolve_program(program: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
-/// Whether `program` is denylisted, matched on the basename so `/usr/bin/vim` and `vim`
-/// are the same decision.
-pub fn is_denied(program: &str, settings: &Settings) -> bool {
-    let base = Path::new(program)
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| program.to_string());
-    settings.denylist.iter().any(|d| d == &base)
-}
-
 /// Replaces this process with the real command.
 ///
 /// An exec rather than a spawn, so signals, job control, the terminal and the exit code are
@@ -170,19 +133,8 @@ fn exec_direct(command: &[String]) -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// Outcome
+// Exit status
 // ---------------------------------------------------------------------------
-
-pub struct Outcome {
-    pub code: u32,
-    pub signal: Option<i32>,
-}
-
-impl Outcome {
-    pub fn exit_code(&self) -> i32 {
-        exit_code_for(self.code, self.signal)
-    }
-}
 
 /// The exit code a shell would report: `128 + signum` for a signalled child.
 ///
@@ -217,106 +169,328 @@ pub fn signal_name(n: i32) -> String {
     name.to_string()
 }
 
-/// Recovers a signal number from libc's description of it.
-///
-/// `portable-pty` reports a signalled exit as the description ("Interrupt") rather than a
-/// number. Matching through `strsignal` rather than a hand-written table keeps the two
-/// sides consistent whatever the platform and locale make those strings.
-pub fn signal_number(description: &str) -> Option<i32> {
-    if let Some(rest) = description.strip_prefix("Signal ") {
-        return rest.trim().parse().ok();
-    }
-    (1..=31).find(|n| strsignal(*n).as_deref() == Some(description))
+// ---------------------------------------------------------------------------
+// Which stream gets what
+// ---------------------------------------------------------------------------
+
+/// What each standard stream of the child is attached to.
+struct Plan {
+    stdin_on_pty: bool,
+    stdout_on_pty: bool,
+    stderr_on_pty: bool,
+    /// stdout and stderr are the same destination, so they share one pipe and stay in the
+    /// order the child wrote them.
+    merged: bool,
 }
 
-fn strsignal(n: i32) -> Option<String> {
-    let ptr = unsafe { libc::strsignal(n) };
-    if ptr.is_null() {
-        return None;
+impl Plan {
+    fn detect(no_pty: bool) -> Plan {
+        Plan::decide(
+            no_pty,
+            crate::ui::is_tty(libc::STDIN_FILENO) && term::in_foreground(libc::STDIN_FILENO),
+            crate::ui::is_tty(libc::STDOUT_FILENO),
+            crate::ui::is_tty(libc::STDERR_FILENO),
+            same_destination(libc::STDOUT_FILENO, libc::STDERR_FILENO),
+        )
     }
-    Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+
+    fn decide(no_pty: bool, stdin: bool, stdout: bool, stderr: bool, same: bool) -> Plan {
+        Plan {
+            stdin_on_pty: !no_pty && stdin,
+            stdout_on_pty: !no_pty && stdout,
+            stderr_on_pty: !no_pty && stderr,
+            merged: same && (no_pty || (!stdout && !stderr)),
+        }
+    }
+
+    fn needs_pty(&self) -> bool {
+        self.stdin_on_pty || self.stdout_on_pty || self.stderr_on_pty
+    }
+}
+
+fn same_destination(a: RawFd, b: RawFd) -> bool {
+    let stat = |fd| {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        (unsafe { libc::fstat(fd, &mut st) } == 0).then_some((st.st_dev, st.st_ino))
+    };
+    matches!((stat(a), stat(b)), (Some(x), Some(y)) if x == y)
+}
+
+fn close_on_exec(fd: RawFd) {
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+}
+
+fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
+    let (mut master, mut slave) = (0, 0);
+    let mut size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // The child's terminal starts from the user's own settings where there are any, so
+    // erase characters, flow control and the like match.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    let inherited = [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .iter()
+        .any(|fd| unsafe { libc::tcgetattr(*fd, &mut settings) } == 0);
+    let settings_ptr: *mut libc::termios = if inherited {
+        &mut settings
+    } else {
+        std::ptr::null_mut()
+    };
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            settings_ptr,
+            &mut size,
+        )
+    };
+    if rc != 0 {
+        return Err(format!("could not open a pty: {}", std::io::Error::last_os_error()));
+    }
+    close_on_exec(master);
+    close_on_exec(slave);
+    Ok(unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) })
+}
+
+fn open_pipe() -> Result<(OwnedFd, OwnedFd), String> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(format!("could not create a pipe: {}", std::io::Error::last_os_error()));
+    }
+    close_on_exec(fds[0]);
+    close_on_exec(fds[1]);
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
 // ---------------------------------------------------------------------------
-// The pty path
+// Spawning
 // ---------------------------------------------------------------------------
 
-fn run_pty(
+/// A stream of output to copy, and where to.
+struct Source {
+    read: OwnedFd,
+    dest: RawFd,
+    capture: bool,
+    is_pty: bool,
+}
+
+struct Spawned {
+    child: Child,
+    master: Option<OwnedFd>,
+    sources: Vec<Source>,
+}
+
+fn stdio_of(fd: &OwnedFd) -> Result<Stdio, String> {
+    fd.try_clone()
+        .map(Stdio::from)
+        .map_err(|e| format!("could not duplicate a descriptor: {e}"))
+}
+
+fn spawn(
     command: &[String],
     cwd: &Path,
     cols: u16,
     rows: u16,
-    sink: &Sink,
-) -> Result<Outcome, String> {
-    let pty = native_pty_system();
-    let pair = pty
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("could not open a pty: {e}"))?;
+    plan: &Plan,
+) -> Result<Spawned, String> {
+    let pty = plan.needs_pty().then(|| open_pty(cols, rows)).transpose()?;
 
-    let mut builder = CommandBuilder::new(&command[0]);
-    builder.args(&command[1..]);
-    builder.cwd(cwd);
+    let mut cmd = Command::new(&command[0]);
+    cmd.args(&command[1..]).current_dir(cwd);
 
-    let mut child = pair
-        .slave
-        .spawn_command(builder)
+    let mut sources = Vec::new();
+    if let Some((_, slave)) = &pty {
+        if plan.stdin_on_pty {
+            cmd.stdin(stdio_of(slave)?);
+        }
+        if plan.stdout_on_pty {
+            cmd.stdout(stdio_of(slave)?);
+        }
+        if plan.stderr_on_pty {
+            cmd.stderr(stdio_of(slave)?);
+        }
+    }
+    if !plan.stdout_on_pty {
+        let (read, write) = open_pipe()?;
+        if plan.merged {
+            cmd.stderr(stdio_of(&write)?);
+        }
+        cmd.stdout(Stdio::from(write));
+        sources.push(Source {
+            read,
+            dest: libc::STDOUT_FILENO,
+            capture: true,
+            is_pty: false,
+        });
+    }
+    if !plan.stderr_on_pty && !plan.merged {
+        let (read, write) = open_pipe()?;
+        cmd.stderr(Stdio::from(write));
+        sources.push(Source {
+            read,
+            dest: libc::STDERR_FILENO,
+            capture: true,
+            is_pty: false,
+        });
+    }
+    if let Some((master, slave)) = &pty {
+        // A session of its own, with the pty as its controlling terminal: that is what makes
+        // Ctrl-C, window-size changes and job control work inside it.
+        let slave_fd = slave.as_raw_fd();
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let read = master
+            .try_clone()
+            .map_err(|e| format!("could not read from the pty: {e}"))?;
+        let dest = if plan.stdout_on_pty {
+            libc::STDOUT_FILENO
+        } else if plan.stderr_on_pty {
+            libc::STDERR_FILENO
+        } else {
+            // Only stdin is on the pty, so all that can come back is the echo of what the
+            // user is typing. It belongs on their terminal and is not the program's output.
+            libc::STDIN_FILENO
+        };
+        sources.push(Source {
+            read,
+            dest,
+            capture: plan.stdout_on_pty || plan.stderr_on_pty,
+            is_pty: true,
+        });
+    }
+
+    let child = cmd
+        .spawn()
         .map_err(|e| format!("cannot run {}: {e}", command[0]))?;
 
-    // The parent must drop the slave or the master never sees EOF: the kernel keeps the
-    // pty open while any process holds a slave fd, and the read loop would hang forever
-    // after the child exits.
-    drop(pair.slave);
+    // Dropping `cmd` closes the parent's copies of the write ends and of the slave. Any left
+    // open would keep the read loops waiting after the child has gone.
+    drop(cmd);
+    let master = pty.map(|(master, _slave)| master);
+    Ok(Spawned { child, master, sources })
+}
 
-    let master = pair.master;
-    let master_fd = master.as_raw_fd();
-    let child_pid = child.process_id().map(|p| p as i32);
-    let mut reader = master
-        .try_clone_reader()
-        .map_err(|e| format!("could not read from the pty: {e}"))?;
-    let writer = master
-        .take_writer()
-        .map_err(|e| format!("could not write to the pty: {e}"))?;
+// ---------------------------------------------------------------------------
+// Running
+// ---------------------------------------------------------------------------
 
-    // Leaves the pty's line discipline as the only one in play. Restored on every exit
-    // path, including panics.
-    let _raw = term::raw_mode(libc::STDIN_FILENO);
+fn supervise(
+    spawned: &mut Spawned,
+    sink: &Sink,
+    plan: &Plan,
+) -> Result<std::process::ExitStatus, String> {
+    let exited = AtomicBool::new(false);
+    let master_fd = spawned.master.as_ref().map(|m| m.as_raw_fd());
+    let child_pid = spawned.child.id() as i32;
+    let sources = std::mem::take(&mut spawned.sources);
 
-    spawn_stdin_forwarder(writer, master_fd);
-    spawn_signal_forwarder(master_fd, child_pid, sink.handle());
+    // Leaves the pty's line discipline as the only one in play. Restored on every exit path,
+    // including panics.
+    let _raw = if plan.stdin_on_pty {
+        term::raw_mode(libc::STDIN_FILENO)
+    } else {
+        None
+    };
 
-    pump(&mut reader, sink);
+    match master_fd {
+        Some(master) => {
+            // The terminal must stay usable by a job moved to the background: with these
+            // ignored, touching it fails with an error rather than stopping logbear.
+            unsafe {
+                libc::signal(libc::SIGTTIN, libc::SIG_IGN);
+                libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+            }
+            if plan.stdin_on_pty {
+                spawn_stdin_forwarder(master, child_pid);
+            }
+            spawn_signal_forwarder(master, child_pid, sink.handle());
+        }
+        None => spawn_pipe_signal_forwarder(child_pid),
+    }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("lost track of the child process: {e}"))?;
-    Ok(Outcome {
-        code: status.exit_code(),
-        signal: status.signal().and_then(signal_number),
+    std::thread::scope(|scope| {
+        for source in sources {
+            let exited = &exited;
+            scope.spawn(move || pump(source, sink, exited));
+        }
+        let status = spawned
+            .child
+            .wait()
+            .map_err(|e| format!("lost track of the child process: {e}"));
+        exited.store(true, Ordering::SeqCst);
+        status
     })
 }
 
-/// Read → user's stdout → flush → daemon, in that order.
-fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    let mut buf = vec![0u8; 64 * 1024];
+/// Waits for output, giving up shortly after the child has exited.
+fn wait_readable(fd: RawFd, exited: &AtomicBool, exited_at: &mut Option<Instant>) -> bool {
     loop {
+        if exited.load(Ordering::SeqCst) && exited_at.is_none() {
+            *exited_at = Some(Instant::now());
+        }
+        if exited_at.is_some_and(|at| at.elapsed() > AFTER_EXIT) {
+            return false;
+        }
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll, 1, 20) };
+        if ready > 0 {
+            return true;
+        }
+        if ready < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return false;
+        }
+        // Nothing buffered and the child has gone: whatever still holds this open is a
+        // background process, not the command.
+        if ready == 0 && exited_at.is_some() {
+            return false;
+        }
+    }
+}
+
+/// Read → user's stream → daemon, in that order.
+fn pump(source: Source, sink: &Sink, exited: &AtomicBool) {
+    let fd = source.read.as_raw_fd();
+    let mut reader = std::fs::File::from(source.read);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut exited_at = None;
+    let mut delivering = true;
+    while wait_readable(fd, exited, &mut exited_at) {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 let chunk = &buf[..n];
-                if out.write_all(chunk).is_err() {
-                    break;
+                if delivering && write_all(source.dest, chunk).is_err() {
+                    if !source.is_pty {
+                        // The reader has gone. Returning closes our end, so the child gets
+                        // the SIGPIPE it would have had without logbear.
+                        return;
+                    }
+                    // The terminal has gone. A pty's other side has no SIGPIPE, so keep
+                    // draining or the child blocks forever on a full buffer.
+                    delivering = false;
                 }
-                let _ = out.flush();
-                // Timestamped here rather than on the sender thread so arrival times stay
-                // real under load.
-                sink.offer(logbear_core::now_micros(), chunk);
+                if source.capture {
+                    // Timestamped here rather than on the sender thread so arrival times
+                    // stay real under load.
+                    sink.offer(logbear_core::now_micros(), chunk);
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // A pty master reports the child's exit as EIO on Linux rather than as a clean
@@ -326,165 +500,161 @@ fn pump(reader: &mut (impl Read + ?Sized), sink: &Sink) {
     }
 }
 
-fn spawn_stdin_forwarder(mut writer: Box<dyn Write + Send>, master_fd: Option<i32>) {
+/// Writes to one of our own standard streams, which we do not own and must not close.
+///
+/// Waits rather than failing on a non-blocking descriptor: node and others set `O_NONBLOCK`
+/// on a pipe they share with us.
+fn write_all(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
+    let mut out = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        match out.write(rest) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                unsafe { libc::poll(&mut poll, 1, 100) };
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Copies keystrokes to the pty. Only runs when stdin is a terminal; anything else is
+/// inherited by the child directly.
+fn spawn_stdin_forwarder(master: RawFd, child_pid: i32) {
     // Never joined: a blocking read on stdin cannot be cancelled portably, and the process
     // exits and takes the thread with it.
     std::thread::Builder::new()
         .name("logbear-stdin".into())
         .spawn(move || {
-            let interactive = crate::ui::is_tty(libc::STDIN_FILENO);
-            let mut forwarded_anything = false;
+            let mut stdin = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(libc::STDIN_FILENO) });
             let mut buf = [0u8; 8192];
-            let stdin = std::io::stdin();
-            let mut input = stdin.lock();
             loop {
-                match input.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if writer.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                        let _ = writer.flush();
-                        forwarded_anything = true;
-                    }
+                let n = match stdin.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
+                    // Reading from the terminal while in the background fails. That lasts
+                    // until the job comes back with `fg`.
+                    Err(_) if !term::in_foreground(libc::STDIN_FILENO) => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(_) => return,
+                };
+                let mut rest = &buf[..n];
+                while !rest.is_empty() {
+                    let (before, after) = split_at_suspend(rest, suspend_byte(master));
+                    if write_all(master, before).is_err() {
+                        return;
+                    }
+                    rest = match after {
+                        Some(after) => {
+                            suspend(master, child_pid);
+                            after
+                        }
+                        None => &[],
+                    };
                 }
             }
-            if interactive || forwarded_anything {
-                send_eof(&mut writer, master_fd);
-            }
-            // Dropping `writer` makes portable-pty send a newline as well as an EOT. That
-            // newline is a byte the child never received from the user: it echoes back and
-            // lands in the captured stream as a phantom blank line. Leaking one fd for the
-            // remaining life of the process is the cheaper mistake.
-            std::mem::forget(writer);
         })
         .ok();
 }
 
-/// Sends the pty's EOF character now that our own stdin has ended, or `echo x | logbear cat`
-/// never returns.
-///
-/// A pty can only signal EOF through the line discipline's EOF character, the same byte
-/// Ctrl-D sends. Only sent when there was a real stdin behind it — an interactive terminal,
-/// or a pipe that delivered something — because under `logbear npm test < /dev/null` the pty
-/// echoes it as `^D` into the first bytes of the captured stream.
-fn send_eof(writer: &mut Box<dyn Write + Send>, master_fd: Option<i32>) {
-    let Some(fd) = master_fd else { return };
-    let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
-        return;
+/// The byte the program inside the pty has asked to mean "suspend", if it wants one at all.
+/// A full-screen program that switched this off wants Ctrl-Z for itself.
+fn suspend_byte(master: RawFd) -> Option<u8> {
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(master, &mut settings) } != 0 {
+        return None;
     }
-    let eof = termios.c_cc[libc::VEOF];
-    if eof != 0 {
-        let _ = writer.write_all(&[eof]);
-        let _ = writer.flush();
+    if settings.c_lflag & libc::ISIG == 0 {
+        return None;
+    }
+    match settings.c_cc[libc::VSUSP] {
+        0 => None,
+        byte => Some(byte),
     }
 }
 
-fn spawn_signal_forwarder(master_fd: Option<i32>, child_pid: Option<i32>, sink: crate::sink::SinkHandle) {
+/// Splits `bytes` around the first suspend byte, which is consumed rather than forwarded.
+fn split_at_suspend(bytes: &[u8], suspend: Option<u8>) -> (&[u8], Option<&[u8]>) {
+    match suspend.and_then(|s| bytes.iter().position(|b| *b == s)) {
+        Some(i) => (&bytes[..i], Some(&bytes[i + 1..])),
+        None => (bytes, None),
+    }
+}
+
+/// Does what Ctrl-Z would have done had logbear not been in between.
+///
+/// The child leads its own session, so the kernel treats its process group as orphaned and
+/// discards SIGTSTP. SIGSTOP is not subject to that. Once it has stopped, logbear stops
+/// itself so the shell sees a suspended job, and passes the SIGCONT on when it is resumed.
+fn suspend(master: RawFd, child_pid: i32) {
+    let group = foreground_group(master).unwrap_or(child_pid);
+    unsafe { libc::killpg(group, libc::SIGSTOP) };
+    term::restore();
+    unsafe { libc::kill(libc::getpid(), libc::SIGSTOP) };
+
+    // Running again: back in the foreground with `fg`, or left in the background with `bg`.
+    if term::in_foreground(libc::STDIN_FILENO) {
+        std::mem::forget(term::raw_mode(libc::STDIN_FILENO));
+    }
+    let (cols, rows) = term::size();
+    term::set_size_of_fd(master, cols, rows);
+    unsafe { libc::killpg(group, libc::SIGCONT) };
+}
+
+fn spawn_signal_forwarder(master: RawFd, child_pid: i32, sink: SinkHandle) {
     use signal_hook::consts::signal::*;
     use signal_hook::iterator::Signals;
 
-    let Ok(mut signals) = Signals::new([SIGWINCH, SIGINT, SIGTERM, SIGQUIT, SIGHUP]) else {
+    let Ok(mut signals) = Signals::new([SIGWINCH, SIGINT, SIGTERM, SIGQUIT, SIGHUP, SIGTSTP]) else {
         return;
     };
     std::thread::Builder::new()
         .name("logbear-signals".into())
         .spawn(move || {
             for sig in signals.forever() {
-                if sig == SIGWINCH {
-                    let (cols, rows) = term::size();
-                    if let Some(fd) = master_fd {
-                        term::set_size_of_fd(fd, cols, rows);
+                match sig {
+                    SIGWINCH => {
+                        let (cols, rows) = term::size();
+                        term::set_size_of_fd(master, cols, rows);
+                        sink.resize(cols, rows);
                     }
-                    sink.resize(cols, rows);
-                    continue;
-                }
-                // The process group, not the pid: signalling only a supervisor's leader
-                // leaves its children running and makes Ctrl-C look broken. `tcgetpgrp`
-                // on the master gives the pty's current foreground group, which is right
-                // even after the child hands control to something it spawned.
-                if let Some(pgrp) = foreground_group(master_fd).or(child_pid) {
-                    unsafe { libc::killpg(pgrp, sig) };
+                    SIGTSTP => suspend(master, child_pid),
+                    // The process group, not the pid: signalling only a supervisor's leader
+                    // leaves its children running and makes Ctrl-C look broken. `tcgetpgrp`
+                    // on the master gives the pty's current foreground group, which is right
+                    // even after the child hands control to something it spawned.
+                    _ => {
+                        let group = foreground_group(master).unwrap_or(child_pid);
+                        unsafe { libc::killpg(group, sig) };
+                    }
                 }
             }
         })
         .ok();
 }
 
-fn foreground_group(master_fd: Option<i32>) -> Option<i32> {
-    let fd = master_fd?;
-    match unsafe { libc::tcgetpgrp(fd) } {
+fn foreground_group(master: RawFd) -> Option<i32> {
+    match unsafe { libc::tcgetpgrp(master) } {
         pid if pid > 0 => Some(pid),
         _ => None,
     }
 }
 
-// ---------------------------------------------------------------------------
-// The pipe path (`--no-pty`)
-// ---------------------------------------------------------------------------
-
-/// The `--no-pty` escape hatch, for the rare program a pty upsets.
-///
-/// Timing fidelity is degraded and cannot be fixed here: libc fully buffers stdout at 4 KB
-/// when `isatty()` is false, so every line in a clump arrives at the same instant and
-/// per-line timestamps become fiction. Interactive tooling stops working for the same
-/// reason.
-fn run_piped(command: &[String], cwd: &Path, sink: &Sink) -> Result<Outcome, String> {
-    use std::os::fd::{FromRawFd, OwnedFd};
-    use std::process::{Command, Stdio};
-
-    let mut fds = [0i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(format!("could not create a pipe: {}", std::io::Error::last_os_error()));
-    }
-    let (read_end, write_end) = unsafe {
-        (
-            OwnedFd::from_raw_fd(fds[0]),
-            OwnedFd::from_raw_fd(fds[1]),
-        )
-    };
-    let write_dup = write_end
-        .try_clone()
-        .map_err(|e| format!("could not duplicate the pipe: {e}"))?;
-
-    // Scoped so the parent's copies of the write end close before the read loop starts;
-    // otherwise the pipe never reaches EOF and the loop hangs after the child has exited.
-    // Both fds point at one pipe, so stdout and stderr stay interleaved in the order the
-    // child wrote them, matching the pty path's single-stream shape.
-    let mut child = {
-        let mut cmd = Command::new(&command[0]);
-        cmd.args(&command[1..])
-            .current_dir(cwd)
-            .stdout(Stdio::from(write_end))
-            .stderr(Stdio::from(write_dup));
-        cmd.spawn()
-            .map_err(|e| format!("cannot run {}: {e}", command[0]))?
-    };
-
-    let child_pid = child.id() as i32;
-    spawn_pipe_signal_forwarder(child_pid);
-
-    let mut reader = std::fs::File::from(read_end);
-    pump(&mut reader, sink);
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("lost track of the child process: {e}"))?;
-    use std::os::unix::process::ExitStatusExt;
-    Ok(Outcome {
-        code: status.code().unwrap_or(1) as u32,
-        signal: status.signal(),
-    })
-}
-
-/// Forwards signals to the child pid rather than the process group.
-///
-/// Pipe mode leaves the child in our own group, where the terminal already delivers Ctrl-C
-/// to it directly and `killpg` would signal the shim as well and loop. This covers only the
-/// case where something signals the shim from outside.
+/// With no pty the child shares our process group, where the terminal already delivers
+/// Ctrl-C to it directly. Forwarding that as well would send it twice, and plenty of servers
+/// treat a second Ctrl-C as "stop waiting and die". This covers signals sent to logbear
+/// alone from outside.
 fn spawn_pipe_signal_forwarder(child_pid: i32) {
     use signal_hook::consts::signal::*;
     use signal_hook::iterator::Signals;
@@ -496,10 +666,21 @@ fn spawn_pipe_signal_forwarder(child_pid: i32) {
         .name("logbear-signals".into())
         .spawn(move || {
             for sig in signals.forever() {
+                if matches!(sig, SIGINT | SIGQUIT) && terminal_delivers_to_us() {
+                    continue;
+                }
                 unsafe { libc::kill(child_pid, sig) };
             }
         })
         .ok();
+}
+
+/// Whether we are the foreground job of a controlling terminal.
+fn terminal_delivers_to_us() -> bool {
+    let Ok(tty) = std::fs::File::open("/dev/tty") else {
+        return false;
+    };
+    term::in_foreground(tty.as_raw_fd())
 }
 
 #[cfg(test)]
@@ -559,21 +740,41 @@ mod tests {
     }
 
     #[test]
-    fn signal_numbers_round_trip_through_libcs_own_descriptions() {
-        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-            let description = strsignal(sig).expect("libc knows this signal");
-            assert_eq!(
-                signal_number(&description),
-                Some(sig),
-                "could not recover {sig} from {description:?}"
-            );
-        }
+    fn each_stream_is_decided_on_its_own() {
+        let plan = Plan::decide(false, false, true, true, true);
+        assert!(!plan.stdin_on_pty && plan.stdout_on_pty && plan.stderr_on_pty);
+        assert!(!plan.merged, "a terminal needs no shared pipe");
+
+        let plan = Plan::decide(false, true, false, true, false);
+        assert!(plan.stdin_on_pty && !plan.stdout_on_pty && plan.stderr_on_pty);
+
+        let plan = Plan::decide(false, false, false, false, true);
+        assert!(!plan.needs_pty());
+        assert!(plan.merged, "2>&1 has to keep its order");
+
+        let plan = Plan::decide(false, false, false, false, false);
+        assert!(!plan.merged, "stderr to one place, stdout to another");
     }
 
     #[test]
-    fn an_unknown_description_falls_back_to_the_numeric_form() {
-        assert_eq!(signal_number("Signal 61"), Some(61));
-        assert_eq!(signal_number("something libc never said"), None);
+    fn no_pty_means_no_pty_even_on_a_terminal() {
+        let plan = Plan::decide(true, true, true, true, true);
+        assert!(!plan.needs_pty());
+        assert!(plan.merged);
+    }
+
+    #[test]
+    fn the_suspend_byte_is_consumed_and_the_rest_survives() {
+        let (before, after) = split_at_suspend(b"ab\x1acd", Some(0x1a));
+        assert_eq!(before, b"ab");
+        assert_eq!(after, Some(&b"cd"[..]));
+    }
+
+    #[test]
+    fn a_program_that_turned_off_suspend_gets_the_byte() {
+        let (before, after) = split_at_suspend(b"ab\x1acd", None);
+        assert_eq!(before, b"ab\x1acd");
+        assert_eq!(after, None);
     }
 
     #[test]
@@ -581,18 +782,6 @@ mod tests {
         assert_eq!(signal_name(libc::SIGINT), "SIGINT");
         assert_eq!(signal_name(libc::SIGTERM), "SIGTERM");
         assert_eq!(signal_name(99), "SIG99");
-    }
-
-    #[test]
-    fn the_denylist_matches_on_the_basename() {
-        let settings = Settings::default();
-        assert!(is_denied("psql", &settings));
-        assert!(is_denied("/usr/local/bin/psql", &settings));
-        assert!(is_denied("vim", &settings));
-        assert!(!is_denied("mix", &settings));
-        assert!(!is_denied("psqlx", &settings));
-        // A directory called `vim` on the way to something else must not match.
-        assert!(!is_denied("/opt/vim/bin/mix", &settings));
     }
 
 }

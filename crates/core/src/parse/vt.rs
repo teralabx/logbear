@@ -6,12 +6,25 @@
 //!
 //! Two departures from a real terminal:
 //!
-//! * No wrapping. Soft-wrapping inserts no bytes, so emulating at unbounded width recovers
-//!   the unwrapped logical line; wrapping at the user's real width would make the same
-//!   error fingerprint differently at different terminal sizes.
+//! * No wrapping. Soft-wrapping inserts no bytes, so emulating wider than any raw line
+//!   recovers the unwrapped logical line; wrapping at the user's real width would make the
+//!   same error fingerprint differently at different terminal sizes.
 //! * One row. Input is a single raw line (no LF), so vertical cursor motion is ignored.
 
-use crate::model::CANONICAL_COLS;
+use crate::model::{CANONICAL_COLS, MAX_RAW_LINE};
+
+/// Widest row emulated. A raw line is capped at this many bytes, so all real text fits, and
+/// only cursor motion can ask for more.
+const MAX_LINE_COLS: usize = MAX_RAW_LINE;
+
+/// Largest count any one escape may carry. No real terminal is wider, and `ESC[65535C` costs
+/// nine bytes: left alone, a short line of output could demand gigabytes.
+const MAX_ESCAPE_COUNT: usize = 1024;
+
+/// Cells a single line may shift around through inserts, deletes and partial erases. Each of
+/// those is linear in the row and an escape is a few bytes, so without a budget one line can
+/// ask for its width squared. Far above anything a progress bar does.
+const MAX_SHIFTED_CELLS: usize = 64 * MAX_LINE_COLS;
 
 /// Renders one raw line's bytes to plain text: ANSI resolved, `\r` overwrites applied,
 /// trailing whitespace trimmed.
@@ -73,10 +86,26 @@ pub fn quick_strip(bytes: &[u8]) -> String {
 struct Row {
     cells: Vec<char>,
     cursor: usize,
+    /// Spent against [`MAX_SHIFTED_CELLS`].
+    shifted: usize,
 }
 
 impl Row {
+    /// Charges an operation that touches every cell, returning whether it may go ahead.
+    fn may_shift(&mut self) -> bool {
+        self.shifted += self.cells.len();
+        self.shifted <= MAX_SHIFTED_CELLS
+    }
+
+    fn move_to(&mut self, column: usize) {
+        self.cursor = column.min(MAX_LINE_COLS);
+    }
+
     fn put(&mut self, c: char) {
+        // Past the edge the rest of the line is dropped, and a stray cursor cannot run on.
+        if self.cursor >= MAX_LINE_COLS {
+            return;
+        }
         if self.cells.len() <= self.cursor {
             self.cells.resize(self.cursor + 1, ' ');
         }
@@ -102,7 +131,7 @@ impl vte::Perform for Row {
             b'\r' => self.cursor = 0,
             0x08 => self.cursor = self.cursor.saturating_sub(1),
             b'\t' => {
-                let next = (self.cursor / 8 + 1) * 8;
+                let next = ((self.cursor / 8 + 1) * 8).min(MAX_LINE_COLS);
                 while self.cursor < next {
                     self.put(' ');
                 }
@@ -121,6 +150,7 @@ impl vte::Perform for Row {
                 .map(|v| v as usize)
                 .filter(|v| *v != 0)
                 .unwrap_or(default)
+                .min(MAX_ESCAPE_COUNT)
         };
         match action {
             // Erase in line
@@ -132,11 +162,12 @@ impl vte::Perform for Row {
                     .unwrap_or(0);
                 match mode {
                     0 => self.cells.truncate(self.cursor),
-                    1 => {
+                    1 if self.may_shift() => {
                         for i in 0..self.cursor.min(self.cells.len()) {
                             self.cells[i] = ' ';
                         }
                     }
+                    1 => {}
                     _ => self.cells.clear(),
                 }
             }
@@ -146,27 +177,27 @@ impl vte::Perform for Row {
                 self.cursor = 0;
             }
             // Cursor horizontal absolute
-            'G' | '`' => self.cursor = p(0, 1) - 1,
+            'G' | '`' => self.move_to(p(0, 1) - 1),
             // Cursor forward / back
-            'C' => self.cursor += p(0, 1),
+            'C' => self.move_to(self.cursor + p(0, 1)),
             'D' => self.cursor = self.cursor.saturating_sub(p(0, 1)),
             // Cursor position; only the column is meaningful on one row.
-            'H' | 'f' => self.cursor = p(1, 1) - 1,
+            'H' | 'f' => self.move_to(p(1, 1) - 1),
             // Delete characters
             'P' => {
                 let n = p(0, 1);
                 let end = (self.cursor + n).min(self.cells.len());
-                if self.cursor < self.cells.len() {
+                if self.cursor < self.cells.len() && self.may_shift() {
                     self.cells.drain(self.cursor..end);
                 }
             }
-            // Insert blanks
+            // Insert blanks, in one move: inserting them singly is quadratic.
             '@' => {
                 let n = p(0, 1);
-                if self.cursor <= self.cells.len() {
-                    for _ in 0..n {
-                        self.cells.insert(self.cursor, ' ');
-                    }
+                if self.cursor <= self.cells.len() && self.may_shift() {
+                    let at = self.cursor;
+                    self.cells.splice(at..at, std::iter::repeat_n(' ', n));
+                    self.cells.truncate(MAX_LINE_COLS);
                 }
             }
             // SGR and the rest do not change which characters are on the row.
@@ -251,6 +282,59 @@ mod tests {
     fn rendering_is_deterministic() {
         let bytes = b"\x1b[32m12:04:11.882 \x1b[0m[info] GET /users\r\n";
         assert_eq!(render_line(bytes), render_line(bytes));
+    }
+
+    /// One raw line can hold this many escapes, so a per-escape cost is multiplied by it.
+    fn line_of(escape: &str) -> Vec<u8> {
+        escape.repeat(crate::model::MAX_RAW_LINE / escape.len()).into_bytes()
+    }
+
+    fn time_of(bytes: &[u8]) -> (String, std::time::Duration) {
+        let started = std::time::Instant::now();
+        let text = render_line(bytes);
+        (text, started.elapsed())
+    }
+
+    #[test]
+    fn huge_cursor_moves_cannot_grow_a_line_without_limit() {
+        for escape in ["\x1b[65535C", "\x1b[65535Cx", "\x1b[65535Gx", "\x1b[1;65535Hx", "\x1b[C"] {
+            let (text, took) = time_of(&line_of(escape));
+            assert!(text.chars().count() <= MAX_LINE_COLS, "{escape:?}: {} cells", text.len());
+            assert!(took.as_millis() < 500, "{escape:?} took {took:?}");
+        }
+    }
+
+    #[test]
+    fn huge_inserts_cannot_pin_a_core() {
+        for escape in ["\x1b[65535@", "x\x1b[1G\x1b[65535@", "\x1b[1@", "x\x1b[1G\x1b[P"] {
+            let (text, took) = time_of(&line_of(escape));
+            assert!(text.chars().count() <= MAX_LINE_COLS, "{escape:?}: {} cells", text.len());
+            assert!(took.as_millis() < 500, "{escape:?} took {took:?}");
+        }
+    }
+
+    #[test]
+    fn repeated_shifts_of_a_full_line_are_bounded() {
+        let mut bytes = "x".repeat(MAX_LINE_COLS / 2).into_bytes();
+        bytes.extend(line_of("\x1b[1G\x1b[1@\x1b[P\x1b[1K"));
+        bytes.truncate(crate::model::MAX_RAW_LINE);
+        let (_, took) = time_of(&bytes);
+        assert!(took.as_millis() < 500, "took {took:?}");
+    }
+
+    #[test]
+    fn a_tab_at_the_width_limit_terminates() {
+        let mut bytes = "\x1b[1000C".repeat(70).into_bytes();
+        bytes.extend_from_slice(b"\t\tx");
+        assert!(render_line(&bytes).chars().count() <= MAX_LINE_COLS);
+    }
+
+    #[test]
+    fn ordinary_motion_still_works_under_the_clamps() {
+        assert_eq!(render_line(b"abc\x1b[1G\x1b[2@X"), "X abc");
+        assert_eq!(render_line(b"a\x1b[3Cb"), "a   b");
+        assert_eq!(render_line(b"abcdef\x1b[3G\x1b[2P"), "abef");
+        assert_eq!(render_line(b"abcdef\x1b[4G\x1b[1K"), "   def");
     }
 
     #[test]

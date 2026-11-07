@@ -81,7 +81,7 @@
 			>{/if}
 	</button>
 
-	<time class="tnum meta text-right text-[11px] leading-[18px]" datetime={String(entry.captured_at)}
+	<time class="tnum meta text-right text-[12px] leading-[18px]" datetime={String(entry.captured_at)}
 		>{fmtClock(entry.captured_at)}</time
 	>
 
@@ -95,7 +95,7 @@
 
 		{#if entry.is_new_signature}
 			<span
-				class="ml-1.5 inline-block rounded-[2px] bg-flare px-1 align-[1px] text-[10px] font-semibold tracking-[0.08em] text-flare-content uppercase"
+				class="ml-1.5 inline-block rounded-[2px] bg-flare px-1 align-[1px] text-[12px] font-semibold tracking-[0.08em] text-flare-content uppercase"
 				title="This signature has never appeared in this project before">new</span
 			>
 		{/if}
@@ -109,7 +109,7 @@
 		{/if}
 
 		{#if multiline && !expanded}
-			<span class="meta ml-1 rounded-[2px] border border-hair px-1 text-[10px] whitespace-nowrap"
+			<span class="meta ml-1 rounded-[2px] border border-hair px-1 text-[12px] whitespace-nowrap"
 				>+{rest.length}</span
 			>
 		{/if}
@@ -123,11 +123,11 @@
 			{#if entry.template}
 				<div class="mb-1.5 flex items-baseline gap-2">
 					<span class="label-xs">signature</span>
-					<code class="text-[11px] text-base-content [overflow-wrap:anywhere]">{entry.template}</code>
+					<code class="text-[12px] text-base-content [overflow-wrap:anywhere]">{entry.template}</code>
 				</div>
 			{/if}
 			{#if entry.error_reason}
-				<div class="meta mb-1.5 flex items-baseline gap-2 text-[11px]">
+				<div class="meta mb-1.5 flex items-baseline gap-2 text-[12px]">
 					<span class="label-xs">flagged</span>
 					{entry.error_reason} · lines {entry.start_line}–{entry.end_line}
 				</div>

@@ -12,7 +12,8 @@ description = "Connects logbear to coding agents and the login session: MCP serv
 [dependencies]
 logbear-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Keeps the keys of a user's config in the order they wrote them.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
 tempfile = "3"

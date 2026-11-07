@@ -854,8 +854,8 @@ const installStatus: InstallStatus = {
 	path: {
 		installed: true,
 		available: true,
-		detail: '~/.logbear/bin is first in PATH (added to ~/.zshrc)',
-		backup: '~/.logbear/backups/zshrc.2026-07-11T09-14-02'
+		detail: 'linked into ~/.local/bin and added it to ~/.zshrc. Open a new terminal to pick it up.',
+		backup: null
 	},
 	daemon: {
 		installed: true,
@@ -925,20 +925,38 @@ function dbBytes(pid: number): number {
 	return rs.reduce((a, r) => a + r.entries.reduce((b, e) => b + e.text.length * 3 + 420, 0), 0);
 }
 
+/** Failure and first-launch states for a dev browser: `?mock=daemon-down`, `?mock=first-run`. */
+function mockFlag(name: string): boolean {
+	return new URLSearchParams(location.search).getAll('mock').includes(name);
+}
+
+const down = () => Promise.reject('The logbear daemon is not running (mock).');
+
+let firstRunDone = false;
+if (mockFlag('first-run')) {
+	for (const s of Object.values(installStatus)) {
+		s.installed = false;
+		s.backup = null;
+		s.detail = 'not installed (mock)';
+	}
+}
+
 export const mock = {
 	daemon_status: () =>
-		delay<DaemonStatus>({
-			version: '0.4.1',
-			pid: 41822,
-			started_at: NOW - 3 * DAY - 4 * HOUR,
-			socket: '/Users/dev/.logbear/daemon.sock',
-			projects: projects.length,
-			active_runs: runData.filter((r) => r.run.ended_at === null).length,
-			total_db_bytes: projects.reduce((a, p) => a + dbBytes(p.id), 0),
-			spool_pending: 0
-		}),
+		mockFlag('daemon-down')
+			? down()
+			: delay<DaemonStatus>({
+					version: '0.4.1',
+					pid: 41822,
+					started_at: NOW - 3 * DAY - 4 * HOUR,
+					socket: '/Users/dev/.logbear/daemon.sock',
+					projects: projects.length,
+					active_runs: runData.filter((r) => r.run.ended_at === null).length,
+					total_db_bytes: projects.reduce((a, p) => a + dbBytes(p.id), 0),
+					spool_pending: 0
+				}),
 
-	list_projects: () => delay(projects.slice()),
+	list_projects: () => (mockFlag('daemon-down') ? down() : delay(projects.slice())),
 
 	project_status: (ref: ProjectRef) => {
 		const p = resolveProject(ref);
@@ -1049,7 +1067,7 @@ export const mock = {
 		return delay(renderRaw(r), 60);
 	},
 
-	get_settings: () => delay({ ...settings }),
+	get_settings: () => (mockFlag('daemon-down') ? down() : delay({ ...settings })),
 	update_settings: (s: Settings) => {
 		settings = { ...s };
 		return delay(null);
@@ -1117,11 +1135,22 @@ export const mock = {
 		return delay(null);
 	},
 
-	install_status: () => delay({ ...installStatus }),
+	install_status: () => {
+		if (mockFlag('install-down')) return Promise.reject('install_status failed (mock)');
+		return delay({ ...installStatus });
+	},
+
+	first_run_pending: () => delay(mockFlag('first-run') && !firstRunDone),
+
+	finish_first_run: () => {
+		firstRunDone = true;
+		return delay(null);
+	},
 
 	install_step: (step: InstallStep) => {
 		const s = installStatus[step];
 		if (!s.available) throw `Cannot install "${step}": ${s.detail}`;
+		if (mockFlag('step-fails') && step === 'mcp_claude') throw 'logbear-mcp would not start (mock)';
 		s.installed = true;
 		s.detail = s.detail.replace(/^Not (registered|installed)\.\s*/, '').replace(/^Adds/, 'Added');
 		return delay<StepState>({ ...s });

@@ -135,14 +135,14 @@
      21 scoped stylesheets. */
   --color-hair: #dedbd3;
   --color-hair-strong: #c8c4ba;
-  --color-meta: #6b7178;
+  --color-meta: #5a6066;
   --color-code-bg: #eceae5;
   --color-lvl-error: #c4402b;
   --color-lvl-warn: #9a6508;
   --color-lvl-info: #3f6e88;
-  --color-lvl-debug: #6b7178;
-  --color-lvl-trace: #8a9199;
-  --color-lvl-unknown: #8a9199;
+  --color-lvl-debug: #5a6066;
+  --color-lvl-trace: #5f656c;
+  --color-lvl-unknown: #5f656c;
   --color-term-bg: #0f1214;
   --color-term-fg: #e6e8e9;
   --color-grid: rgb(15 18 20 / 0.06);
@@ -153,14 +153,14 @@
 [data-theme="logbear-light"] {
   --color-hair: #dedbd3;
   --color-hair-strong: #c8c4ba;
-  --color-meta: #6b7178;
+  --color-meta: #5a6066;
   --color-code-bg: #eceae5;
   --color-lvl-error: #c4402b;
   --color-lvl-warn: #9a6508;
   --color-lvl-info: #3f6e88;
-  --color-lvl-debug: #6b7178;
-  --color-lvl-trace: #8a9199;
-  --color-lvl-unknown: #8a9199;
+  --color-lvl-debug: #5a6066;
+  --color-lvl-trace: #5f656c;
+  --color-lvl-unknown: #5f656c;
   --color-term-bg: #0f1214;
   --color-term-fg: #e6e8e9;
   --color-grid: rgb(15 18 20 / 0.06);
@@ -304,13 +304,14 @@
   font-feature-settings: "tnum" 1;
 }
 
-/* Uppercase micro-label: +0.16em tracking per the brand spec. */
+/* Uppercase micro-label. 12px is the smallest text in the app; the tracking is
+   tighter than the 0.16em it had at 10px so the labels still fit their columns. */
 @utility label-xs {
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.2;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
   color: var(--color-meta);
 }
 

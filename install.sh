@@ -79,6 +79,9 @@ case ":$PATH:" in
     ;;
 esac
 
+# `logbear upgrade` runs this script, and that user has done the next step already.
+[ -z "${LOGBEAR_UPGRADING:-}" ] || exit 0
+
 say ""
 say "Next, connect logbear to your coding agents and start the daemon:"
 say "  $dir/logbear setup"

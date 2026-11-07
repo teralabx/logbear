@@ -34,8 +34,10 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
             agents,
             yes,
             remove,
-        } => crate::setup::run(agents, yes, remove),
+            purge,
+        } => crate::setup::run(agents, yes, remove, purge),
         Cmd::Updates { action } => crate::updates::run(action),
+        Cmd::Upgrade => crate::updates::upgrade(),
         Cmd::Query { sql, json } => query(&sql, json),
         Cmd::SqlSchema => sql_schema(),
         Cmd::Squash { run_id, json } => squash(run_id, json),
@@ -257,8 +259,8 @@ fn runs(number: usize, json: bool) -> Result<i32, String> {
 /// loses its parenthetical rather than the command failing.
 fn new_signature_counts(client: &mut Client) -> Option<std::collections::HashMap<RunId, i64>> {
     const SQL: &str = "SELECT rf.run_id, COUNT(*) \
-                         FROM run_fingerprints rf \
-                         JOIN fingerprints f ON f.id = rf.fingerprint_id \
+                         FROM fingerprints f \
+                         CROSS JOIN run_fingerprints rf ON f.id = rf.fingerprint_id \
                         WHERE f.level = 'error' AND f.first_seen >= rf.first_at \
                         GROUP BY rf.run_id";
     let result: QueryResult = client
@@ -495,6 +497,19 @@ fn status(json: bool) -> Result<i32, String> {
             Cell::plain("spool"),
             Cell::coloured(
                 format!("{} file(s) waiting to be ingested", daemon.spool_pending),
+                ui::EMBER,
+            ),
+        ]);
+    }
+    if daemon.spool_quarantined > 0 {
+        rows.push(vec![
+            Cell::plain("spool"),
+            Cell::coloured(
+                format!(
+                    "{} unreadable file(s) set aside in {}; they may hold raw output",
+                    daemon.spool_quarantined,
+                    logbear_core::paths::spool_dir().display()
+                ),
                 ui::EMBER,
             ),
         ]);

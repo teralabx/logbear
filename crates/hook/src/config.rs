@@ -210,7 +210,9 @@ mod tests {
             assert_eq!(h["command"], "/usr/local/bin/logbear-hook --harness codex");
             // `timeout`, in seconds — not `timeoutSec`.
             assert_eq!(h["timeout"], 10);
-            let handler_keys: Vec<&String> = h.as_object().unwrap().keys().collect();
+            // Sorted: key order depends on whether a build unifies `preserve_order` in.
+            let mut handler_keys: Vec<&String> = h.as_object().unwrap().keys().collect();
+            handler_keys.sort();
             assert_eq!(handler_keys, vec!["command", "timeout", "type"]);
         }
     }

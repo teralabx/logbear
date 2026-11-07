@@ -190,10 +190,18 @@ fn check_daemon() -> Check {
     match Client::connect() {
         Ok(mut client) => match client.ping() {
             Ok(()) => match client.status() {
-                Ok(status) => Check::ok(
-                    "daemon",
-                    format!("v{} · pid {} · {}", status.version, status.pid, socket.display()),
-                ),
+                Ok(status) => {
+                    let detail =
+                        format!("v{} · pid {} · {}", status.version, status.pid, socket.display());
+                    match skew(&status.version, env!("CARGO_PKG_VERSION")) {
+                        Some(fix) => Check::missing(
+                            "daemon",
+                            format!("{detail} · this CLI is v{}", env!("CARGO_PKG_VERSION")),
+                            fix,
+                        ),
+                        None => Check::ok("daemon", detail),
+                    }
+                }
                 Err(e) => Check::ok("daemon", format!("responding to ping ({e})")),
             },
             // A socket that accepts a connection and then does not answer looks installed
@@ -215,6 +223,19 @@ fn check_daemon() -> Check {
             "brew services start logbear, or `logbear setup` to register it as a login service",
         ),
     }
+}
+
+/// A daemon on another version than this CLI, and what to do about it.
+///
+/// Worth reporting because it looks fine: both still talk, until a request one of them does
+/// not know arrives. It clears by itself after an upgrade, so seeing it for long means the
+/// daemon came from somewhere else, usually the desktop app.
+fn skew(daemon: &str, cli: &str) -> Option<String> {
+    (daemon != cli).then(|| {
+        "a replaced daemon restarts itself once its runs finish; one started by the desktop \
+         app needs the app updated, or `logbeard stop` to use this copy"
+            .to_string()
+    })
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -634,6 +655,12 @@ mod tests {
             "hooks": { "Stop": [{ "hooks": [{ "command": "logbear-hook" }] }] }
         });
         assert_eq!(foreign_harness(&config, "codex"), None);
+    }
+
+    #[test]
+    fn a_daemon_on_another_version_is_reported_with_a_way_out() {
+        assert_eq!(skew("0.1.0", "0.1.0"), None);
+        assert!(skew("0.1.0", "0.2.0").is_some_and(|fix| fix.contains("logbeard stop")));
     }
 
     #[test]

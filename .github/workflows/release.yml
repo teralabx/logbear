@@ -1,8 +1,11 @@
 name: Release
 
 # Pushing a `v*` tag builds the four binaries for both macOS architectures, publishes them
-# as a GitHub release with a SHA-256 beside each archive, and reports the source tarball's
-# hash for the Homebrew formula. `install.sh` downloads from exactly these assets.
+# as a GitHub release with a SHA-256 beside each archive, and updates the Homebrew tap.
+# `install.sh` and the formula both download exactly these assets.
+#
+# Three jobs so that a failure in one can be re-run alone. The release cannot be created
+# twice, and the tap has to be able to catch up after it exists.
 
 on:
   push:
@@ -15,21 +18,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: Build and publish
+  build:
+    name: Build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # A tag that disagrees with the manifest ships binaries whose `--version` lies, and
-      # `logbear updates` compares against that version.
+      # `logbear upgrade` compares against that version.
       - name: Check the tag matches the workspace version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -69,23 +73,97 @@ jobs:
             (cd dist && shasum -a 256 "$stage.tar.gz" > "$stage.tar.gz.sha256")
           done
 
-      - name: Publish the release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "logbear ${GITHUB_REF_NAME#v}" --generate-notes
-
-      # The formula pins GitHub's own source archive, which only exists once the tag does.
-      - name: Report the source tarball hash for the formula
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          sha="$(curl -fsSL "$url" | shasum -a 256 | cut -d' ' -f1)"
-          {
-            echo "### Homebrew"
-            echo
-            echo "Set these in \`packaging/homebrew/logbear.rb\` and in the tap:"
-            echo
-            echo '```ruby'
-            echo "url \"$url\""
-            echo "sha256 \"$sha\""
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          version="${GITHUB_REF_NAME#v}"
+          flags=()
+          case "$version" in *-*) flags+=(--prerelease) ;; esac
+
+          # This version's changelog section, or GitHub's generated list if it has none,
+          # which is the normal case for a pre-release.
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[.*\]: /) { exit }
+            found
+          ' CHANGELOG.md > notes.md
+          if grep -q '[^[:space:]]' notes.md; then
+            flags+=(--notes-file notes.md)
+          else
+            flags+=(--generate-notes)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" dist/* --title "logbear $version" "${flags[@]}"
+
+  homebrew:
+    name: Update the tap
+    needs: publish
+    # A pre-release must not reach anyone who runs `brew upgrade`.
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The hashes come back from the release rather than from an earlier job, so this job
+      # works alone on a re-run.
+      - name: Render the formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          hash_of() {
+            gh release download "$GITHUB_REF_NAME" \
+              --pattern "logbear-$version-$1.tar.gz.sha256" --output - | cut -d' ' -f1
+          }
+          scripts/render-formula.sh "$version" \
+            "$(hash_of aarch64-apple-darwin)" "$(hash_of x86_64-apple-darwin)" > logbear.rb
+
+      - name: Push it to the tap
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "HOMEBREW_TAP_DEPLOY_KEY is not set: see packaging/homebrew/README.md" >&2
+            exit 1
+          fi
+          key="$RUNNER_TEMP/tap_key"
+          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$key")
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+          git clone git@github.com:teralabx/homebrew-tap.git "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Formula"
+          cp logbear.rb "$RUNNER_TEMP/tap/Formula/logbear.rb"
+          cd "$RUNNER_TEMP/tap"
+          git add Formula/logbear.rb
+          if git diff --cached --quiet; then
+            echo "the tap already has this version"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "logbear ${GITHUB_REF_NAME#v}"
+          git push origin HEAD
+
+      - name: Install from the tap, as a user would
+        run: |
+          brew install teralabx/tap/logbear
+          brew test logbear

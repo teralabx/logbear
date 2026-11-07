@@ -264,7 +264,7 @@
 			<button
 				type="button"
 				class={[
-					'cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase',
+					'cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase',
 					view === 'split' ? 'bg-base-content text-base-100' : 'text-meta'
 				]}
 				onclick={() => (view = 'split')}>split</button
@@ -272,7 +272,7 @@
 			<button
 				type="button"
 				class={[
-					'rule-l cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase',
+					'rule-l cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase',
 					view === 'raw' ? 'bg-base-content text-base-100' : 'text-meta'
 				]}
 				onclick={() => (view = 'raw')}>terminal</button
@@ -280,7 +280,7 @@
 			<button
 				type="button"
 				class={[
-					'rule-l cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase',
+					'rule-l cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase',
 					view === 'entries' ? 'bg-base-content text-base-100' : 'text-meta'
 				]}
 				onclick={() => (view = 'entries')}>entries</button
@@ -291,7 +291,7 @@
 
 {#if run}
 	<div
-		class="rule-b flex flex-none items-center gap-[10px] overflow-x-auto bg-base-200 px-4 py-[6px] text-[11.5px] whitespace-nowrap"
+		class="rule-b flex flex-none items-center gap-[10px] overflow-x-auto bg-base-200 px-4 py-[6px] text-[12px] whitespace-nowrap"
 	>
 		<span
 			class={[
@@ -311,7 +311,7 @@
 			>{run.git_branch ?? 'no branch'}@{shortSha(run.git_sha)}</span
 		>
 		{#if run.git_dirty_hash}<span
-				class="text-[10px] tracking-[0.16em] text-warning uppercase"
+				class="text-[12px] tracking-[0.1em] text-warning uppercase"
 				title="This run started with uncommitted changes, so the commit above does not fully describe it"
 				>uncommitted</span
 			>{/if}
@@ -392,7 +392,7 @@
 					<button
 						type="button"
 						class={[
-							'inline-flex h-[20px] cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[11px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms]',
+							'inline-flex h-[20px] cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[12px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms]',
 							newOnly
 								? 'border-[color-mix(in_oklch,var(--color-flare)_55%,transparent)] bg-[color-mix(in_oklch,var(--color-flare)_12%,transparent)] text-base-content'
 								: 'border-hair bg-transparent text-meta hover:border-hair-strong hover:text-base-content'
@@ -410,7 +410,7 @@
 					{#if levelFilter.size || newOnly}
 						<button
 							type="button"
-							class="cursor-pointer px-[4px] text-[10px] tracking-[0.16em] text-meta uppercase hover:text-base-content"
+							class="cursor-pointer px-[4px] text-[12px] tracking-[0.1em] text-meta uppercase hover:text-base-content"
 							onclick={() => {
 								levelFilter = new Set();
 								newOnly = false;
@@ -425,7 +425,7 @@
 					>
 						<input
 							type="search"
-							class="w-[190px] bg-transparent px-[8px] text-[11.5px] text-base-content outline-none"
+							class="w-[190px] bg-transparent px-[8px] text-[12px] text-base-content outline-none"
 							placeholder="Filter entries…"
 							bind:value={search}
 							aria-label="Filter entries by text"
@@ -434,7 +434,7 @@
 							}}
 						/>
 						{#if search.trim()}
-							<span class="tnum pr-[6px] text-[10px] text-meta">{filtered.length}</span>
+							<span class="tnum pr-[6px] text-[12px] text-meta">{filtered.length}</span>
 							<button
 								type="button"
 								class="rule-l grid h-full w-[20px] cursor-pointer place-items-center text-meta hover:text-base-content"
@@ -457,7 +457,7 @@
 					<button
 						type="button"
 						class={[
-							'inline-flex h-[22px] cursor-pointer items-center gap-[6px] rounded-[2px] border bg-transparent px-[8px] text-[11px] whitespace-nowrap',
+							'inline-flex h-[22px] cursor-pointer items-center gap-[6px] rounded-[2px] border bg-transparent px-[8px] text-[12px] whitespace-nowrap',
 							follow ? 'border-hair-strong text-base-content' : 'border-hair text-meta'
 						]}
 						aria-pressed={follow}
@@ -482,7 +482,7 @@
 
 			{#if inferredCount > 0}
 				<p
-					class="meta rule-b m-0 flex-none bg-[color-mix(in_oklch,var(--color-warning)_7%,transparent)] px-[12px] py-[5px] text-[11px]"
+					class="meta rule-b m-0 flex-none bg-[color-mix(in_oklch,var(--color-warning)_7%,transparent)] px-[12px] py-[5px] text-[12px]"
 				>
 					<span class="mr-[4px]">≈</span>
 					{inferredCount} of {filtered.length} entries had their boundaries inferred — no explicit delimiter
@@ -513,7 +513,7 @@
 			{#if scrolledUp}
 				<button
 					type="button"
-					class="absolute bottom-[14px] left-1/2 inline-flex -translate-x-1/2 cursor-pointer items-center gap-[7px] rounded-[2px] bg-base-content px-[11px] py-[5px] text-[11px] font-medium text-base-100 shadow-[0_4px_14px_rgba(0,0,0,0.3)]"
+					class="absolute bottom-[14px] left-1/2 inline-flex -translate-x-1/2 cursor-pointer items-center gap-[7px] rounded-[2px] bg-base-content px-[11px] py-[5px] text-[12px] font-medium text-base-100 shadow-[0_4px_14px_rgba(0,0,0,0.3)]"
 					onclick={scrollListToBottom}
 				>
 					jump to newest

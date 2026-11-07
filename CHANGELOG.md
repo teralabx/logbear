@@ -9,14 +9,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `logbear setup` connects logbear to every coding agent it finds — the MCP server and hook
+- `logbear upgrade` installs the latest release through whatever installed this copy,
+  Homebrew or the install script, and checks the new binary answers with the new version.
+- The daemon notices an upgrade replacing its binary and restarts onto the new one as soon
+  as its live runs finish, so `brew upgrade` takes effect without a reboot.
+- `logbear doctor` reports a daemon on a different version from the CLI.
+- `logbear setup` connects LogBear to every coding agent it finds — the MCP server and hook
   for Claude Code, Codex, pi and Hermes — plus the daemon service where Homebrew does not
   own it. It shows the plan and asks first, backs up and merges every config, and
   `--remove` undoes it. It is the same code as the desktop app's Settings buttons, now in
   the `logbear-setup` crate, so Homebrew, script and cargo installs no longer need the app.
+- `logbear setup --remove` also removes the PATH link and the shell profile block, and
+  prints where captured data is. `--remove --purge` stops the daemon and deletes that data.
+- `logbear_core::denylist::is_denied_command`, which looks through `env`, `sudo`,
+  `docker`/`podman` `exec`, `kubectl exec` and `ssh` to the program they run.
 - `logbear updates on|off|check`: an opt-in check for new releases, off by default. When on,
   `logbear doctor` asks GitHub's releases API at most once a day and names the upgrade
-  command for how logbear was installed.
+  command for how LogBear was installed.
 - `install.sh`, which installs the prebuilt binaries into `~/.local/bin` after checking
   them against the release's published SHA-256, and a release workflow that builds and
   publishes those archives for both macOS architectures when a `v*` tag is pushed.
@@ -39,13 +48,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "squash finished runs" button in Settings do it on demand.
 - `FingerprintHistories` and `RunErrorCounts` protocol requests, and `fingerprint_id`,
   `unobserved` and `tail_lines` fields on existing ones.
-- Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
+- Homebrew formula for the CLI, daemon, MCP server and hook, installing the prebuilt release
+  binaries, distributed through the
   `teralabx/tap` tap.
 - crates.io publishing metadata, so `cargo install logbear logbeard logbear-mcp logbear-hook`
   works.
 
 ### Changed
 
+- The minimum supported Rust version is 1.89, which is what the dependencies have needed
+  all along, and CI now checks it.
+- Config writes go through a temp file and a rename, re-reading the file first so a
+  concurrent save by another program is kept. Key order in JSON configs is preserved.
 - Reads run on pooled read-only SQLite connections instead of the capture writer's, so a
   large UI read no longer stalls ingest.
 - A page of entries reads each stored chunk once rather than once per entry.
@@ -69,6 +83,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `logbear` now behaves like the command it wraps whatever its streams are attached to. A
+  stream that is not a terminal gets a pipe or is inherited rather than going through the
+  pty, so `logbear yes | head -1`, `logbear wc -l </dev/null` and piped stdin no longer hang,
+  redirected output keeps its exact bytes, and `isatty` tells the truth.
+- Ctrl-Z suspends and resumes a wrapped command, and `logbear x &` no longer stops at once.
+- The child starts first. A wedged or missing daemon cannot delay it, and contact is made in
+  the background.
+- A burst the socket cannot take overflows to a spool segment that replays in order, so the
+  run stays live and no output is lost. A shim also rejoins a daemon that restarts mid-run.
+- The daemon sweeps the spool itself, so a run that could not reach it appears on its own. A
+  torn spool keeps the output it holds, spools are private to the user, and `logbear status`
+  separates pending spools from quarantined ones.
+- The denylist sees through `docker exec`, `ssh`, `sudo` and similar wrappers.
+- A JSON config that will not parse is refused with an error instead of being replaced by
+  `{}`, and a text config that cannot be read is no longer treated as empty.
+- Uninstalling a hook removes only LogBear's own handler, not a whole group holding someone
+  else's as well, and leaves anything that merely mentions `logbear-hook` alone.
+- Hook and MCP uninstall back up the config first, as install does.
+- `scripts/smoke.sh` no longer kills every running `logbeard`, only the one it started.
+- Storage has a real migration runner on `PRAGMA user_version`. A database from a newer build
+  is refused and left untouched instead of being dropped and stamped down, a crash during a
+  derived rebuild resumes on the next open, and a rebuild keeps the counters and signatures of
+  squashed and evicted runs.
+- Ingest is about three times faster and takes less disk: checkpoints run off the capture
+  path, batches grow with the rate, and `entries` carries two fewer full indexes.
+- Retention ends at the cap on disk, WAL included, without over-evicting. A noisy live run
+  pays for its own growth rather than pushing out history, and signature tables are bounded.
+- A failed flush keeps its lines and retries, so a full disk no longer loses capture or
+  panics a later squash. Run ids no longer collide across projects.
+- A damaged `index.db` is rebuilt from the project databases and a damaged project database
+  is quarantined, rather than a restart loop. Projects open on demand and close when idle.
+- `logbeard` exits when a temporary `LOGBEAR_HOME` disappears.
 - The Homebrew service no longer restarts the daemon on a clean exit. It used a bare
   `keep_alive`, so a daemon that exited because the desktop app's already held the lock
   was relaunched in a loop.
@@ -96,9 +142,4 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A derived-schema bump rebuilds the index.
 - Runs abandoned by a dead daemon are closed rather than shown as running.
 
-## [0.1.0] — unreleased
-
-Initial release.
-
-[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/teralabx/logbear/releases/tag/v0.1.0
+[Unreleased]: https://github.com/teralabx/logbear/commits/master

@@ -147,3 +147,35 @@ fn sigterm_makes_the_daemon_clean_up_after_itself() {
         "the socket must not outlive the daemon that bound it"
     );
 }
+
+/// `brew upgrade` swaps the binary under a running daemon. It has to step aside on its own,
+/// with a code launchd treats as "restart me", or the old version serves until a reboot.
+#[test]
+fn a_replaced_daemon_exits_for_its_successor() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let exe = dir.path().join("logbeard");
+    std::fs::copy(env!("CARGO_BIN_EXE_logbeard"), &exe).unwrap();
+
+    let mut daemon = Daemon(
+        Command::new(&exe)
+            .arg("serve")
+            .env("LOGBEAR_HOME", &home)
+            .env_remove("LOGBEAR_SOCKET")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("logbeard should start"),
+    );
+    wait_until_serving(&home.join("logbeard.sock"));
+
+    // install.sh's way: remove, then copy a new file to the same path.
+    std::fs::remove_file(&exe).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_logbeard"), &exe).unwrap();
+
+    let (code, _) = daemon.wait_for_exit("the replaced daemon");
+    assert_eq!(code, Some(75));
+    assert!(!home.join("logbeard.sock").exists(), "socket left behind");
+}

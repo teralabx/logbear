@@ -29,7 +29,7 @@
 							class="min-w-0 flex-1 text-[12px] font-semibold text-base-content no-underline hover:underline"
 							href="/project/{n.project_id}/live">{n.title}</a
 						>
-						{#if n.count > 1}<span class="tnum text-[11px] font-semibold text-[var(--lvl)]"
+						{#if n.count > 1}<span class="tnum text-[12px] font-semibold text-[var(--lvl)]"
 								>×{n.count}</span
 							>{/if}
 						<button
@@ -40,10 +40,10 @@
 							title="Dismiss"><X {...INLINE} aria-hidden="true" /></button
 						>
 					</div>
-					<p class="mt-[3px] mb-1 line-clamp-3 text-[11.5px] text-meta [overflow-wrap:anywhere]">
+					<p class="mt-[3px] mb-1 line-clamp-3 text-[12px] text-meta [overflow-wrap:anywhere]">
 						{n.body}
 					</p>
-					<span class="meta text-[10px]">{n.project_name} · {fmtAgo(n.at)}</span>
+					<span class="meta text-[12px]">{n.project_name} · {fmtAgo(n.at)}</span>
 				</div>
 			</div>
 		{/each}

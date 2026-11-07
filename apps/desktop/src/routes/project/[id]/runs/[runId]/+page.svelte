@@ -8,6 +8,7 @@
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import ExitBadge from '$lib/components/ExitBadge.svelte';
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import {
 		apiError,
 		deleteRun,
@@ -32,6 +33,7 @@
 		shortSha,
 		tildePath
 	} from '$lib/format';
+	import { confirmDeleteRun, confirmSquashRun, type ConfirmCopy } from '$lib/confirm';
 	import { LEVELS, type EntryView, type Level, type Run } from '$lib/api/types';
 	import { INLINE } from '$lib/icons';
 	import { ArrowLeft, ArrowRight } from '@lucide/svelte';
@@ -57,6 +59,7 @@
 	let squashNote = $state<string | null>(null);
 	let hasMore = $state(false);
 	let loadingMore = $state(false);
+	let confirming = $state<{ copy: ConfirmCopy; run: () => void } | null>(null);
 
 	/** Entries fetched per page. A long run has hundreds of thousands. */
 	const PAGE = 1000;
@@ -222,17 +225,17 @@
 >
 	{#snippet actions()}
 		<a
-			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			class="inline-flex items-center gap-1 text-[12px] text-meta hover:text-base-content"
 			href="/project/{projectId}/runs"><ArrowLeft {...INLINE} aria-hidden="true" /> all runs</a
 		>
 		<a
-			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			class="inline-flex items-center gap-1 text-[12px] text-meta hover:text-base-content"
 			href="/project/{projectId}/diff?b={runId}"
 			>diff against last good <ArrowRight {...INLINE} aria-hidden="true" /></a
 		>
 		<button
 			type="button"
-			class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content"
+			class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content"
 			onclick={() => (showMeta = !showMeta)}>{showMeta ? 'hide' : 'show'} context</button
 		>
 	{/snippet}
@@ -270,7 +273,7 @@
 					>{shortSha(run.git_sha)}
 					<span class="text-meta">{run.git_branch ?? '—'}</span>
 					{#if run.git_dirty_hash}<span
-							class="ml-[6px] text-[10px] tracking-[0.16em] text-warning uppercase"
+							class="ml-[6px] text-[12px] tracking-[0.1em] text-warning uppercase"
 							title="Hash of the uncommitted changes present when this run started"
 							>uncommitted {shortHash(run.git_dirty_hash)}</span
 						>{/if}</span
@@ -315,7 +318,7 @@
 			</div>
 			<div class="rule-r rule-b col-span-2 min-w-0 px-[14px] py-2">
 				<span class="label-xs">lockfiles</span>
-				<span class="tnum mt-1 block overflow-hidden text-[11px] text-ellipsis whitespace-normal">
+				<span class="tnum mt-1 block overflow-hidden text-[12px] text-ellipsis whitespace-normal">
 					{#each Object.entries(run.lockfile_hashes) as [f, h] (f)}
 						<span class="mr-3 inline-block">{f} <span class="text-meta">{shortHash(h)}</span></span>
 					{:else}
@@ -327,9 +330,9 @@
 				<span class="label-xs"
 					>environment variable names ({run.env_keys.length}) · values are never stored</span
 				>
-				<span class="mt-[5px] flex flex-wrap gap-x-[6px] gap-y-1 overflow-hidden text-[11px]">
+				<span class="mt-[5px] flex flex-wrap gap-x-[6px] gap-y-1 overflow-hidden text-[12px]">
 					{#each run.env_keys as k (k)}<code
-							class="rounded-[2px] border border-hair px-[5px] py-px text-[10.5px] text-meta"
+							class="rounded-[2px] border border-hair px-[5px] py-px text-[12px] text-meta"
 							>{k}</code
 						>{/each}
 				</span>
@@ -339,7 +342,7 @@
 
 	{#if run.chunks_evicted}
 		<p
-			class="rule-b flex-none bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] px-4 py-[7px] text-[11.5px]"
+			class="rule-b flex-none bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] px-4 py-[7px] text-[12px]"
 		>
 			Part of this run's raw output was evicted by the retention cap. The structured entries below
 			are complete; the terminal replay is not. Raise the cap in Settings to keep more.
@@ -347,7 +350,7 @@
 	{/if}
 
 	{#if run.squashed_at !== null}
-		<p class="rule-b flex-none px-4 py-[6px] text-[11.5px]">
+		<p class="rule-b flex-none px-4 py-[6px] text-[12px]">
 			<span class="label-xs mr-2">squashed</span>
 			Repeats were dropped from this run's stored output {fmtAgo(run.squashed_at)}, keeping the first
 			of each distinct entry. The counts above still describe the run as it was captured.
@@ -356,7 +359,7 @@
 	{/if}
 
 	{#if replayTruncated}
-		<p class="rule-b flex-none px-4 py-[5px] text-[11px] text-meta">
+		<p class="rule-b flex-none px-4 py-[5px] text-[12px] text-meta">
 			The replay starts at the last 20,000 lines. Every entry is still listed below, and
 			<code>logbear cat {run.id}</code> prints the whole run.
 		</p>
@@ -383,14 +386,14 @@
 		<div class="flex items-center gap-2">
 			<input
 				type="search"
-				class="w-[200px] rounded-[2px] border border-hair bg-transparent px-2 py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
+				class="w-[200px] rounded-[2px] border border-hair bg-transparent px-2 py-[3px] text-[12px] text-base-content outline-none focus:border-hair-strong"
 				placeholder="Filter entries…"
 				bind:value={search}
 				aria-label="Filter entries by text"
 			/>
 			<button
 				type="button"
-				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 				disabled={busy !== null}
 				onclick={doReparse}
 				title="Re-run the fingerprinter over this run's stored bytes. Nothing is re-executed."
@@ -399,18 +402,18 @@
 			{#if run.ended_at !== null && run.squashed_at === null && !run.chunks_evicted}
 				<button
 					type="button"
-					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 					disabled={busy !== null}
-					onclick={doSquash}
+					onclick={() => (confirming = { copy: confirmSquashRun(run!), run: doSquash })}
 					title="Rewrite this run's stored output to the first occurrence of each distinct entry. Repeats that differ only in timestamps, ids or numbers are deleted for good; counts and signatures are kept."
 					>{busy === 'squash' ? 'squashing…' : 'squash run'}</button
 				>
 			{/if}
 			<button
 				type="button"
-				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-flare enabled:hover:text-flare disabled:cursor-default disabled:opacity-50"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-flare enabled:hover:text-flare disabled:cursor-default disabled:opacity-50"
 				disabled={busy !== null}
-				onclick={doDelete}
+				onclick={() => (confirming = { copy: confirmDeleteRun(run!), run: doDelete })}
 				title="Permanently delete this run and its stored output"
 				>{busy === 'delete' ? 'deleting…' : 'delete run'}</button
 			>
@@ -432,7 +435,7 @@
 			<div class="px-4 py-3">
 				<button
 					type="button"
-					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 					disabled={loadingMore}
 					onclick={loadMore}
 					>{loadingMore
@@ -440,9 +443,18 @@
 						: `load next ${PAGE} · ${list.length} of ${run.counters.n_entries}`}</button
 				>
 				{#if search.trim() || levelFilter.size}
-					<span class="ml-2 text-[11px] text-meta">Filters apply to loaded entries only.</span>
+					<span class="ml-2 text-[12px] text-meta">Filters apply to loaded entries only.</span>
 				{/if}
 			</div>
 		{/if}
 	</div>
 {/if}
+
+<ConfirmDialog
+	request={confirming?.copy ?? null}
+	oncancel={() => (confirming = null)}
+	onconfirm={() => {
+		confirming?.run();
+		confirming = null;
+	}}
+/>

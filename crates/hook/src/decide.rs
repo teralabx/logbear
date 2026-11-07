@@ -6,6 +6,7 @@
 
 use crate::intent::{self, Intent};
 use crate::payload::{Event, Harness};
+use logbear_core::fence::Fence;
 use logbear_core::model::EntryView;
 use logbear_core::proto::UnreadState;
 use serde_json::{json, Value};
@@ -242,7 +243,13 @@ fn recurring_summary(u: &UnreadState) -> String {
 }
 
 /// The blocking form: the entries, their templates, whether each is new, and the run.
+///
+/// The instruction above is ours and the agent is meant to act on it, which is what makes
+/// this the valuable place to inject into. Each entry's log text goes in a fence, so what a
+/// log line says can never read as a continuation of that instruction. Our own metadata stays
+/// outside, where a log line cannot imitate it.
 fn block_reason(u: &UnreadState) -> String {
+    let fence = Fence::new();
     let mut out = String::new();
     out.push_str(&format!(
         "logbear: the process you are working on logged {} new error{}{} since you last looked. \
@@ -252,6 +259,8 @@ fn block_reason(u: &UnreadState) -> String {
         signatures(u.new_signatures),
         if u.new_errors == 1 { "it" } else { "them" },
     ));
+    out.push_str(&fence.notice());
+    out.push('\n');
 
     let mut entries: Vec<&EntryView> = u.entries.iter().collect();
     // The new signatures are why this block fired; MAX_ENTRIES must never truncate
@@ -274,14 +283,17 @@ fn block_reason(u: &UnreadState) -> String {
             ago(e.entry.captured_at),
             e.entry.level.as_str(),
         ));
+        let mut log = String::new();
         if let Some(t) = &e.template {
-            out.push_str(&format!("    signature: {}\n", one_line(t)));
+            log.push_str(&format!("    signature: {}\n", one_line(t)));
         }
         for line in truncate(&e.text, MAX_ENTRY_CHARS).lines() {
-            out.push_str("    ");
-            out.push_str(line);
-            out.push('\n');
+            log.push_str("    ");
+            log.push_str(line);
+            log.push('\n');
         }
+        out.push_str(&fence.wrap(&log));
+        out.push('\n');
         if e.entry.boundaries == logbear_core::model::Boundaries::Inferred {
             out.push_str("    (entry boundaries inferred — this may be under- or over-grouped)\n");
         }
@@ -303,6 +315,7 @@ fn block_reason(u: &UnreadState) -> String {
 /// Never acknowledged, so it may repeat across tool calls. Acknowledging here would advance
 /// the cursor and rob the Stop hook of the errors it exists to surface.
 fn summary(u: &UnreadState) -> String {
+    let fence = Fence::new();
     let newest = u
         .entries
         .last()
@@ -315,12 +328,13 @@ fn summary(u: &UnreadState) -> String {
             let head = head.trim();
             // An entry whose template and first line are both blank would render as
             // "Most recent: " followed by nothing, which reads like a bug.
-            (!head.is_empty()).then(|| format!(" Most recent: {head}."))
+            (!head.is_empty())
+                .then(|| format!(" Most recent: {}. {}", fence.inline(head), fence.short_notice()))
         })
         .unwrap_or_default();
     format!(
-        "logbear: {} new error{}{} in this project{}.{} Check with the logbear MCP tools or \
-         `logbear logs --level error`.",
+        "logbear: {} new error{}{} in this project{}. Check with the logbear MCP tools or \
+         `logbear logs --level error`.{}",
         u.new_errors,
         plural(u.new_errors),
         signatures(u.new_signatures),

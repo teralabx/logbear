@@ -58,6 +58,12 @@ impl Client {
         Ok(())
     }
 
+    /// Gives up the buffered wrapper for the raw socket, for a sender that must never block
+    /// in a write. Only valid between calls, when nothing is buffered in either direction.
+    pub fn into_stream(self) -> UnixStream {
+        self.reader.into_inner()
+    }
+
     pub fn socket_path(&self) -> &Path {
         &self.socket
     }
@@ -296,13 +302,23 @@ pub fn daemon_binary() -> Option<PathBuf> {
         if let Some(dir) = resolved.parent() {
             for candidate in [dir.join("logbeard"), dir.join("../logbeard")] {
                 if candidate.exists() {
-                    return Some(candidate);
+                    // Through `opt`, so the daemon can see an upgrade replace its binary.
+                    // Started from the Cellar it would watch a directory that keeps its
+                    // old file for as long as Homebrew's cleanup is turned off.
+                    let stable = paths::stable_bin_dir(dir).join("logbeard");
+                    return Some(if stable.exists() { stable } else { candidate });
                 }
             }
         }
     }
     // The app bundle, for when `logbear` was copied rather than linked.
-    for bundle in ["/Applications/logbear.app", "~/Applications/logbear.app"] {
+    // The lowercase names are installs from before the app was renamed.
+    for bundle in [
+        "/Applications/LogBear.app",
+        "~/Applications/LogBear.app",
+        "/Applications/logbear.app",
+        "~/Applications/logbear.app",
+    ] {
         let expanded = if let Some(rest) = bundle.strip_prefix("~/") {
             match std::env::var_os("HOME") {
                 Some(h) => PathBuf::from(h).join(rest),
@@ -333,10 +349,7 @@ pub fn spawn_daemon() -> Result<()> {
         .ok_or_else(|| Error::other("logbeard was not found next to logbear or on PATH"))?;
     paths::ensure_home().map_err(|e| Error::io(paths::home(), e))?;
 
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths::daemon_log())
+    let log = paths::open_private_log(&paths::daemon_log())
         .map_err(|e| Error::io(paths::daemon_log(), e))?;
     let err = log.try_clone()?;
 

@@ -42,6 +42,9 @@ pub struct Candidate {
     pub run_command: String,
 }
 
+/// Signatures tracked per project between runs.
+const MAX_TRACKED_SIGNATURES: usize = 4096;
+
 #[derive(Debug, Clone, Default)]
 struct Seen {
     notified: bool,
@@ -96,6 +99,9 @@ impl Notifier {
         // repeats of one signature coalesce into a count instead of tripping storm mode,
         // which is meant for a burst of *distinct* failures.
         {
+            if self.seen.len() >= MAX_TRACKED_SIGNATURES {
+                self.forget_quiet_signatures(c.at);
+            }
             let entry = self.seen.entry(c.fingerprint_id).or_default();
             entry.count += 1;
             if entry.notified && c.at - entry.last_notified < COOLDOWN_MICROS {
@@ -216,6 +222,17 @@ impl Notifier {
             replaces_key: Some(format!("coalesced:{project_id}")),
             count: n,
         })
+    }
+
+    /// Makes room in `seen`, which a run printing an id in its errors would otherwise grow
+    /// by one for every line. A signature out of its cooldown has nothing worth keeping, and
+    /// forgetting one mid-cooldown costs at most one extra banner, which the rate limit caps.
+    fn forget_quiet_signatures(&mut self, now: i64) {
+        self.seen
+            .retain(|_, s| s.notified && now - s.last_notified < COOLDOWN_MICROS);
+        if self.seen.len() >= MAX_TRACKED_SIGNATURES {
+            self.seen.clear();
+        }
     }
 
     /// Clears per-signature state at the start of a run, so a signature carried over from
@@ -445,6 +462,27 @@ mod tests {
         let mut c = candidate(3, 0);
         c.evidence = Evidence::Declared;
         assert!(matches!(n.consider(&c, &s, false), Decision::Post(_)));
+    }
+
+    #[test]
+    fn per_signature_state_stays_bounded_under_a_stream_of_unique_errors() {
+        let mut n = Notifier::new();
+        let settings = Settings::default();
+        for id in 0..(3 * MAX_TRACKED_SIGNATURES as i64) {
+            let c = Candidate {
+                project_id: 1,
+                project_name: "p".into(),
+                fingerprint_id: id,
+                template: "t".into(),
+                level: Level::Error,
+                evidence: Evidence::Declared,
+                at: id,
+                is_new_signature: true,
+                run_command: "c".into(),
+            };
+            n.consider(&c, &settings, false);
+            assert!(n.seen.len() <= MAX_TRACKED_SIGNATURES);
+        }
     }
 
     #[test]

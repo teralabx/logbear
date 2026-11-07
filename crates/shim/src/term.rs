@@ -116,8 +116,19 @@ pub fn raw_mode(fd: RawFd) -> Option<RawGuard> {
 pub fn restore() {
     let taken = ORIGINAL.lock().ok().and_then(|mut slot| slot.take());
     if let Some((fd, original)) = taken {
-        unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &original) };
+        // Not TCSADRAIN, which waits for the terminal to take everything written so far: a
+        // terminal that has stopped reading would then hold the exit forever.
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &original) };
     }
+}
+
+/// Whether this process is in the foreground of the terminal on `fd`.
+///
+/// A background job that touches the terminal's settings or reads from it is stopped by the
+/// kernel, which is how `logbear server &` used to halt on the spot.
+pub fn in_foreground(fd: RawFd) -> bool {
+    let group = unsafe { libc::tcgetpgrp(fd) };
+    group > 0 && group == unsafe { libc::getpgrp() }
 }
 
 /// Installs a panic hook that restores the terminal before the previous hook runs.

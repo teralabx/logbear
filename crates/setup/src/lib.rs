@@ -6,8 +6,9 @@
 //! can undo what the other did.
 //!
 //! The rule that matters most: **config writes merge, never overwrite.** These are files
-//! people have spent real time on. Every write is preceded by a timestamped backup, every
-//! step reports what it would change before it changes it, and uninstall puts things back.
+//! people have spent real time on. Every write is preceded by a timestamped backup and lands
+//! with a rename, a file that will not parse is refused rather than replaced, every step
+//! reports what it would change before it changes it, and uninstall puts things back.
 //! Clobbering someone's `settings.json` is exactly the bad experience the design forbids.
 
 use serde::{Deserialize, Serialize};
@@ -97,7 +98,10 @@ pub fn first_run_setup() -> Option<Vec<(&'static str, Result<StepState, String>)
     // Written whatever happened. Retrying automatically on every launch would mean a
     // machine where this genuinely cannot work gets nagged forever; Settings still has
     // the button, and `logbear doctor` still explains what is missing.
-    let _ = std::fs::write(&marker, logbear_core::now_micros().to_string());
+    let _ = logbear_core::paths::write_private(
+        &marker,
+        logbear_core::now_micros().to_string().as_bytes(),
+    );
     Some(done)
 }
 
@@ -152,30 +156,9 @@ pub fn uninstall(step: Step) -> Result<StepState, String> {
 
 /// Binaries ship beside the app executable, as Tauri sidecars.
 fn bin_dir() -> PathBuf {
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."));
-    stable_bin_dir(&dir)
-}
-
-/// A Homebrew keg's `bin` under its version-stable `opt` link.
-///
-/// Every path this writes into an agent's config outlives the process that wrote it, and a
-/// `Cellar/logbear/0.1.0/bin` path is deleted by the next `brew upgrade`, silently breaking
-/// every hook. `opt/logbear` follows the installed version.
-fn stable_bin_dir(dir: &Path) -> PathBuf {
-    let parts: Vec<_> = dir.components().collect();
-    let n = parts.len();
-    if n >= 4
-        && parts[n - 1].as_os_str() == "bin"
-        && parts[n - 3].as_os_str() == "logbear"
-        && parts[n - 4].as_os_str() == "Cellar"
-    {
-        let prefix: PathBuf = parts[..n - 4].iter().collect();
-        return prefix.join("opt/logbear/bin");
-    }
-    dir.to_path_buf()
+    std::env::current_exe()
+        .map(|exe| logbear_core::paths::install_dir(&exe))
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Whether these binaries came from Homebrew, which owns the daemon service
@@ -404,6 +387,9 @@ fn install_path() -> Result<StepState, String> {
 /// The marker that lets this be run repeatedly without stacking up duplicate lines.
 const PROFILE_MARKER: &str = "# added by logbear";
 
+/// Shell profiles that can carry our block, and the shell each belongs to.
+const PROFILES: [(&str, &str); 3] = [(".zshrc", "zsh"), (".bashrc", "bash"), (".profile", "sh")];
+
 /// Put `dir` on PATH for every shell the user actually has, and return what was touched.
 ///
 /// fish gets a drop-in under `conf.d/` rather than an edit to `config.fish`: it is the
@@ -427,25 +413,29 @@ fish_add_path -g {d}
         touched.push(tilde(&file));
     }
 
-    for (rc, shell) in [(".zshrc", "zsh"), (".bashrc", "bash"), (".profile", "sh")] {
+    for (rc, shell) in PROFILES {
         let path = home().join(rc);
         if !path.exists() && !which_shell_is(shell) {
             continue;
         }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        if existing.contains(PROFILE_MARKER) {
-            continue;
-        }
-        // Back up before touching a file the user owns, every time, without exception.
-        let _ = back_up(&path);
         let block = format!("\n{PROFILE_MARKER}\nexport PATH=\"{d}:$PATH\"\n");
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
+        let mut added = false;
+        update_file(&path, |existing| {
+            let existing = existing.unwrap_or_default();
+            added = !existing.contains(PROFILE_MARKER);
+            if !added {
+                return Ok(None);
+            }
+            let mut updated = existing.to_string();
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&block);
+            Ok(Some(updated))
+        })?;
+        if added {
+            touched.push(tilde(&path));
         }
-        updated.push_str(&block);
-        std::fs::write(&path, updated).map_err(|e| format!("{}: {e}", path.display()))?;
-        touched.push(tilde(&path));
     }
 
     Ok(touched)
@@ -458,26 +448,103 @@ fn which_shell_is(name: &str) -> bool {
 }
 
 fn uninstall_path() -> Result<StepState, String> {
-    for dir in path_candidates() {
-        let link = dir.join("logbear");
-        if link.is_symlink() {
-            let _ = std::fs::remove_file(&link);
-        }
+    let (home, dirs) = (home(), path_candidates());
+    let removed = describe_leftovers(&home, &path_leftovers(&home, &dirs));
+    let backups = remove_path_setup(&home, &dirs)?;
+    let mut state = path_status();
+    if !removed.is_empty() {
+        state.detail = format!("removed {removed}");
     }
-    let _ = std::fs::remove_file(home().join(".config/fish/conf.d/logbear.fish"));
-    for rc in [".zshrc", ".bashrc", ".profile"] {
-        let path = home().join(rc);
-        let Ok(existing) = std::fs::read_to_string(&path) else {
-            continue;
+    state.backup = (!backups.is_empty()).then(|| backups.join(", "));
+    Ok(state)
+}
+
+/// What removing the PATH step would take away, for a plan to show before it happens.
+///
+/// Not [`path_status`], which answers "does *this* binary resolve on PATH": a link left by
+/// another copy, or a profile block outliving its link, reads there as not installed, and
+/// is exactly what an uninstall has to find.
+pub fn path_removal() -> StepState {
+    let (home, dirs) = (home(), path_candidates());
+    let found = path_leftovers(&home, &dirs);
+    StepState {
+        installed: !found.is_empty(),
+        available: true,
+        detail: if found.is_empty() {
+            "no PATH link or shell profile block".into()
+        } else {
+            format!("will remove {}", describe_leftovers(&home, &found))
+        },
+        backup: None,
+    }
+}
+
+/// Whether the symlink at `link` is one of ours.
+///
+/// A `logbear` link in Homebrew's `bin` belongs to the keg: `brew uninstall` removes it, and
+/// deleting it here would leave Homebrew believing a package is linked when it is not.
+fn is_our_link(link: &Path) -> bool {
+    std::fs::read_link(link).is_ok_and(|target| !target.to_string_lossy().contains("Cellar/logbear/"))
+}
+
+fn fish_drop_in(home: &Path) -> PathBuf {
+    home.join(".config/fish/conf.d/logbear.fish")
+}
+
+/// Lossy, so a profile that is not UTF-8 but holds our block is found, and then refused by
+/// [`update_file`] out loud rather than skipped in silence.
+fn has_profile_block(path: &Path) -> bool {
+    std::fs::read(path).is_ok_and(|b| String::from_utf8_lossy(&b).contains(PROFILE_MARKER))
+}
+
+/// Everything the PATH step left on this machine: links in `dirs`, then the fish drop-in,
+/// then profiles holding our block.
+fn path_leftovers(home: &Path, dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let links = dirs.iter().map(|d| d.join("logbear")).filter(|l| is_our_link(l));
+    let fish = Some(fish_drop_in(home)).filter(|f| f.exists());
+    let profiles = PROFILES
+        .iter()
+        .map(|(rc, _)| home.join(rc))
+        .filter(|p| has_profile_block(p));
+    links.chain(fish).chain(profiles).collect()
+}
+
+fn describe_leftovers(home: &Path, found: &[PathBuf]) -> String {
+    let describe = |p: &PathBuf| {
+        let short = match p.strip_prefix(home) {
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => p.display().to_string(),
         };
-        if !existing.contains(PROFILE_MARKER) {
-            continue;
+        if PROFILES.iter().any(|(rc, _)| p.ends_with(rc)) {
+            format!("the block in {short}")
+        } else {
+            short
         }
-        let _ = back_up(&path);
-        let cleaned = strip_profile_block(&existing);
-        let _ = std::fs::write(&path, cleaned);
+    };
+    found.iter().map(describe).collect::<Vec<_>>().join(", ")
+}
+
+/// Take away what [`path_leftovers`] finds. Returns the backups taken.
+fn remove_path_setup(home: &Path, dirs: &[PathBuf]) -> Result<Vec<String>, String> {
+    for link in dirs.iter().map(|d| d.join("logbear")).filter(|l| is_our_link(l)) {
+        std::fs::remove_file(&link).map_err(|e| format!("{}: {e}", link.display()))?;
     }
-    Ok(path_status())
+    let fish = fish_drop_in(home);
+    match std::fs::remove_file(&fish) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(format!("{}: {e}", fish.display()));
+        }
+        _ => {}
+    }
+
+    let mut backups = Vec::new();
+    for (rc, _) in PROFILES {
+        let path = home.join(rc);
+        if has_profile_block(&path) {
+            backups.extend(update_file(&path, |existing| Ok(existing.map(strip_profile_block)))?);
+        }
+    }
+    Ok(backups)
 }
 
 /// Drop our marker line and the export that follows it, leaving everything else alone.
@@ -887,21 +954,8 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
     }
 
     let path = h.mcp_config();
-    let backup = back_up(&path)?;
-    match h {
+    let backup = match h {
         Harness::Claude | Harness::Pi => {
-            let mut root = read_json(&path).unwrap_or_else(|| serde_json::json!({}));
-            if !root.is_object() {
-                return Err(format!("{} is not a JSON object; leaving it alone", path.display()));
-            }
-            let servers = root
-                .as_object_mut()
-                .unwrap()
-                .entry("mcpServers")
-                .or_insert_with(|| serde_json::json!({}));
-            if !servers.is_object() {
-                return Err(format!("mcpServers in {} is not an object", path.display()));
-            }
             let mut entry = serde_json::json!({
                 "command": server.to_string_lossy(),
                 "args": [],
@@ -913,41 +967,48 @@ fn install_mcp(h: Harness) -> Result<StepState, String> {
                 entry["description"] =
                     "Captured dev-server output: errors, runs and diffs, as read-only SQL".into();
             }
-            servers
-                .as_object_mut()
-                .unwrap()
-                .insert(MCP_NAME.into(), entry);
-            write_json(&path, &root)?;
+            update_json(&path, |root| {
+                let Some(object) = root.as_object_mut() else {
+                    return Err(format!("{} is not a JSON object; leaving it alone", path.display()));
+                };
+                let servers = object.entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+                let Some(servers) = servers.as_object_mut() else {
+                    return Err(format!("mcpServers in {} is not an object", path.display()));
+                };
+                servers.insert(MCP_NAME.into(), entry.clone());
+                Ok(())
+            })?
         }
         Harness::Hermes => {
-            let existing = std::fs::read_to_string(&path).unwrap_or_default();
-            if !existing.contains("logbear-mcp") {
-                let block = format!(
-                    "mcp_servers:\n  {MCP_NAME}:\n    command: {}\n    args: []\n",
-                    serde_json::Value::from(server.to_string_lossy())
-                );
-                write_text(&path, &insert_yaml(&existing, &block, "mcp")?)?;
-            }
-        }
-        Harness::Codex => {
-            // Append a delimited block rather than parsing and rewriting someone else's
-            // TOML, which may hold anything.
-            let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
-            if !existing.contains("[mcp_servers.logbear]") {
-                if !existing.is_empty() && !existing.ends_with('\n') {
-                    existing.push('\n');
+            let block = format!(
+                "mcp_servers:\n  {MCP_NAME}:\n    command: {}\n    args: []\n",
+                serde_json::Value::from(server.to_string_lossy())
+            );
+            update_file(&path, |existing| {
+                let existing = existing.unwrap_or_default();
+                if existing.contains("logbear-mcp") {
+                    return Ok(None);
                 }
-                existing.push_str(&format!(
-                    "\n# added by logbear\n[mcp_servers.logbear]\ncommand = \"{}\"\nargs = []\n",
-                    server.to_string_lossy()
-                ));
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, existing).map_err(|e| format!("{}: {e}", path.display()))?;
-            }
+                insert_yaml(existing, &block, "mcp").map(Some)
+            })?
         }
-    }
+        // Append a delimited block rather than parsing and rewriting someone else's TOML,
+        // which may hold anything.
+        Harness::Codex => update_file(&path, |existing| {
+            let mut text = existing.unwrap_or_default().to_string();
+            if text.contains("[mcp_servers.logbear]") {
+                return Ok(None);
+            }
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "\n# added by logbear\n[mcp_servers.logbear]\ncommand = \"{}\"\nargs = []\n",
+                server.to_string_lossy()
+            ));
+            Ok(Some(text))
+        })?,
+    };
 
     let mut state = mcp_status(h);
     state.backup = backup;
@@ -966,29 +1027,28 @@ fn uninstall_mcp(h: Harness) -> Result<StepState, String> {
 
     // Also clear a hand-written entry, which may predate the CLI being available.
     let path = h.mcp_config();
-    match h {
-        Harness::Claude | Harness::Pi => {
-            if let Some(mut root) = read_json(&path) {
-                if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
-                    if servers.remove(MCP_NAME).is_some() {
-                        write_json(&path, &root)?;
-                    }
-                }
-            }
-        }
+    let backup = match h {
+        Harness::Claude | Harness::Pi => remove_mcp_entry(&path)?,
         Harness::Codex => {
-            if let Ok(existing) = std::fs::read_to_string(&path) {
-                let cleaned = strip_toml_block(&existing, "[mcp_servers.logbear]");
-                std::fs::write(&path, cleaned).map_err(|e| e.to_string())?;
-            }
+            const HEADER: &str = "[mcp_servers.logbear]";
+            update_file(&path, |existing| {
+                Ok(existing.filter(|s| s.contains(HEADER)).map(|s| strip_toml_block(s, HEADER)))
+            })?
         }
-        Harness::Hermes => {
-            if let Ok(existing) = std::fs::read_to_string(&path) {
-                write_text(&path, &strip_yaml_block(&existing, "mcp"))?;
-            }
+        Harness::Hermes => remove_yaml_block(&path, "mcp")?,
+    };
+    let mut state = mcp_status(h);
+    state.backup = backup;
+    Ok(state)
+}
+
+fn remove_mcp_entry(path: &Path) -> Result<Option<String>, String> {
+    update_json(path, |root| {
+        if let Some(servers) = root.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+            servers.shift_remove(MCP_NAME);
         }
-    }
-    Ok(mcp_status(h))
+        Ok(())
+    })
 }
 
 fn hook_status(h: Harness) -> StepState {
@@ -1042,29 +1102,30 @@ fn hook_text(h: Harness) -> Result<String, String> {
 fn install_hook(h: Harness) -> Result<StepState, String> {
     let text = hook_text(h)?;
     let path = h.config();
-    let backup = back_up(&path)?;
 
-    match h {
+    let backup = match h {
         Harness::Claude | Harness::Codex => {
             let block: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| format!("logbear-hook emitted invalid JSON: {e}"))?;
-            let mut root = read_json(&path).unwrap_or_else(|| serde_json::json!({}));
-            if !root.is_object() {
-                return Err(format!("{} is not a JSON object; leaving it alone", path.display()));
-            }
-            merge(&mut root, &block);
-            write_json(&path, &root)?;
+            update_json(&path, |root| {
+                if !root.is_object() {
+                    return Err(format!("{} is not a JSON object; leaving it alone", path.display()));
+                }
+                merge(root, &block);
+                Ok(())
+            })?
         }
         // Ours outright, so it is replaced rather than merged: a stale copy is one pointing
         // at an old binary.
-        Harness::Pi => write_text(&path, &text)?,
-        Harness::Hermes => {
-            let existing = std::fs::read_to_string(&path).unwrap_or_default();
-            if !existing.contains("logbear-hook") {
-                write_text(&path, &insert_yaml(&existing, &text, "hooks")?)?;
+        Harness::Pi => update_file(&path, |_| Ok(Some(text.clone())))?,
+        Harness::Hermes => update_file(&path, |existing| {
+            let existing = existing.unwrap_or_default();
+            if existing.contains("logbear-hook") {
+                return Ok(None);
             }
-        }
-    }
+            insert_yaml(existing, &text, "hooks").map(Some)
+        })?,
+    };
 
     let mut state = hook_status(h);
     state.backup = backup;
@@ -1073,26 +1134,34 @@ fn install_hook(h: Harness) -> Result<StepState, String> {
 
 fn uninstall_hook(h: Harness) -> Result<StepState, String> {
     let path = h.config();
-    match h {
-        Harness::Claude | Harness::Codex => {
-            let Some(mut root) = read_json(&path) else {
-                return Ok(hook_status(h));
-            };
-            prune_logbear(&mut root);
-            write_json(&path, &root)?;
-        }
+    let backup = match h {
+        Harness::Claude | Harness::Codex => remove_hook_entries(&path)?,
         Harness::Pi => {
+            let backup = back_up(&path)?;
             if path.exists() {
                 std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             }
+            backup
         }
-        Harness::Hermes => {
-            if let Ok(existing) = std::fs::read_to_string(&path) {
-                write_text(&path, &strip_yaml_block(&existing, "hooks"))?;
-            }
-        }
-    }
-    Ok(hook_status(h))
+        Harness::Hermes => remove_yaml_block(&path, "hooks")?,
+    };
+    let mut state = hook_status(h);
+    state.backup = backup;
+    Ok(state)
+}
+
+fn remove_hook_entries(path: &Path) -> Result<Option<String>, String> {
+    update_json(path, |root| {
+        prune_logbear(root);
+        Ok(())
+    })
+}
+
+fn remove_yaml_block(path: &Path, tag: &str) -> Result<Option<String>, String> {
+    let begin = format!("# logbear:begin {tag}");
+    update_file(path, |existing| {
+        Ok(existing.filter(|s| s.contains(&begin)).map(|s| strip_yaml_block(s, tag)))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,61 +1195,258 @@ fn merge(target: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
-/// Remove anything mentioning `logbear-hook`, then drop containers left empty by it, so
-/// uninstall does not leave a litter of empty arrays behind.
-fn prune_logbear(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            let keys: Vec<String> = map.keys().cloned().collect();
-            for k in keys {
-                if let Some(v) = map.get_mut(&k) {
-                    if mentions_logbear(v) && !v.is_object() && !v.is_array() {
-                        map.remove(&k);
-                        continue;
-                    }
-                    prune_logbear(v);
-                    let empty = match v {
-                        serde_json::Value::Array(a) => a.is_empty(),
-                        serde_json::Value::Object(o) => o.is_empty(),
-                        _ => false,
-                    };
-                    if empty {
-                        map.remove(&k);
-                    }
-                }
-            }
+/// Remove our handlers from a `hooks` block, then the containers that left empty.
+///
+/// A handler is removed, never the group holding it: a group's `hooks` array can hold
+/// someone else's handler beside ours. Only the `hooks` block is looked at, so a status line
+/// or a permission rule that happens to name the binary stays, and a container the user
+/// already had empty stays empty.
+fn prune_logbear(root: &mut serde_json::Value) {
+    let Some(events) = root.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    let mut removed_any = false;
+    events.retain(|_, groups| {
+        let Some(list) = groups.as_array_mut() else {
+            return true;
+        };
+        let mut removed = false;
+        list.retain_mut(|group| {
+            let Some(handlers) = group.get_mut("hooks").and_then(|v| v.as_array_mut()) else {
+                let ours = is_our_handler(group);
+                removed |= ours;
+                return !ours;
+            };
+            let count = handlers.len();
+            handlers.retain(|h| !is_our_handler(h));
+            removed |= handlers.len() != count;
+            !handlers.is_empty() || count == 0
+        });
+        removed_any |= removed;
+        !(removed && list.is_empty())
+    });
+    if removed_any && events.is_empty() {
+        if let Some(object) = root.as_object_mut() {
+            object.shift_remove("hooks");
         }
-        serde_json::Value::Array(items) => {
-            items.retain(|v| !mentions_logbear(v));
-            for v in items.iter_mut() {
-                prune_logbear(v);
-            }
-        }
-        _ => {}
     }
 }
 
-fn mentions_logbear(v: &serde_json::Value) -> bool {
-    v.to_string().contains("logbear-hook")
+/// Whether a handler runs `logbear-hook`: the program itself, not a command that mentions it
+/// or wraps it. Its path is quoted when it holds a space, as `--emit-config` does.
+fn is_our_handler(handler: &serde_json::Value) -> bool {
+    let Some(command) = handler.get("command").and_then(|c| c.as_str()) else {
+        return false;
+    };
+    let command = command.trim_start();
+    let program = match command.chars().next() {
+        Some(quote @ ('\'' | '"')) => command[1..].split(quote).next().unwrap_or_default(),
+        _ => command.split_whitespace().next().unwrap_or_default(),
+    };
+    Path::new(program).file_name().is_some_and(|name| name == "logbear-hook")
 }
 
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+// ---------------------------------------------------------------------------
+// Writing configs
+// ---------------------------------------------------------------------------
+
+/// How many times a write starts over because the file moved underneath it. Agents save
+/// these files in bursts, not continuously, so more than a few means something is wrong.
+const WRITE_ATTEMPTS: usize = 5;
+
+/// `None` for a file that is not there. Anything else unreadable is an error: reading it as
+/// empty is how a merge turns into an overwrite.
+fn read_config(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("could not read {}, so it was left alone: {e}", path.display())),
     }
-    let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, body + "\n").map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn write_text(path: &Path, body: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+/// Apply `edit` to a config file, atomically. Returns the backup taken, if a write happened
+/// and there was a file to back up.
+///
+/// `edit` gets the current contents, or `None` for a missing file, and returns the new ones,
+/// or `None` to leave the file alone. The file is read again just before the rename, and if
+/// another program saved in between, `edit` runs again on what it wrote. That narrows the
+/// lost-update window to the gap between that read and the rename; without a lock every
+/// writer honours, nothing closes it. The rename means nobody ever sees a half-written file.
+fn update_file(
+    path: &Path,
+    mut edit: impl FnMut(Option<&str>) -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    if path.is_symlink() && !path.exists() {
+        return Err(format!("{} is a broken symlink, so it was left alone", path.display()));
     }
-    std::fs::write(path, body).map_err(|e| format!("{}: {e}", path.display()))
+    // A rename replaces the directory entry, so aim it at the real file: dotfile managers
+    // symlink these, and writing through the link must not sever it.
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    for _ in 0..WRITE_ATTEMPTS {
+        let before = read_config(&target)?;
+        let Some(after) = edit(before.as_deref())? else {
+            return Ok(None);
+        };
+        if before.as_deref() == Some(after.as_str()) {
+            return Ok(None);
+        }
+        if read_config(&target)? != before {
+            continue;
+        }
+        let backup = back_up(path)?;
+        write_atomically(&target, &after)?;
+        return Ok(backup);
+    }
+    Err(format!(
+        "{} kept changing while logbear was updating it, so nothing was written. Try again.",
+        path.display()
+    ))
+}
+
+/// [`update_file`] for JSON. A file that does not parse is refused: it may be a comment away
+/// from valid, and it is the user's to fix. A write that would change nothing does not
+/// happen, which spares the file a reformat and a pointless backup.
+fn update_json(
+    path: &Path,
+    mut edit: impl FnMut(&mut serde_json::Value) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    update_file(path, |existing| {
+        let mut root: serde_json::Value = match existing {
+            Some(text) => serde_json::from_str(text).map_err(|e| {
+                format!(
+                    "{} is not valid JSON ({e}), so it was left alone. Fix it and run this again.",
+                    path.display()
+                )
+            })?,
+            None => serde_json::json!({}),
+        };
+        let before = root.clone();
+        edit(&mut root)?;
+        if root == before {
+            return Ok(None);
+        }
+        let body = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+        Ok(Some(body + "\n"))
+    })
+}
+
+/// Write beside `target`, then rename over it. Same directory, because a rename across
+/// filesystems is a copy. The temp file starts at 0600 so a private config is never briefly
+/// readable, then takes the original's mode.
+fn write_atomically(target: &Path, body: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let describe = |e: std::io::Error| format!("{}: {e}", target.display());
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = parent.join(format!(
+        ".{name}.logbear-tmp.{}.{}",
+        std::process::id(),
+        logbear_core::now_micros()
+    ));
+
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(body.as_bytes())?;
+        if let Ok(meta) = std::fs::metadata(target) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.sync_all()?;
+        std::fs::rename(&temp, target)
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        describe(e)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Removing captured data
+// ---------------------------------------------------------------------------
+
+/// Names only a LogBear data directory has. `paths::ensure_home` creates `spool` first thing,
+/// and the rest appear as the daemon and the app run.
+const DATA_MARKERS: [&str; 5] = ["spool", "logbeard.pid", "logbeard.sock", "logbeard.log", ".setup-done"];
+
+/// Why `dir` must not be deleted, if it must not. Deletes nothing, and tests may hand it any
+/// path; everything that can delete goes through it first.
+///
+/// `LOGBEAR_HOME` is a plain environment variable, and a recursive delete of the wrong
+/// directory is the one mistake here that no backup undoes.
+fn purge_refusal(dir: &Path, user_home: &Path) -> Option<String> {
+    let resolved = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let user_home = user_home.canonicalize().unwrap_or_else(|_| user_home.to_path_buf());
+    if resolved.parent().is_none() || user_home.starts_with(&resolved) {
+        return Some(format!("{} contains your home directory", dir.display()));
+    }
+    let names: Vec<String> = match std::fs::read_dir(dir) {
+        Ok(listing) => listing
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(e) => return Some(format!("{}: {e}", dir.display())),
+    };
+    if !names.is_empty() && !DATA_MARKERS.iter().any(|m| names.iter().any(|n| n == m)) {
+        return Some(format!("{} does not look like a LogBear data directory", dir.display()));
+    }
+    None
+}
+
+/// Delete `dir`, if [`purge_refusal`] allows it. `false` means it was not there.
+fn purge_dir(dir: &Path, user_home: &Path) -> Result<bool, String> {
+    if !dir.exists() {
+        return Ok(false);
+    }
+    if let Some(why) = purge_refusal(dir, user_home) {
+        return Err(format!("{why}, so nothing was deleted"));
+    }
+    std::fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(true)
+}
+
+/// Stop a running daemon. It holds the databases open and would go on writing to deleted
+/// files, whether a service runs it or a wrapped command started it.
+fn stop_daemon() -> Result<(), String> {
+    use logbear_core::client::Client;
+    let Ok(mut client) = Client::connect() else {
+        return Ok(());
+    };
+    let _ = client.call::<serde_json::Value>(&logbear_core::proto::Request::Shutdown);
+    for _ in 0..50 {
+        if Client::connect().is_err() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err("the daemon is still running, so nothing was deleted".into())
+}
+
+/// Delete everything LogBear captured, stopping the daemon first. Returns the directory if
+/// there was one to delete. Irreversible, so the caller asks first.
+pub fn purge_data() -> Result<Option<PathBuf>, String> {
+    let dir = logbear_core::paths::home();
+    if !dir.exists() {
+        return Ok(None);
+    }
+    if let Some(why) = purge_refusal(&dir, &home()) {
+        return Err(format!("{why}, so nothing was deleted"));
+    }
+    stop_daemon()?;
+    purge_dir(&dir, &home()).map(|existed| existed.then_some(dir))
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,14 +1754,14 @@ mod tests {
     #[test]
     fn a_homebrew_cellar_path_is_recorded_under_opt() {
         assert_eq!(
-            stable_bin_dir(Path::new("/opt/homebrew/Cellar/logbear/0.1.0/bin")),
+            logbear_core::paths::stable_bin_dir(Path::new("/opt/homebrew/Cellar/logbear/0.1.0/bin")),
             PathBuf::from("/opt/homebrew/opt/logbear/bin")
         );
         for other in [
             "/Applications/logbear.app/Contents/MacOS",
             "/Users/x/.local/bin",
         ] {
-            assert_eq!(stable_bin_dir(Path::new(other)), PathBuf::from(other));
+            assert_eq!(logbear_core::paths::stable_bin_dir(Path::new(other)), PathBuf::from(other));
         }
     }
 
@@ -1562,5 +1828,471 @@ mod tests {
     #[test]
     fn an_inline_yaml_value_is_refused() {
         assert!(insert_yaml("hooks: {}\n", HOOKS, "hooks").is_err());
+    }
+
+    // ---- Writes ----
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_config_that_will_not_parse_is_refused_and_left_byte_for_byte() {
+        for broken in ["{\"model\": \"opus\",}", "// a comment\n{}", "", "   \n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            std::fs::write(&path, broken).unwrap();
+
+            let err = update_json(&path, |root| {
+                root["added"] = true.into();
+                Ok(())
+            })
+            .unwrap_err();
+
+            assert!(err.contains("settings.json"), "the error should name the file: {err}");
+            assert!(err.contains("not valid JSON"), "{err}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+            assert_eq!(entries(dir.path()), ["settings.json"], "nothing else should appear");
+        }
+    }
+
+    #[test]
+    fn a_text_config_that_is_not_utf8_is_refused_rather_than_read_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".zshrc");
+        std::fs::write(&path, b"export X=\xff\n").unwrap();
+        let result = update_file(&path, |_| Ok(Some("replaced\n".into())));
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"export X=\xff\n");
+    }
+
+    #[test]
+    fn a_missing_config_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/settings.json");
+        let backup = update_json(&path, |root| {
+            root["added"] = true.into();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(backup, None, "there was nothing to back up");
+        assert_eq!(read_json(&path).unwrap()["added"], true);
+    }
+
+    #[test]
+    fn a_write_that_lands_while_we_work_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"theirs\": 1}").unwrap();
+
+        // Stands in for Claude Code saving between our read and our write.
+        let mut interrupted = false;
+        update_json(&path, |root| {
+            if !interrupted {
+                interrupted = true;
+                std::fs::write(&path, "{\"theirs\": 2, \"new\": true}").unwrap();
+            }
+            root["ours"] = true.into();
+            Ok(())
+        })
+        .unwrap();
+
+        let after = read_json(&path).unwrap();
+        assert_eq!(after["theirs"], 2, "the concurrent write was lost: {after}");
+        assert_eq!(after["new"], true, "the concurrent write was lost: {after}");
+        assert_eq!(after["ours"], true);
+    }
+
+    #[test]
+    fn a_file_that_never_settles_is_refused_rather_than_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+
+        let mut n = 0;
+        let err = update_json(&path, |root| {
+            n += 1;
+            std::fs::write(&path, format!("{{\"n\": {n}}}")).unwrap();
+            root["ours"] = true.into();
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(err.contains("changing"), "{err}");
+        assert!(read_json(&path).unwrap().get("ours").is_none());
+    }
+
+    /// A reader holding the old file keeps a whole old file: the rename swaps it, rather
+    /// than truncating it underneath them. Nothing is left beside it either.
+    #[test]
+    fn a_config_is_replaced_whole_and_no_temp_file_survives() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"old\": true}").unwrap();
+        let mut held_open = std::fs::File::open(&path).unwrap();
+
+        let backup = update_json(&path, |root| {
+            root["new"] = true.into();
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+
+        let mut seen = String::new();
+        held_open.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "{\"old\": true}");
+        assert_eq!(read_json(&path).unwrap()["new"], true);
+        let backup_name = Path::new(&backup).file_name().unwrap().to_string_lossy().into_owned();
+        let mut expected = vec![backup_name, "settings.json".to_string()];
+        expected.sort();
+        assert_eq!(entries(dir.path()), expected);
+    }
+
+    #[test]
+    fn a_failed_edit_writes_nothing_and_takes_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, "hooks: {}\n").unwrap();
+        assert!(update_file(&path, |_| Err("no".into())).is_err());
+        assert_eq!(entries(dir.path()), ["config.yaml"]);
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{ \"model\":   \"opus\" }").unwrap();
+        assert_eq!(update_json(&path, |_| Ok(())).unwrap(), None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ \"model\":   \"opus\" }");
+        assert_eq!(entries(dir.path()), ["settings.json"]);
+    }
+
+    #[test]
+    fn a_symlinked_config_stays_a_symlink() {
+        // Dotfile managers link these, and a rename onto the link would silently cut the
+        // file off from the repository it lives in.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles/settings.json");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "{\"mine\": true}").unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        update_json(&link, |root| {
+            root["ours"] = true.into();
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(link.is_symlink(), "the link was replaced by a regular file");
+        let after = read_json(&real).unwrap();
+        assert_eq!(after["mine"], true);
+        assert_eq!(after["ours"], true);
+    }
+
+    #[test]
+    fn a_configs_permissions_survive_the_rewrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        update_json(&path, |root| {
+            root["ours"] = true.into();
+            Ok(())
+        })
+        .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn key_order_survives_a_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"zebra\": 1, \"apple\": {\"y\": 1, \"b\": 2}, \"mango\": 3}\n").unwrap();
+
+        update_json(&path, |root| {
+            merge(root, &json!({ "hooks": { "Stop": [] } }));
+            Ok(())
+        })
+        .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle} in {text}"));
+        assert!(at("zebra") < at("apple") && at("apple") < at("mango"), "{text}");
+        assert!(at("\"y\"") < at("\"b\""), "{text}");
+        assert!(at("mango") < at("hooks"), "{text}");
+    }
+
+    #[test]
+    fn key_order_survives_an_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"z": 1, "hooks": {"Stop": [{"hooks": [{"command": "logbear-hook"}]}]}, "a": 2, "m": 3}"#,
+        )
+        .unwrap();
+
+        remove_hook_entries(&path).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let positions: Vec<usize> = ["\"z\"", "\"a\"", "\"m\""]
+            .iter()
+            .map(|k| text.find(k).unwrap_or_else(|| panic!("{k} in {text}")))
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{text}");
+        assert!(!text.contains("hooks"), "{text}");
+    }
+
+    // ---- Uninstall ----
+
+    #[test]
+    fn a_users_hook_sharing_a_group_with_ours_survives() {
+        let mut config = json!({
+            "hooks": {
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [
+                        { "type": "command", "command": "their-tool --notify" },
+                        { "type": "command", "command": "/opt/logbear-hook --harness claude" }
+                    ]
+                }]
+            }
+        });
+        prune_logbear(&mut config);
+        assert_eq!(
+            config,
+            json!({
+                "hooks": {
+                    "Stop": [{
+                        "matcher": "",
+                        "hooks": [{ "type": "command", "command": "their-tool --notify" }]
+                    }]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn something_that_merely_mentions_the_hook_is_not_ours() {
+        let original = json!({
+            "statusLine": { "type": "command", "command": "echo logbear-hook is installed" },
+            "permissions": { "allow": ["Bash(logbear-hook --emit-config claude)"] },
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "audit --wrap /opt/logbear-hook" }]
+                }]
+            }
+        });
+        let mut config = original.clone();
+        prune_logbear(&mut config);
+        assert_eq!(config, original);
+    }
+
+    #[test]
+    fn our_hook_is_recognised_when_its_path_needed_quoting() {
+        let mut config = json!({
+            "hooks": {
+                "Stop": [{ "hooks": [{
+                    "command": "'/Applications/My Apps/LogBear.app/Contents/MacOS/logbear-hook' --harness claude"
+                }] }]
+            }
+        });
+        prune_logbear(&mut config);
+        assert_eq!(config, json!({}));
+    }
+
+    #[test]
+    fn containers_the_user_left_empty_are_not_ours_to_tidy() {
+        let original = json!({ "hooks": { "PreToolUse": [] }, "env": {} });
+        let mut config = original.clone();
+        prune_logbear(&mut config);
+        assert_eq!(config, original);
+    }
+
+    #[test]
+    fn hook_uninstall_backs_up_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let source = json!({ "hooks": { "Stop": [{ "hooks": [{ "command": "logbear-hook" }] }] } }).to_string();
+        std::fs::write(&path, &source).unwrap();
+
+        let backup = remove_hook_entries(&path).unwrap().expect("a backup path");
+
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), source);
+        assert!(read_json(&path).unwrap().get("hooks").is_none());
+    }
+
+    #[test]
+    fn mcp_uninstall_backs_up_first_and_keeps_other_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude.json");
+        let source = json!({ "mcpServers": { "logbear": {}, "other": {} } }).to_string();
+        std::fs::write(&path, &source).unwrap();
+
+        let backup = remove_mcp_entry(&path).unwrap().expect("a backup path");
+
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), source);
+        assert_eq!(read_json(&path).unwrap(), json!({ "mcpServers": { "other": {} } }));
+    }
+
+    #[test]
+    fn uninstalling_from_a_config_that_will_not_parse_is_an_error_not_a_silent_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(remove_hook_entries(&path).is_err());
+        assert!(remove_mcp_entry(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn uninstalling_what_was_never_there_touches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"model\":\"opus\"}").unwrap();
+        assert_eq!(remove_hook_entries(&path).unwrap(), None);
+        assert_eq!(remove_mcp_entry(&path).unwrap(), None);
+        assert_eq!(entries(dir.path()), ["settings.json"]);
+        assert_eq!(remove_hook_entries(&dir.path().join("absent.json")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_profile_block_added_then_removed_leaves_the_file_as_it_was() {
+        let before = "export EDITOR=nvim\n";
+        let with_block = format!("{before}\n{PROFILE_MARKER}\nexport PATH=\"/x/bin:$PATH\"\n");
+        assert_eq!(strip_profile_block(&with_block), before);
+    }
+
+    // ---- PATH ----
+
+    /// A home and bin directories under a temp dir: the real candidates include
+    /// `/opt/homebrew/bin` and `/usr/local/bin`, which no test may touch.
+    struct Machine {
+        _dir: tempfile::TempDir,
+        home: PathBuf,
+        bins: Vec<PathBuf>,
+    }
+
+    fn machine() -> Machine {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let bins = vec![home.join(".local/bin"), dir.path().join("homebrew/bin")];
+        for b in &bins {
+            std::fs::create_dir_all(b).unwrap();
+        }
+        Machine { _dir: dir, home, bins }
+    }
+
+    #[test]
+    fn removing_path_takes_the_link_the_rc_block_and_the_fish_drop_in() {
+        let m = machine();
+        let link = m.bins[0].join("logbear");
+        std::os::unix::fs::symlink("/Applications/LogBear.app/Contents/MacOS/logbear", &link).unwrap();
+        let zshrc = m.home.join(".zshrc");
+        std::fs::write(&zshrc, format!("alias g=git\n\n{PROFILE_MARKER}\nexport PATH=\"/x:$PATH\"\n")).unwrap();
+        let fish = m.home.join(".config/fish/conf.d/logbear.fish");
+        std::fs::create_dir_all(fish.parent().unwrap()).unwrap();
+        std::fs::write(&fish, PROFILE_MARKER).unwrap();
+
+        assert_eq!(path_leftovers(&m.home, &m.bins).len(), 3);
+        let backups = remove_path_setup(&m.home, &m.bins).unwrap();
+
+        assert!(!link.is_symlink());
+        assert!(!fish.exists());
+        assert_eq!(std::fs::read_to_string(&zshrc).unwrap(), "alias g=git\n");
+        assert_eq!(backups.len(), 1, "the rc file is backed up");
+        assert!(std::fs::read_to_string(&backups[0]).unwrap().contains(PROFILE_MARKER));
+        assert!(path_leftovers(&m.home, &m.bins).is_empty());
+    }
+
+    #[test]
+    fn removing_path_leaves_homebrews_link_and_real_files_alone() {
+        let m = machine();
+        let brew = m.bins[1].join("logbear");
+        std::os::unix::fs::symlink("../Cellar/logbear/0.1.0/bin/logbear", &brew).unwrap();
+        let script_install = m.bins[0].join("logbear");
+        std::fs::write(&script_install, "#!/bin/sh\n").unwrap();
+
+        assert!(path_leftovers(&m.home, &m.bins).is_empty());
+        remove_path_setup(&m.home, &m.bins).unwrap();
+
+        assert!(brew.is_symlink(), "Homebrew owns its own link");
+        assert!(script_install.exists(), "a real binary is not a link of ours");
+    }
+
+    #[test]
+    fn removing_path_keeps_a_symlinked_rc_file_linked() {
+        let m = machine();
+        let real = m.home.join("dotfiles/zshrc");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, format!("{PROFILE_MARKER}\nexport PATH=\"/x:$PATH\"\n")).unwrap();
+        std::os::unix::fs::symlink(&real, m.home.join(".zshrc")).unwrap();
+
+        remove_path_setup(&m.home, &m.bins).unwrap();
+
+        assert!(m.home.join(".zshrc").is_symlink());
+        assert!(!std::fs::read_to_string(&real).unwrap().contains(PROFILE_MARKER));
+    }
+
+    // ---- Purge ----
+
+    /// The guard alone, which deletes nothing: the only place a test may name `/` or a real
+    /// directory. Anything that can actually delete is tested inside a temp dir.
+    #[test]
+    fn the_purge_guard_refuses_anything_that_is_not_a_logbear_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_home = dir.path().join("me");
+        let documents = user_home.join("Documents");
+        let data = user_home.join(".logbear");
+        std::fs::create_dir_all(&documents).unwrap();
+        std::fs::create_dir_all(data.join("spool")).unwrap();
+        std::fs::write(documents.join("thesis.txt"), "years of work").unwrap();
+
+        // `LOGBEAR_HOME` is a plain environment variable, so each of these is one typo away.
+        for wrong in [Path::new("/"), dir.path(), user_home.as_path(), documents.as_path()] {
+            assert!(purge_refusal(wrong, &user_home).is_some(), "{} was accepted", wrong.display());
+        }
+        assert_eq!(purge_refusal(&data, &user_home), None);
+    }
+
+    #[test]
+    fn an_empty_directory_may_be_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("scratch");
+        std::fs::create_dir(&empty).unwrap();
+        assert_eq!(purge_refusal(&empty, Path::new("/nonexistent-home")), None);
+    }
+
+    #[test]
+    fn purging_deletes_a_logbear_data_directory_and_only_that() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join(".logbear");
+        std::fs::create_dir_all(data.join("spool")).unwrap();
+        std::fs::write(data.join("index.db"), "x").unwrap();
+        std::fs::write(dir.path().join("neighbour"), "y").unwrap();
+
+        assert!(purge_dir(&data, Path::new("/nonexistent-home")).unwrap());
+
+        assert!(!data.exists());
+        assert!(dir.path().join("neighbour").exists());
+    }
+
+    #[test]
+    fn purging_nothing_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join(".logbear");
+        assert!(!purge_dir(&data, Path::new("/nonexistent-home")).unwrap());
     }
 }

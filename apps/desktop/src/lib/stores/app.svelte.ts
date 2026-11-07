@@ -15,6 +15,7 @@ import {
 	subscribeEvents,
 	usingMockData
 } from '$lib/api';
+import { pollWhileVisible } from '$lib/poll';
 import type {
 	Counters,
 	DaemonStatus,
@@ -41,7 +42,7 @@ class AppState {
 
 	#listeners = new Set<(e: LogbearEvent) => void>();
 	#dispose: (() => void) | null = null;
-	#poll: ReturnType<typeof setInterval> | null = null;
+	#stopPolling: (() => void) | null = null;
 	#refreshing: Promise<void> | null = null;
 	#again = false;
 
@@ -69,12 +70,12 @@ class AppState {
 	init(): () => void {
 		void this.refresh();
 		this.#dispose = subscribeEvents((e) => this.#handle(e));
-		this.#poll = setInterval(() => void this.refresh(), POLL_MS);
+		this.#stopPolling = pollWhileVisible(() => void this.refresh(), POLL_MS);
 		return () => {
 			this.#dispose?.();
 			this.#dispose = null;
-			if (this.#poll) clearInterval(this.#poll);
-			this.#poll = null;
+			this.#stopPolling?.();
+			this.#stopPolling = null;
 		};
 	}
 

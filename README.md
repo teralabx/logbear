@@ -1,4 +1,4 @@
-# logbear
+# LogBear
 
 [![CI](https://github.com/teralabx/logbear/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/logbear/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/logbear.svg)](https://crates.io/crates/logbear)
@@ -7,14 +7,14 @@
 
 **It worked two days ago. What changed?**
 
-logbear wraps a development process, records everything it emits, and tells your coding
+LogBear wraps a development process, records everything it emits, and tells your coding
 agent the moment something breaks.
 
 ```
 logbear mix phx.server
 ```
 
-That is the whole interface. Your terminal behaves exactly as it did before — colours,
+That is the whole interface. Your terminal behaves as it did before — colours,
 `IEx.pry`, Ctrl-C, resize — and everything the process prints is now queryable, diffable,
 and visible to an agent that would otherwise have no idea it happened.
 
@@ -22,7 +22,7 @@ and visible to an agent that would otherwise have no idea it happened.
 
 - [The problem it solves](#the-problem-it-solves)
 - [What you get](#what-you-get)
-- [Install](#install) · [Platform support](#platform-support)
+- [Install](#install) · [Uninstall](#uninstall) · [Platform support](#platform-support)
 - [Using it](#using-it)
 - [How it works](#how-it-works) — [constraints](#four-constraints-everything-defers-to),
   [capture](#the-capture-pipeline), [storage](#storage), [MCP](#the-mcp-surface),
@@ -39,7 +39,7 @@ You are working with a coding agent. It edits code. Your dev server, running in 
 terminal, throws an exception. The agent has no idea, and reports "done, fixed it". You
 have to notice the error, copy it, paste it back, and restart the conversation.
 
-Nothing else closes that loop:
+We couldn't find anything else that closes that loop:
 
 | | Sees | Doesn't see |
 |---|---|---|
@@ -50,14 +50,14 @@ Nothing else closes that loop:
 | Atuin | command, exit code, duration | **the output** |
 | pm2 / overmind | supervises and tails | stores nothing queryable |
 
-logbear sits at the point of invocation, which is the only place where the command and the
+LogBear sits at the point of invocation, which is the only place where the command and the
 context that produced it are visible together, for free, at the same instant.
 
 ---
 
 ## What you get
 
-**A blocking hook.** When your agent says it is finished, logbear checks whether anything
+**A blocking hook.** When your agent says it is finished, LogBear checks whether anything
 broke since it last looked. If so, the agent is interrupted and handed the actual
 exception, its history, and which run it came from. If not, nothing happens at all.
 
@@ -84,7 +84,8 @@ brew services start logbear
 logbear setup             # connect your coding agents
 ```
 
-It lives in its own tap until it qualifies for `homebrew-core`; Homebrew may ask you to
+It installs prebuilt binaries, so there is nothing to compile and no Rust to install. It
+lives in its own tap until it qualifies for `homebrew-core`; Homebrew may ask you to
 `brew trust` the tap the first time. See [`packaging/homebrew`](packaging/homebrew).
 
 **Install script** — the same four binaries, prebuilt, into `~/.local/bin`:
@@ -105,13 +106,20 @@ logbear setup
 ```
 
 `logbear setup` finds Claude Code, Codex, pi and Hermes, shows exactly which files it would
-change, and asks before touching anything. `logbear setup --remove` takes it all back out.
+change, and asks before touching anything.
 
-**The desktop app** is the easiest path, because it is also the installer. On first launch
-it offers, with confirmation for each step:
+**The desktop app** is the easiest path, because it is also the installer. On first launch,
+without asking, it does the two local steps it cannot work without:
 
-1. `logbear` on your PATH
-2. `logbeard` as a background service that survives reboots
+1. links `logbear` onto your PATH. If no writable directory is already on your PATH, it
+   links into `~/.local/bin` and adds a marked block to your shell profiles, backing each
+   one up first
+2. registers `logbeard` as a background service that survives reboots, which on macOS
+   means a LaunchAgent
+
+Your agents are left alone until you ask. Settings → Install has a button for each of the
+rest, or one for all of them:
+
 3. the MCP server registered with each agent it finds: Claude Code, Codex, pi and Hermes
 4. the hook installed in each of them
 
@@ -120,14 +128,32 @@ pi has no command hooks, so for pi the "hook" is a small extension written to
 added between marker comments so removing them leaves the rest of the file alone.
 
 Every config file is backed up before it is touched, every write **merges** rather than
-overwrites, and each step can be reverted individually. Nothing is done without asking.
+overwrites, and each step can be reverted individually. A config that won't parse is
+refused with an error and left exactly as it was.
 
 `logbear doctor` reports the state of every integration and tells you how to fix whatever is
 broken. It checks pi and Hermes only where they are installed.
 
+### Uninstall
+
+`logbear setup --remove` takes LogBear back out of each agent's config, backing each file
+up first, unregisters the daemon service, and removes the PATH link and the shell profile
+block. Only LogBear's own entries go: a hook of yours in the same group stays.
+
+Your captured data stays in `~/.logbear`, and the command prints where it is. To delete it
+as well, which stops the daemon and can't be undone:
+
+```sh
+logbear setup --remove --purge
+```
+
+The binaries belong to whatever installed them. Homebrew keeps its own link and service, so
+finish with `brew services stop logbear` and `brew uninstall logbear`; otherwise delete the
+four binaries from `~/.local/bin` or `~/.cargo/bin`.
+
 ### Platform support
 
-macOS is what logbear is developed and tested on, and the desktop installer is macOS-only
+macOS is what LogBear is developed and tested on, and the desktop installer is macOS-only
 — it registers `logbeard` with launchd. The CLI, daemon, MCP server and hook are ordinary
 Unix programs (PTYs, unix sockets, SQLite) and should build on Linux, but that is
 unverified. Windows is not supported.
@@ -147,12 +173,30 @@ logbear query "SELECT template, count(*) FROM v_errors GROUP BY 1"
 logbear status                  # daemon health, project, retention
 logbear doctor                  # check every integration
 logbear setup                   # connect agents: MCP server and hook for each one found
+logbear setup --remove          # take it back out; --purge also deletes captured data
 logbear updates on              # opt in to a daily check for new releases (off by default)
+logbear upgrade                 # install the latest release (Homebrew or install script)
 ```
 
 `logbear diff` with no arguments compares the **last known good** run — the most recent one
 that exited cleanly *and* logged no errors — against the latest. That is what people mean
 by "it worked yesterday", and it is almost never the previous run.
+
+### A program with the same name as a command
+
+`cat`, `logs`, `runs`, `diff`, `status`, `doctor`, `setup`, `updates`, `query`, `sql-schema`
+and `squash` are LogBear's own commands, and they take priority over programs with those
+names. Put `--` first to wrap the program instead:
+
+```sh
+logbear cat 42                  # LogBear's: replay run 42
+logbear -- cat notes.txt        # the real cat, wrapped
+```
+
+### Pipes and redirects
+
+When stdin, stdout or stderr isn't a terminal, LogBear uses a pipe for that stream instead
+of the pty, so programs see what they'd see without LogBear.
 
 ### What counts as an error
 
@@ -196,16 +240,16 @@ ago is findable without anything having to guess whether it looked bad.
 
 ### Four constraints everything defers to
 
-**Total opacity.** logbear never touches the wrapped process. No injected logger handlers,
+**Total opacity.** LogBear never touches the wrapped process. No injected logger handlers,
 no `ERL_FLAGS` / `NODE_OPTIONS` / `RUBYOPT` / `PYTHONPATH`, no `FORCE_COLOR`, no dependency
 added to your app. We observe the output stream and nothing else. During design we verified
 that a sidecar Elixir logger handler gives perfect structured entries while leaving the
 console untouched — and rejected it anyway, on this principle.
 
-**The shim can never degrade your process.** Bytes reach your terminal *before* they reach
-us. If the daemon is down, wedged, or upgrading, the wrapped process is unaffected: the
-shim spools to disk and carries on. No blocking, no added latency, no altered exit code, no
-swallowed signal.
+**The shim stays out of your process's way.** Output goes to your terminal first, and
+capture can't block the wrapped command. The daemon is contacted in the background after
+the child starts. If it is down, wedged, or upgrading, the shim spools to disk and carries
+on, and your process's exit code comes back unchanged.
 
 **Raw bytes are truth.** Grouping, levels, fingerprints, rendered text — all of it is a
 regenerable projection over the captured bytes. A parser bug is a rebuild, never data loss.
@@ -216,8 +260,8 @@ don't explode into ten thousand rows. Install does not clobber your config.
 ### The capture pipeline
 
 ```
-pty bytes → vt emulation → physical lines → entry grouping → classification → fingerprint
-            deterministic   deterministic     inferred         union of signals   normalised
+raw bytes → vt emulation → physical lines → entry grouping → classification → fingerprint
+            deterministic   deterministic     inferred         read, not guessed  normalised
 ```
 
 Exactly one stage is inferential, and it records that it is. The run stores which
@@ -229,10 +273,6 @@ bracketing (Elixir's Logger does this), then line-start timestamp and level pref
 only then indentation with per-runtime continuation markers. When nothing matches, the
 default is to **start a new entry** — over-splitting is cosmetic, over-merging destroys the
 boundary that fingerprinting depends on.
-
-Errors are detected by a union of independent signals — level tags, exception markers,
-runs of stack frames, non-zero exit, unexpected death — so detection does not depend on
-grouping being right. It is deliberately biased to over-catch.
 
 ### Storage
 
@@ -249,9 +289,10 @@ range. That is what makes `DELETE FROM entries` plus a rebuild always safe — i
 it would break.
 
 Retention degrades gracefully rather than vanishing. The bytes of the oldest runs go first,
-then their derived index; the run rows, their git stamps and their error signatures are
-kept effectively forever at a few KB each. So "it worked three weeks ago, what changed?"
-still answers correctly long after the raw log is gone.
+then their derived index; the run rows, their git stamps and their signatures outlive
+them at a few KB each. Signatures are held to a share of the cap, with errors the last to
+go. So "it worked three weeks ago, what changed?" still answers correctly long after the
+raw log is gone.
 
 ### The MCP surface
 
@@ -289,17 +330,21 @@ agent because our daemon is down is far worse than one that misses a notificatio
 ### Privacy
 
 - **Environment variables: names only, never values.** No flag, no exception.
-- **Redaction on the way in, not on the way out.** Token shapes, connection strings with
-  credentials, and PEM blocks are masked before anything reaches disk — and before the
-  entry text or the fingerprint template is computed. Masking is length-preserving so
-  replay stays aligned.
+- **Common secret shapes are masked before storage; this is best effort, not a
+  guarantee.** Masking happens on the way in, before the entry text or the fingerprint
+  template is computed, and is length-preserving so replay stays aligned. Whatever the
+  patterns don't recognise is stored as printed. Spool files can hold raw output briefly,
+  at 0600, until they are ingested.
 - **Interactive programs are not captured.** `psql`, `ssh`, `vim` and friends are sessions
   rather than runs; they are denylisted by default and run untouched.
-- **Nothing leaves your machine.** Nothing you capture is ever sent anywhere. The only
-  network request logbear can make is the update check, and it is **off unless you turn it
-  on** with `logbear updates on`: then, at most once a day, one GET to GitHub's releases
-  API carrying a `User-Agent` with the installed version, and nothing else. It is the
-  whole of [`crates/shim/src/updates.rs`](crates/shim/src/updates.rs).
+- **LogBear sends what you capture nowhere; your agent sees what you connect it to.** Hooks
+  and the MCP server hand log text to your coding agent, and a hosted agent sends what it
+  reads to its model provider. LogBear itself sends what you capture nowhere. The only
+  network requests it can make are about its own releases. The update check is **off unless
+  you turn it on** with `logbear updates on`: then, at most once a day, one GET to GitHub's
+  releases API carrying a `User-Agent` with the installed version, and nothing else.
+  `logbear upgrade` makes the same request when you run it, then downloads the release. That
+  is the whole of [`crates/shim/src/updates.rs`](crates/shim/src/updates.rs).
 
 ---
 
@@ -311,8 +356,9 @@ crates/shim      the `logbear` binary: PTY wrapper and CLI
 crates/daemon    `logbeard`
 crates/mcp       `logbear-mcp`, the stdio MCP server
 crates/hook      `logbear-hook`, one binary for every harness (and the pi extension)
+crates/setup     the installer, shared by `logbear setup` and the desktop app
 apps/desktop     Tauri v2 + SvelteKit
-packaging/       the Homebrew formula
+packaging/       the Homebrew formula template
 docs/            implementation notes
 ```
 
@@ -321,15 +367,20 @@ over it.
 
 ## Building from source
 
-Requires Rust 1.82+ and [Bun](https://bun.sh).
+Requires Rust 1.90+ and [Bun](https://bun.sh).
 
 ```sh
-cargo test --workspace          # Rust
-cargo test --workspace -- --ignored   # integration tests that spawn real processes
-cd apps/desktop && bun install && bun run check && bun run build
+cargo test --workspace --exclude logbear-desktop   # Rust, without the Tauri app
+cargo test -p logbear -- --ignored   # integration tests that spawn real processes
+(cd apps/desktop && bun install && bun run check && bun run build)
 ./scripts/sidecars.sh           # stage the binaries as Tauri sidecars
-cd apps/desktop && bun run tauri build
+(cd apps/desktop && bun run tauri build)
 ```
+
+A plain `cargo test --workspace` fails on a fresh clone: `tauri-build` won't compile
+`logbear-desktop` until the four sidecar binaries exist, and those are build outputs that
+are never committed. Exclude the crate as above, or stage them first with
+`./scripts/sidecars.sh debug`, after which `cargo test --workspace` works.
 
 `LOGBEAR_HOME` redirects all state, which is how the test suite avoids touching your real
 history.
@@ -343,7 +394,7 @@ our [Code of Conduct](CODE_OF_CONDUCT.md). Released versions are listed in
 
 ## Security
 
-logbear stores your development output on disk, so a parsing or redaction bug is a privacy
+LogBear stores your development output on disk, so a parsing or redaction bug is a privacy
 bug. Please report vulnerabilities privately rather than in a public issue — see
 [SECURITY.md](SECURITY.md).
 
@@ -355,5 +406,5 @@ Use it, modify it, redistribute it, sell it, build on it, fork it. Everything yo
 from this repository runs entirely on your machine, with no account, and makes no network
 calls unless you opt in to update checks.
 
-The **logbear** name and the Delta mark are not covered by the licence grant. Fork the
+The **LogBear** name and logo are not covered by the licence grant. Fork the
 code freely; ship it under your own name.

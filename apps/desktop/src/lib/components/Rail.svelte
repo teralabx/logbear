@@ -191,7 +191,7 @@
 		<div class="flex h-[26px] items-center justify-between pr-[14px] pl-[14px]">
 			<span class="fade label-xs">Projects</span>
 			<a
-				class="fade text-[10px] tracking-[0.16em] no-underline uppercase hover:text-base-content {active ===
+				class="fade text-[12px] tracking-[0.1em] no-underline uppercase hover:text-base-content {active ===
 				'/'
 					? 'text-base-content'
 					: 'text-meta'}"
@@ -200,7 +200,7 @@
 			>
 		</div>
 		{#if app.projects.length === 0}
-			<p class="fade meta m-0 px-[14px] py-0.5 text-[11px]">{app.loaded ? 'None yet' : 'Loading…'}</p>
+			<p class="fade meta m-0 px-[14px] py-0.5 text-[12px]">{app.loaded ? 'None yet' : 'Loading…'}</p>
 		{:else}
 			<ul class="m-0 list-none p-0">
 				{#each app.projects as p (p.id)}
@@ -215,7 +215,7 @@
 						>
 							<span class="ico">
 								<span
-									class="relative grid h-[20px] w-[24px] place-items-center rounded-[2px] border border-hair text-[10px] lowercase"
+									class="relative grid h-[20px] w-[24px] place-items-center rounded-[2px] border border-hair text-[12px] lowercase"
 									>{p.name.slice(0, 2)}<span
 										class="absolute -top-[3px] -right-[3px] size-1.5 rounded-full {isRunning(p.id)
 											? 'bg-success shadow-[0_0_0_2px_var(--color-base-200)]'
@@ -228,7 +228,7 @@
 							</span>
 							<span class="lbl truncate">{p.name}</span>
 							{#if errs > 0}
-								<span class="lbl tnum mr-[14px] ml-auto text-[10px] text-lvl-error">{errs}</span>
+								<span class="lbl tnum mr-[14px] ml-auto text-[12px] text-lvl-error">{errs}</span>
 							{/if}
 						</a>
 					</li>
@@ -263,7 +263,7 @@
 								</span>
 								<span class="lbl">{s.label}</span>
 								{#if s.key === 'live' && isRunning(currentId!)}
-									<span class="lbl is-running mr-[14px] ml-auto text-[9px] tracking-[0.16em] text-success uppercase"
+									<span class="lbl is-running mr-[14px] ml-auto text-[12px] tracking-[0.1em] text-success uppercase"
 										>live</span
 									>
 								{/if}
@@ -277,7 +277,7 @@
 
 	<div class="rule-t flex-none py-1.5">
 		<a
-			class="item text-[11px] no-underline {quiet}"
+			class="item text-[12px] no-underline {quiet}"
 			href="/settings"
 			title={rail.collapsed ? undefined : daemonTip}
 			aria-label={app.connected ? 'Daemon connected' : 'Daemon down'}
@@ -319,7 +319,7 @@
 
 		{#if app.mock}
 			<p
-				class="fade mt-1 mb-0 cursor-help px-[14px] text-[9px] tracking-[0.16em] whitespace-nowrap text-warning uppercase"
+				class="fade mt-1 mb-0 cursor-help px-[14px] text-[12px] tracking-[0.1em] whitespace-nowrap text-warning uppercase"
 				title="No Tauri backend detected — every screen is showing generated data"
 			>
 				sample data
@@ -330,7 +330,7 @@
 
 {#if tipState}
 	<div
-		class="rail-tip pointer-events-none fixed z-50 -translate-y-1/2 rounded-[3px] border border-hair-strong bg-base-100 px-2 py-1 text-[11.5px] whitespace-nowrap text-base-content shadow-[0_4px_14px_rgb(0_0_0/0.14)]"
+		class="rail-tip pointer-events-none fixed z-50 -translate-y-1/2 rounded-[3px] border border-hair-strong bg-base-100 px-2 py-1 text-[12px] whitespace-nowrap text-base-content shadow-[0_4px_14px_rgb(0_0_0/0.14)]"
 		style:left="{tipState.x}px"
 		style:top="{tipState.y}px"
 		role="tooltip"

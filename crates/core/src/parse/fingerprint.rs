@@ -45,6 +45,83 @@ static RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r(r"\bpid[= ]\d+\b"), "pid=<n>"),
         (r(r"#PID<\d+\.\d+\.\d+>"), "<pid>"),
         (r(r"#(?:Reference|Port)<[\d.]+>"), "<ref>"),
+    ]
+});
+
+/// A value announced as an id, whatever it looks like. The bare form is `req=`, because
+/// `req: GET /users` is common and is not an id.
+static KEYED_ID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\b((?:(?:x-)?request[_-]?id|req[_-]?id|trace[_-]?id|span[_-]?id|correlation[_-]?id)["']?\s*[=:]\s*["']?|req=["']?)([A-Za-z0-9+/_=.\-]{2,})"#,
+    )
+    .expect("KEYED_ID")
+});
+
+/// Anything long enough to be an unannounced id; [`rewrite_token`] decides whether it is one.
+static LONG_TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+_\-]{16,}={0,2}").expect("LONG_TOKEN"));
+
+/// How often neighbouring characters must change between lower, upper and digit for a token
+/// to read as random. Near 0.6 for base62, under 0.3 for a camelCase name with a digit in it.
+const MIN_CLASS_CHANGE: f64 = 0.45;
+
+/// Replaces a long token if it is an id, which is a question of shape: hex with both digits
+/// and letters, or all of upper, lower and digits, changing between them too often for words.
+/// Without that last test `handleOAuth2CallbackError` would collapse, and two different
+/// failures would share an identity.
+fn rewrite_token(token: &str) -> Option<&'static str> {
+    let has = |f: fn(&u8) -> bool| token.as_bytes().iter().any(f);
+    let (lower, upper, digit) = (
+        has(u8::is_ascii_lowercase),
+        has(u8::is_ascii_uppercase),
+        has(u8::is_ascii_digit),
+    );
+    if digit && (lower || upper) && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some("<hash>");
+    }
+    if !(lower && upper && digit) {
+        return None;
+    }
+    let class = |b: u8| match b {
+        b'a'..=b'z' => Some(0),
+        b'A'..=b'Z' => Some(1),
+        b'0'..=b'9' => Some(2),
+        _ => None,
+    };
+    let (mut pairs, mut changes) = (0u32, 0u32);
+    for w in token.as_bytes().windows(2) {
+        if let (Some(a), Some(b)) = (class(w[0]), class(w[1])) {
+            pairs += 1;
+            changes += u32::from(a != b);
+        }
+    }
+    (f64::from(changes) >= MIN_CLASS_CHANGE * f64::from(pairs)).then_some("<id>")
+}
+
+/// Collapses the ids in a line.
+///
+/// A bare request id is the commonest thing in a dev server's log that is unique per line, so
+/// each one left in place is a new template, and those tables are kept for good.
+fn collapse_ids(s: &str) -> String {
+    let keyed = KEYED_ID.replace_all(s, |c: &regex::Captures<'_>| {
+        // A count, not an id: the numeric rule below already gives it a better name.
+        if c[2].bytes().any(|b| b.is_ascii_alphabetic()) {
+            format!("{}<id>", &c[1])
+        } else {
+            c[0].to_string()
+        }
+    });
+    LONG_TOKEN
+        .replace_all(&keyed, |c: &regex::Captures<'_>| {
+            rewrite_token(&c[0]).map_or_else(|| c[0].to_string(), str::to_string)
+        })
+        .into_owned()
+}
+
+/// The rules after ids. Separate because they read digits, which would eat into an id.
+static AFTER_ID_RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    let r = |p: &str| Regex::new(p).expect(p);
+    vec![
         // Durations and sizes.
         (r(r"\b\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s|m|h)\b"), "<dur>"),
         (r(r"\b\d+(?:\.\d+)?\s?(?:B|KB|MB|GB|KiB|MiB|GiB)\b"), "<size>"),
@@ -107,6 +184,10 @@ pub fn identifying_line(text: &str) -> &str {
 pub fn normalise(line: &str) -> String {
     let mut s = line.trim().to_string();
     for (re, repl) in RULES.iter() {
+        s = re.replace_all(&s, *repl).into_owned();
+    }
+    s = collapse_ids(&s);
+    for (re, repl) in AFTER_ID_RULES.iter() {
         s = re.replace_all(&s, *repl).into_owned();
     }
     // The level is carried separately, so leaving its tag here would make one message at
@@ -218,6 +299,126 @@ mod tests {
         let t = normalise("12:04:11.882 [error] ** (DBConnection.ConnectionError) tcp recv: closed (idle 3200ms)");
         assert!(t.contains("DBConnection.ConnectionError"), "{t}");
         assert!(t.contains("<dur>"), "{t}");
+    }
+
+    /// A reproducible stand-in for an id generator.
+    fn ids(alphabet: &[u8], len: usize, n: usize) -> Vec<String> {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        (0..n)
+            .map(|_| {
+                (0..len)
+                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize] as char)
+                    .collect()
+            })
+            .collect()
+    }
+
+    const HEX: &[u8] = b"0123456789abcdef";
+    const BASE62: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const BASE64URL: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    fn templates(render: impl Fn(&str) -> String, ids: &[String]) -> usize {
+        ids.iter()
+            .map(|id| normalise(&render(id)))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    #[test]
+    fn keyed_ids_collapse_whatever_their_alphabet() {
+        for key in ["req", "request_id", "requestId", "trace_id", "traceid", "span_id", "correlation_id"] {
+            for (alphabet, len) in [(HEX, 16), (HEX, 24), (BASE62, 20), (BASE64URL, 20), (BASE64URL, 12)] {
+                let n = templates(|id| format!("GET /users {key}={id} done"), &ids(alphabet, len, 500));
+                assert_eq!(n, 1, "{key} over {len} chars of {:?}", &alphabet[..4]);
+            }
+        }
+    }
+
+    #[test]
+    fn keyed_ids_read_as_ids() {
+        assert_eq!(normalise("failed request_id=igjoNf3kQ9xLm2Pz"), "failed request_id=<id>");
+        assert_eq!(normalise("failed req=7ca8d2f01b3e4a96"), "failed req=<id>");
+        assert_eq!(normalise("request-id: igjoNf3kQ9xLm2Pz failed"), "request-id: <id> failed");
+        assert_eq!(normalise("traceId='igjoNf3kQ9xLm2Pz' failed"), "traceId='<str>' failed");
+    }
+
+    #[test]
+    fn a_bare_header_style_id_collapses_too() {
+        let n = templates(|id| format!("x-request-id: {id} rejected"), &ids(BASE64URL, 22, 500));
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn bare_long_hex_collapses() {
+        for len in [16, 20, 24, 31] {
+            let n = templates(|id| format!("cache miss for {id} on read"), &ids(HEX, len, 500));
+            assert!(n <= 2, "{len} hex chars gave {n} templates");
+        }
+        assert_eq!(normalise("cache miss for 7ca8d2f01b3e4a96 on read"), "cache miss for <hash> on read");
+    }
+
+    #[test]
+    fn bare_mixed_case_tokens_collapse() {
+        for (alphabet, len) in [(BASE62, 22), (BASE62, 32), (BASE64URL, 22)] {
+            let total = 2000;
+            let n = templates(|id| format!("session {id} expired"), &ids(alphabet, len, total));
+            assert!(n < total / 10, "{n} of {total} ids stayed distinct");
+        }
+    }
+
+    #[test]
+    fn a_stream_of_unique_request_ids_is_one_signature_not_one_each() {
+        let mut seen = std::collections::HashSet::new();
+        for (req, trace) in ids(BASE64URL, 20, 5000).iter().zip(ids(HEX, 32, 5000)) {
+            let line = format!("[error] request_id={req} trace_id={trace} upstream failed");
+            seen.insert(sig(&line));
+        }
+        assert_eq!(seen.len(), 1);
+    }
+
+    #[test]
+    fn ordinary_words_and_identifiers_survive() {
+        for word in [
+            "handleOAuth2CallbackError",
+            "sha256WithRSAEncryption2048",
+            "ERR_HTTP2_STREAM_ERROR",
+            "supercalifragilisticexpialidocious",
+            "getUserProfileByEmailAddress",
+            "XMLHttpRequestEventTarget",
+            "AbstractSingletonProxyFactoryBean",
+            "x86_64-unknown-linux-gnu",
+            "my-really-long-service-name-v2",
+            "Base64EncoderInputStream",
+            "deadbeefdeadbeefdeadbeef",
+        ] {
+            let line = format!("failed in {word} while loading");
+            assert_eq!(normalise(&line), line, "{word} was collapsed");
+        }
+    }
+
+    #[test]
+    fn templates_that_had_no_ids_in_them_do_not_move() {
+        for (line, template) in [
+            ("12:04:11.882 [error] GET /users/4821 failed in 12ms", "GET <path> failed in <dur>"),
+            ("request 3f2b7c1e-4c9a-4f2e-8e1a-9c2b7d4e5f60 failed at 0x7fff1234", "request <uuid> failed at <addr>"),
+            ("req=42 failed", "req=<n> failed"),
+            ("request_id=3f2b7c1e-4c9a-4f2e-8e1a-9c2b7d4e5f60", "request_id=<uuid>"),
+            ("req: GET /users/4821", "req: GET <path>"),
+            ("req=/users/4821/edit failed", "req=<path> failed"),
+            ("loaded /app/Abc123Def456Ghi789Jkl/file.js", "loaded <path>"),
+            ("value 1234567890123456789 out of range", "value <n> out of range"),
+            ("Address already in use - bind(2) for 127.0.0.1:4000", "Address already in use - bind(<n>) for <ip>"),
+            ("** (Ecto.NoResultsError) expected at least one result", "** (Ecto.NoResultsError) expected at least one result"),
+        ] {
+            assert_eq!(normalise(line), template, "{line}");
+        }
     }
 
     #[test]

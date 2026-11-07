@@ -60,6 +60,53 @@ pub fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
                         }
                     },
 
+                    // Nothing on the shim reads replies on an ingest stream, so a reply here
+                    // would sit in the socket until enough resizes filled it and stalled
+                    // the whole run.
+                    Request::Resize { .. } if ingest.is_some() => {}
+
+                    Request::ResumeRun {
+                        stamp,
+                        started_at,
+                        run_id,
+                    } => {
+                        // A failure here is the daemon's, not the run's, so the shim is told
+                        // to try again. Starting a new run instead would split it in two.
+                        let opened = if daemon.shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                            Err(Error::other("the daemon is shutting down"))
+                        } else {
+                            match daemon.resume_run(&stamp, started_at, run_id) {
+                                Ok(Some(pair)) => Ok(pair),
+                                Ok(None) if daemon.is_live(&stamp, run_id) => {
+                                    Err(Error::other("the run is still streaming"))
+                                }
+                                Ok(None) => daemon.start_run(&stamp),
+                                Err(e) => Err(e),
+                            }
+                        };
+                        match opened {
+                            Ok((handle, live)) => {
+                                let run_id = live.run_id;
+                                ingest = Some((handle, live));
+                                if reply(&mut writer, Response::ok(run_id)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ =
+                                    reply(&mut writer, Response::err("resume_run", e.to_string()));
+                            }
+                        }
+                    }
+
+                    // No reply, for the same reason as a resize. The marker is in order in
+                    // the stream, so the segment lands exactly where its bytes belong.
+                    Request::IngestSegment { path } => {
+                        if let Some((handle, live)) = &ingest {
+                            crate::spool::replay_segment(&daemon, handle, live, Path::new(&path));
+                        }
+                    }
+
                     Request::FinishRun {
                         exit_code, signal, ..
                     } => {
@@ -181,9 +228,11 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
     Ok(match request {
         Request::Ping => to_value("pong")?,
 
+        Request::Hello { .. } => serde_json::json!({ "protocol": PROTOCOL }),
+
         Request::Status => {
             let projects = daemon.index.list()?;
-            let total: i64 = daemon.open_projects().iter().map(|p| p.db.size_bytes()).sum();
+            let total = daemon.total_db_bytes();
             to_value(DaemonStatus {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 pid: std::process::id(),
@@ -192,7 +241,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
                 projects: projects.len(),
                 active_runs: daemon.active_run_count(),
                 total_db_bytes: total,
-                spool_pending: count_spool(),
+                spool_pending: count_spool("spool"),
+                spool_quarantined: count_spool("bad"),
             })?
         }
 
@@ -478,6 +528,8 @@ fn handle(daemon: &Arc<Daemon>, request: Request) -> Result<serde_json::Value> {
         Request::StartRun { .. }
         | Request::FinishRun { .. }
         | Request::Resize { .. }
+        | Request::ResumeRun { .. }
+        | Request::IngestSegment { .. }
         | Request::RawStream { .. }
         | Request::Subscribe { .. }
         | Request::Shutdown => to_value(())?,
@@ -566,9 +618,13 @@ fn stream_events(
     daemon.unsubscribe(id);
 }
 
-fn count_spool() -> usize {
+fn count_spool(extension: &str) -> usize {
     std::fs::read_dir(logbear_core::paths::spool_dir())
-        .map(|d| d.filter_map(|e| e.ok()).count())
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|x| x == extension))
+                .count()
+        })
         .unwrap_or(0)
 }
 

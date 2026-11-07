@@ -11,8 +11,10 @@
 //!   entire input surface.
 
 pub mod client;
+pub mod denylist;
 pub mod diff;
 pub mod error;
+pub mod fence;
 pub mod model;
 pub mod notify;
 pub mod parse;

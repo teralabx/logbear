@@ -12,9 +12,12 @@ mod install;
 use logbear_core::client::Client;
 use logbear_core::model::*;
 use logbear_core::proto::*;
+use logbear_core::store::index::IndexDb;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
 /// The channel the frontend listens on. One event name carrying a tagged union, rather
@@ -28,6 +31,8 @@ struct Backend {
     /// slow read (a big replay, a screen of entries) stalled every other command, the
     /// health poll included, and the whole window read as hung.
     idle: Mutex<Vec<Client>>,
+    /// Whether the event bridge is running, so it can only ever start once.
+    bridged: AtomicBool,
 }
 
 /// Connections kept open once a command finishes. Bursts beyond this connect and close.
@@ -37,6 +42,15 @@ impl Backend {
     fn new() -> Backend {
         Backend {
             idle: Mutex::new(Vec::new()),
+            bridged: AtomicBool::new(false),
+        }
+    }
+
+    /// Start forwarding daemon events. Connecting starts the daemon, so this waits until
+    /// the first-run screen has been answered.
+    fn start_events(&self, app: AppHandle) {
+        if !self.bridged.swap(true, Ordering::SeqCst) {
+            spawn_event_bridge(app);
         }
     }
 
@@ -263,23 +277,42 @@ fn update_settings(backend: State<'_, Backend>, settings: Settings) -> Result<()
     })
 }
 
+/// `retention_bytes` is the whole new value, not a patch: `null` means "inherit the default
+/// cap". The frontend always sends it, because `null` is the only way to say that.
 #[tauri::command(async)]
 fn update_project(
     backend: State<'_, Backend>,
     project: ProjectRef,
-    retention_bytes: Option<Option<i64>>,
+    retention_bytes: Option<i64>,
     push_enabled: Option<bool>,
     notify_enabled: Option<bool>,
 ) -> Result<(), String> {
+    if retention_bytes.is_none() {
+        let id = backend.with(|c| c.project_status(project.clone()))?.project.id;
+        let index = IndexDb::open_default().map_err(|e| e.to_string())?;
+        clear_retention_cap(&index, id).map_err(|e| e.to_string())?;
+    }
+    // Sent even after the clear above: this is what makes the daemon re-read the project
+    // row and tell every client it changed.
     backend.with(|c| {
         c.call::<serde_json::Value>(&Request::UpdateProject {
             project: project.clone(),
-            retention_bytes,
+            retention_bytes: retention_bytes.map(Some),
             push_enabled,
             notify_enabled,
         })
         .map(|_| ())
     })
+}
+
+/// Drop a project's own cap so it follows the default again.
+///
+/// This writes the index directly because the protocol cannot express it:
+/// `Request::UpdateProject` holds an `Option<Option<i64>>`, and JSON turns `Some(None)` into
+/// a `null` that the daemon reads back as `None`, "leave it alone". Once `logbear-core`
+/// keeps those two apart, this should become an ordinary request.
+fn clear_retention_cap(index: &IndexDb, id: ProjectId) -> logbear_core::Result<()> {
+    index.update_config(id, Some(None), None, None)
 }
 
 #[tauri::command(async)]
@@ -386,12 +419,39 @@ fn uninstall_step(step: String) -> Result<install::StepState, String> {
     install::uninstall(parsed)
 }
 
+// ---- first run ----
+
+/// Written when the first-run screen has been answered, whichever way. The same file
+/// `logbear-setup` used, so anyone who has already been through this is not asked again.
+fn setup_marker() -> PathBuf {
+    logbear_core::paths::home().join(".setup-done")
+}
+
+/// Nothing is installed at launch: PATH, shell profiles, the launch agent and agent
+/// configs change only through `install_step`, after the person has chosen them.
+#[tauri::command(async)]
+fn first_run_pending() -> bool {
+    !setup_marker().exists()
+}
+
+#[tauri::command(async)]
+fn finish_first_run(app: AppHandle, backend: State<'_, Backend>) -> Result<(), String> {
+    logbear_core::paths::ensure_home().map_err(|e| e.to_string())?;
+    std::fs::write(setup_marker(), logbear_core::now_micros().to_string())
+        .map_err(|e| e.to_string())?;
+    backend.start_events(app);
+    Ok(())
+}
+
+/// Shows a file or folder selected in Finder. It only ever reveals: nothing the webview
+/// passes here can be launched or opened.
 #[tauri::command]
-fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_path(path, None::<&str>)
-        .map_err(|e| e.to_string())
+fn reveal_path(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(format!("{} is not an absolute path", path.display()));
+    }
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -444,29 +504,21 @@ fn post_notification(app: &AppHandle, notice: &Notice) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Backend::new())
         .setup(|app| {
-            // Off the main thread: linking a binary and registering a launch agent both
-            // shell out, and a window that will not paint until that finishes reads as a
-            // hang on exactly the launch where first impressions are formed.
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                if let Some(done) = install::first_run_setup() {
-                    for (what, outcome) in &done {
-                        match outcome {
-                            Ok(state) => eprintln!("logbear: {what} — {}", state.detail),
-                            Err(e) => eprintln!("logbear: {what} failed — {e}"),
-                        }
-                    }
-                    let _ = handle.emit("logbear://first-run", install::status());
-                } else if install::refresh_service() {
+            if first_run_pending() {
+                // Everything waits for `finish_first_run`, the daemon included.
+                return Ok(());
+            }
+            // Off the main thread: registering a launch agent shells out, and a window
+            // that will not paint until that finishes reads as a hang.
+            std::thread::spawn(|| {
+                if install::refresh_service() {
                     eprintln!("logbear: background service definition updated for this build");
                 }
             });
-            spawn_event_bridge(app.handle().clone());
+            app.state::<Backend>().start_events(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -492,8 +544,29 @@ pub fn run() {
             install_status,
             install_step,
             uninstall_step,
+            first_run_pending,
+            finish_first_run,
             reveal_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running logbear");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearing_a_cap_returns_the_project_to_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let index = IndexDb::open(&tmp.path().join("index.db")).unwrap();
+        let root = tmp.path().join("p");
+        std::fs::create_dir_all(&root).unwrap();
+        let project = index.register(&root, "p", &tmp.path().join("p.db")).unwrap();
+
+        index.update_config(project.id, Some(Some(2048)), None, None).unwrap();
+        clear_retention_cap(&index, project.id).unwrap();
+
+        assert_eq!(index.get(project.id).unwrap().unwrap().retention_bytes, None);
+    }
 }

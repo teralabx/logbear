@@ -43,5 +43,5 @@
 		></div>
 		<div class="absolute top-0 bottom-0 left-[80%] w-px bg-base-100 opacity-70"></div>
 	</div>
-	{#if note}<p class="meta mt-1.5 text-[11px]">{note}</p>{/if}
+	{#if note}<p class="meta mt-1.5 text-[12px]">{note}</p>{/if}
 </div>

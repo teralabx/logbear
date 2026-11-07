@@ -257,7 +257,10 @@ fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
+            // Through bytes rather than a `&str` slice, which panics if the two bytes after
+            // the `%` end inside a multibyte character.
+            let escape = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(b) = escape.and_then(|s| u8::from_str_radix(s, 16).ok()) {
                 out.push(b);
                 i += 3;
                 continue;
@@ -297,6 +300,32 @@ mod tests {
             Some(PathBuf::from("/Users/x/my proj"))
         );
         assert_eq!(file_uri_to_path("https://example.com"), None);
+    }
+
+    /// A root is client-supplied text. Slicing it as a `str` after `%` lands inside a
+    /// multibyte character whenever one follows.
+    #[test]
+    fn a_percent_before_a_multibyte_character_does_not_panic() {
+        assert_eq!(
+            file_uri_to_path("file:///Users/x/100%é"),
+            Some(PathBuf::from("/Users/x/100%é"))
+        );
+        assert_eq!(
+            file_uri_to_path("file:///Users/x/%aé"),
+            Some(PathBuf::from("/Users/x/%aé"))
+        );
+        assert_eq!(
+            file_uri_to_path("file:///%日本語/x"),
+            Some(PathBuf::from("/%日本語/x"))
+        );
+    }
+
+    #[test]
+    fn escapes_either_side_of_a_multibyte_character_still_decode() {
+        assert_eq!(
+            file_uri_to_path("file:///caf%C3%A9/é%20x"),
+            Some(PathBuf::from("/café/é x"))
+        );
     }
 
     #[test]

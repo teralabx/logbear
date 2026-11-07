@@ -34,7 +34,7 @@
 </script>
 
 <span
-	class="tnum inline-flex h-[18px] items-center rounded-[2px] border border-transparent px-1.5 text-[11px] leading-none whitespace-nowrap data-[state=fail]:bg-flare data-[state=fail]:font-semibold data-[state=fail]:text-flare-content data-[state=ok]:border-[color-mix(in_oklch,var(--color-success)_40%,transparent)] data-[state=ok]:text-success data-[state=running]:border-hair-strong data-[state=running]:text-base-content data-[state=signal]:bg-warning data-[state=signal]:font-semibold data-[state=signal]:text-warning-content"
+	class="tnum inline-flex h-[18px] items-center rounded-[2px] border border-transparent px-1.5 text-[12px] leading-none whitespace-nowrap data-[state=fail]:bg-flare data-[state=fail]:font-semibold data-[state=fail]:text-flare-content data-[state=ok]:border-[color-mix(in_oklch,var(--color-success)_40%,transparent)] data-[state=ok]:text-success data-[state=running]:border-hair-strong data-[state=running]:text-base-content data-[state=signal]:bg-warning data-[state=signal]:font-semibold data-[state=signal]:text-warning-content"
 	data-state={state}
 	class:is-running={state === 'running'}
 	title={state === 'running'

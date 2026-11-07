@@ -7,21 +7,60 @@
 //! A shim that gave up on the daemon partway through a run marks its spool with
 //! `continues_run`, and the spool is appended to that run rather than starting a new one.
 
-use crate::state::Daemon;
-use logbear_core::proto::{Frame, SpoolHeader};
+use crate::state::{Daemon, LiveRun, ProjectHandle};
+use logbear_core::proto::{Frame, SpoolHeader, SPOOL_VERSION};
 use logbear_core::Result;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read};
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// How long a temporary spool may sit before it is treated as abandoned. A shim holds one
+/// for a moment while it writes the header.
+const STALE_TEMPORARY_SECS: u64 = 3600;
+
+fn read_header(reader: &mut impl BufRead) -> Result<SpoolHeader> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(serde_json::from_str(line.trim())?)
+}
+
+/// Feeds every frame to the run, returning the bytes replayed.
+///
+/// A file ends mid-frame when the writer lost power, was killed or ran out of disk. What was
+/// written before that is good, and it is the only copy, so a torn tail ends the replay
+/// rather than failing it.
+fn replay(
+    daemon: &Arc<Daemon>,
+    handle: &Arc<ProjectHandle>,
+    live: &Arc<LiveRun>,
+    reader: &mut impl Read,
+    path: &Path,
+) -> usize {
+    let mut replayed = 0usize;
+    loop {
+        match Frame::read_from(reader) {
+            Ok(Some(Frame::Data { captured_at, bytes })) => {
+                replayed += bytes.len();
+                // A single corrupt frame should not cost the whole run.
+                let _ = daemon.ingest(handle, live, &bytes, captured_at);
+            }
+            Ok(Some(Frame::Json(_))) => {}
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("logbeard: {} ends early ({e}); kept what was there", path.display());
+                break;
+            }
+        }
+    }
+    replayed
+}
 
 /// Ingests one spool file and deletes it, returning the number of bytes replayed.
 pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
     let file = std::fs::File::open(path).map_err(|e| logbear_core::Error::io(path, e))?;
     let mut reader = BufReader::new(file);
-
-    let mut header_line = String::new();
-    reader.read_line(&mut header_line)?;
-    let header: SpoolHeader = serde_json::from_str(header_line.trim())?;
+    let header = read_header(&mut reader)?;
 
     let continued = match header.extra.get("continues_run").and_then(|id| id.parse().ok()) {
         Some(run_id) => daemon.resume_run(&header.stamp, header.started_at, run_id)?,
@@ -42,15 +81,8 @@ pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
             live.run_id
         );
     }
-    let mut replayed = 0usize;
 
-    while let Some(frame) = Frame::read_from(&mut reader)? {
-        if let Frame::Data { captured_at, bytes } = frame {
-            replayed += bytes.len();
-            // A single corrupt frame should not cost the whole run.
-            let _ = daemon.ingest(&handle, &live, &bytes, captured_at);
-        }
-    }
+    let replayed = replay(daemon, &handle, &live, &mut reader, path);
 
     daemon.finish_run(
         &handle,
@@ -64,29 +96,128 @@ pub fn ingest(daemon: &Arc<Daemon>, path: &Path) -> Result<usize> {
     Ok(replayed)
 }
 
-/// Drains every spool file present at startup, oldest first.
-pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
-    let dir = logbear_core::paths::spool_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return 0;
+/// Replays a segment into a run that is live on its own connection, then deletes it.
+///
+/// The path comes from the wire, so anything outside the spool directory is refused. A
+/// segment that is already gone was dropped by the shim to stay within its disk budget.
+pub fn replay_segment(
+    daemon: &Arc<Daemon>,
+    handle: &Arc<ProjectHandle>,
+    live: &Arc<LiveRun>,
+    path: &Path,
+) {
+    if path.parent() != Some(logbear_core::paths::spool_dir().as_path()) {
+        eprintln!("logbeard: refused a segment outside the spool: {}", path.display());
+        return;
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return;
     };
-    let mut files: Vec<_> = entries
+    let mut reader = BufReader::new(file);
+    match read_header(&mut reader) {
+        Ok(_) => {
+            replay(daemon, handle, live, &mut reader, path);
+            let _ = std::fs::remove_file(path);
+        }
+        Err(e) => quarantine(path, &e),
+    }
+}
+
+fn quarantine(path: &Path, why: &logbear_core::Error) {
+    // Moved aside rather than retried forever or deleted: it is the only copy of that output.
+    eprintln!("logbeard: could not ingest {}: {why}", path.display());
+    let _ = std::fs::rename(path, path.with_extension("spool.bad"));
+}
+
+/// What a sweep should do with a file, decided without touching its contents.
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Ingest,
+    /// Not ours to touch yet: a live shim is writing it, the run is still streaming, or it
+    /// came from a newer version.
+    Leave,
+}
+
+fn plan_for(daemon: &Arc<Daemon>, path: &Path) -> Plan {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Plan::Leave;
+    };
+    let mut reader = BufReader::new(file);
+    let Ok(header) = read_header(&mut reader) else {
+        // Unreadable: the sweep quarantines it through the normal path.
+        return Plan::Ingest;
+    };
+    if header.version > SPOOL_VERSION {
+        return Plan::Leave;
+    }
+    // Its marker may still be in that connection's socket. Replaying here could put the
+    // bytes ahead of what the socket holds.
+    let live = header
+        .extra
+        .get("continues_run")
+        .and_then(|id| id.parse().ok())
+        .is_some_and(|id| daemon.is_live(&header.stamp, id));
+    if live {
+        Plan::Leave
+    } else {
+        Plan::Ingest
+    }
+}
+
+/// Holds the file's lock for as long as it lives; `None` while a shim holds it.
+struct Claim {
+    _file: std::fs::File,
+}
+
+impl Claim {
+    fn take(path: &Path) -> Option<Claim> {
+        let file = std::fs::File::open(path).ok()?;
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        locked.then_some(Claim { _file: file })
+    }
+}
+
+fn spool_files(extension: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(logbear_core::paths::spool_dir()) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map(|x| x == "spool").unwrap_or(false))
+        .filter(|p| p.extension().is_some_and(|x| x == extension))
         .collect();
     files.sort();
+    files
+}
 
+fn remove_stale_temporaries() {
+    for path in spool_files("tmp") {
+        let old = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > STALE_TEMPORARY_SECS);
+        if old {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Ingests every finished spool file, oldest first. The daemon runs this on a timer, so a
+/// run that could not reach it appears on its own rather than waiting for the next command.
+pub fn drain_all(daemon: &Arc<Daemon>) -> usize {
+    remove_stale_temporaries();
     let mut done = 0;
-    for path in files {
+    for path in spool_files("spool") {
+        let Some(_claim) = Claim::take(&path) else {
+            continue;
+        };
+        if plan_for(daemon, &path) == Plan::Leave {
+            continue;
+        }
         match ingest(daemon, &path) {
             Ok(_) => done += 1,
-            Err(e) => {
-                // A spool that will not parse is moved aside rather than retried forever
-                // or deleted: it is the only copy of that output.
-                eprintln!("logbeard: could not ingest {}: {e}", path.display());
-                let _ = std::fs::rename(&path, path.with_extension("spool.bad"));
-            }
+            Err(e) => quarantine(&path, &e),
         }
     }
     done
@@ -97,6 +228,7 @@ mod tests {
     use super::*;
     use logbear_core::model::{RunId, RunStamp};
     use std::io::Write;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn a_spooled_run_becomes_a_real_run() {
@@ -296,6 +428,154 @@ mod tests {
         let spooled = runs.iter().find(|r| r.id != reused.run_id).unwrap();
         assert_eq!(spooled.exit_code, Some(3));
         assert_eq!(spooled.command[0], "mix");
+    }
+
+    fn work_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        let work = tmp.path().join("proj");
+        std::fs::create_dir_all(&work).unwrap();
+        work
+    }
+
+    #[test]
+    fn a_torn_tail_keeps_the_output_and_the_run() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let work = work_dir(&tmp);
+        let path = logbear_core::paths::spool_dir().join("torn.spool");
+        write_spool(&path, &work, None, "Error: before the tear\n");
+
+        // A frame header promising far more than the file holds.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[2, 0, 16, 0, 0, 1, 2, 3]).unwrap();
+        drop(f);
+
+        assert_eq!(drain_all(&daemon), 1);
+        assert!(!path.exists());
+        assert!(!path.with_extension("spool.bad").exists(), "good output was quarantined");
+        let handle = daemon
+            .resolve(&logbear_core::proto::ProjectRef::Path(work.to_string_lossy().into_owned()))
+            .unwrap();
+        let runs = logbear_core::store::read::list_runs(&handle.db, 10, 0).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].exit_code, Some(3));
+        assert_eq!(runs[0].counters.n_error, 1);
+    }
+
+    #[test]
+    fn a_spool_held_by_a_live_shim_is_left_alone() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let work = work_dir(&tmp);
+        let path = logbear_core::paths::spool_dir().join("live.spool");
+        write_spool(&path, &work, None, "still being written\n");
+
+        let held = std::fs::File::open(&path).unwrap();
+        let rc = unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) };
+        assert_eq!(rc, 0);
+        assert_eq!(drain_all(&daemon), 0);
+        assert!(path.exists(), "a live spool was taken");
+
+        drop(held);
+        assert_eq!(drain_all(&daemon), 1, "the sweep never came back for it");
+    }
+
+    #[test]
+    fn a_spool_for_a_run_still_streaming_waits_for_that_run() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let work = work_dir(&tmp);
+        let stamp = RunStamp {
+            command: vec!["mix".into()],
+            cwd: work.to_string_lossy().into_owned(),
+            project_name: "proj".into(),
+            ..Default::default()
+        };
+        let (handle, live) = daemon.start_run(&stamp).unwrap();
+        let path = logbear_core::paths::spool_dir().join("s.spool");
+        write_spool(&path, &work, Some(live.run_id), "tail\n");
+
+        assert_eq!(drain_all(&daemon), 0);
+        assert!(path.exists());
+
+        daemon.finish_run(&handle, &live, None, None).unwrap();
+        assert_eq!(drain_all(&daemon), 1);
+    }
+
+    #[test]
+    fn a_spool_from_a_newer_version_is_left_for_that_version() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let path = logbear_core::paths::spool_dir().join("new.spool");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let header = serde_json::json!({
+            "version": SPOOL_VERSION + 1, "stamp": RunStamp::default(), "started_at": 0,
+            "exit_code": null, "signal": null, "extra": {},
+        });
+        std::fs::write(&path, format!("{header}\n")).unwrap();
+
+        assert_eq!(drain_all(&daemon), 0);
+        assert!(path.exists());
+        assert!(!path.with_extension("spool.bad").exists());
+    }
+
+    #[test]
+    fn a_segment_replays_into_the_live_run_in_order_and_is_deleted() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let work = work_dir(&tmp);
+        let stamp = RunStamp {
+            command: vec!["mix".into()],
+            cwd: work.to_string_lossy().into_owned(),
+            project_name: "proj".into(),
+            ..Default::default()
+        };
+        let (handle, live) = daemon.start_run(&stamp).unwrap();
+        let now = logbear_core::now_micros();
+        daemon.ingest(&handle, &live, b"one\n", now).unwrap();
+
+        let path = logbear_core::paths::spool_dir().join("r-0001.spool");
+        write_spool(&path, &work, Some(live.run_id), "two\n");
+        replay_segment(&daemon, &handle, &live, &path);
+        assert!(!path.exists());
+
+        daemon.ingest(&handle, &live, b"three\n", now).unwrap();
+        daemon.finish_run(&handle, &live, Some(0), None).unwrap();
+
+        let raw = handle
+            .db
+            .with(|c| logbear_core::store::raw_range(c, live.run_id, 0, 100))
+            .unwrap();
+        assert_eq!(String::from_utf8(raw).unwrap(), "one\r\ntwo\r\nthree\r\n");
+    }
+
+    #[test]
+    fn a_segment_path_from_outside_the_spool_is_refused() {
+        let _guard = crate::state::tests::HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LOGBEAR_HOME", tmp.path());
+        let daemon = Daemon::open().unwrap();
+        let work = work_dir(&tmp);
+        let elsewhere = tmp.path().join("elsewhere.spool");
+        write_spool(&elsewhere, &work, None, "not yours\n");
+        let stamp = RunStamp {
+            command: vec!["mix".into()],
+            cwd: work.to_string_lossy().into_owned(),
+            project_name: "proj".into(),
+            ..Default::default()
+        };
+        let (handle, live) = daemon.start_run(&stamp).unwrap();
+        replay_segment(&daemon, &handle, &live, &elsewhere);
+        assert!(elsewhere.exists(), "a client got the daemon to delete a file of its choosing");
     }
 
     #[test]

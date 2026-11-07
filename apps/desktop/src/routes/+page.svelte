@@ -64,7 +64,7 @@
 			body="logbear records a project the first time you run something through it — start your dev command with logbear and this list fills itself in."
 			command="logbear npm run dev"
 		>
-			<p class="meta m-0 text-[11.5px] leading-[1.6]">
+			<p class="meta m-0 text-[12px] leading-[1.6]">
 				Once it is capturing, install the PATH shims from Settings → Install and you can drop the
 				prefix entirely.
 			</p>
@@ -86,18 +86,18 @@
 					<header class="pointer-events-none relative z-[1] flex items-start justify-between gap-3">
 						<div class="min-w-0">
 							<h3 class="m-0 text-[14px] font-semibold">{p.name}</h3>
-							<span class="meta block truncate text-[11px]" title={p.root}>{tildePath(p.root)}</span>
+							<span class="meta block truncate text-[12px]" title={p.root}>{tildePath(p.root)}</span>
 						</div>
 						{#if running.length}
 							<span
-								class="inline-flex flex-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-success uppercase"
+								class="inline-flex flex-none items-center gap-1.5 text-[12px] tracking-[0.1em] text-success uppercase"
 							>
 								<span class="is-running size-[7px] rounded-full bg-success"></span>
 								running
 							</span>
 						{:else}
 							<span
-								class="inline-flex flex-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-meta uppercase"
+								class="inline-flex flex-none items-center gap-1.5 text-[12px] tracking-[0.1em] text-meta uppercase"
 								>idle</span
 							>
 						{/if}
@@ -112,7 +112,7 @@
 										>{fmtDuration(runElapsed(r, now))}</span
 									>
 								</div>
-								<div class="meta tnum mt-[3px] truncate text-[11px]">
+								<div class="meta tnum mt-[3px] truncate text-[12px]">
 									{(app.counters[r.id] ?? r.counters).n_entries} entries ·
 									{(app.counters[r.id] ?? r.counters).n_error} errors ·
 									{r.git_branch ?? 'no branch'}@{shortSha(r.git_sha)}
@@ -125,7 +125,7 @@
 								<code class="meta min-w-0 truncate text-[12px]">{fmtCommand(last.command)}</code>
 								<ExitBadge run={last} showLabel={false} />
 							</div>
-							<div class="meta tnum mt-[3px] truncate text-[11px]">
+							<div class="meta tnum mt-[3px] truncate text-[12px]">
 								{fmtAgo(last.started_at, now)} · {fmtDuration(runDuration(last))} ·
 								{last.git_branch ?? 'no branch'}@{shortSha(last.git_sha)}{last.git_dirty_hash
 									? ' +uncommitted'
@@ -152,25 +152,25 @@
 						</span>
 						<span class="flex flex-col gap-[3px]">
 							<span class="label-xs">stored</span>
-							<span class="tnum text-[11.5px]">{fmtBytes(s?.db_bytes ?? 0)}</span>
+							<span class="tnum text-[12px]">{fmtBytes(s?.db_bytes ?? 0)}</span>
 						</span>
 						<span class="flex flex-col gap-[3px]">
 							<span class="label-xs">last seen</span>
-							<span class="tnum text-[11.5px]" title={fmtStamp(p.last_seen_at)}
+							<span class="tnum text-[12px]" title={fmtStamp(p.last_seen_at)}
 								>{fmtAgo(p.last_seen_at, now)}</span
 							>
 						</span>
 						<nav class="pointer-events-auto ml-auto flex gap-2.5">
 							<a
-								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								class="border-b border-b-transparent text-[12px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
 								href="/project/{p.id}/runs">runs</a
 							>
 							<a
-								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								class="border-b border-b-transparent text-[12px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
 								href="/project/{p.id}/errors">errors</a
 							>
 							<a
-								class="border-b border-b-transparent text-[11px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
+								class="border-b border-b-transparent text-[12px] text-meta no-underline hover:border-b-hair-strong hover:text-base-content"
 								href="/project/{p.id}/diff">diff</a
 							>
 						</nav>

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "logbear",
+  "productName": "LogBear",
   "version": "0.1.0",
   "identifier": "sh.logbear.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "logbear",
+        "title": "LogBear",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
@@ -40,7 +40,7 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Local run history and agent memory",
-    "longDescription": "logbear wraps a development process, records everything it emits, and tells your coding agent the moment something breaks.",
+    "longDescription": "LogBear wraps a development process, records everything it emits, and tells your coding agent the moment something breaks.",
     "macOS": {
       "minimumSystemVersion": "11.0"
     },
