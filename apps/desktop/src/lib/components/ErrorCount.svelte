@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { pluralise } from '$lib/format';
+	import { pluralise } from '#lib/format';
 
 	/**
 	 * "7 errors (1 new)".

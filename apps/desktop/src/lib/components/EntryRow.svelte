@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { fmtClock } from '$lib/format';
-	import { INLINE } from '$lib/icons';
+	import { fmtClock } from '#lib/format';
+	import { INLINE } from '#lib/icons';
 	import { ChevronRight } from '@lucide/svelte';
-	import type { EntryView } from '$lib/api/types';
+	import type { EntryView } from '#lib/api/types';
 
 	/**
 	 * One structured entry.

@@ -2,13 +2,13 @@
 // first-run screen. The copy has to match `crates/setup`, `crates/hook` and
 // `crates/mcp`: it is what people consent to.
 
-import { apiError, installStatus } from '$lib/api';
+import { apiError, installStatus } from '#lib/api';
 import {
 	INSTALL_STEPS,
 	type InstallStatus,
 	type InstallStep,
 	type StepState
-} from '$lib/api/types';
+} from '#lib/api/types';
 
 export const STEP_COPY: Record<InstallStep, { title: string; what: string }> = {
 	path: {

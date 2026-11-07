@@ -3,7 +3,7 @@
 	import ErrorNote from './ErrorNote.svelte';
 	import Mark from './Mark.svelte';
 	import Toggle from './Toggle.svelte';
-	import { apiError, finishFirstRun, installStep } from '$lib/api';
+	import { apiError, finishFirstRun, installStep } from '#lib/api';
 	import {
 		STEP_COPY,
 		chosenSteps,
@@ -13,8 +13,8 @@
 		readInstall,
 		undetectedAgents,
 		type InstallRead
-	} from '$lib/install';
-	import type { InstallStep } from '$lib/api/types';
+	} from '#lib/install';
+	import type { InstallStep } from '#lib/api/types';
 
 	/**
 	 * Asked once, before the app changes anything. Every step starts off, and nothing runs

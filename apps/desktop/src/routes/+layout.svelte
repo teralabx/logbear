@@ -1,13 +1,13 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount, type Snippet } from 'svelte';
-	import Rail from '$lib/components/Rail.svelte';
-	import NoticeStack from '$lib/components/NoticeStack.svelte';
-	import FirstRun from '$lib/components/FirstRun.svelte';
-	import { firstRunPending } from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { rail } from '$lib/stores/rail.svelte';
+	import Rail from '#lib/components/Rail.svelte';
+	import NoticeStack from '#lib/components/NoticeStack.svelte';
+	import FirstRun from '#lib/components/FirstRun.svelte';
+	import { firstRunPending } from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
+	import { theme } from '#lib/stores/theme.svelte';
+	import { rail } from '#lib/stores/rail.svelte';
 
 	let { children }: { children: Snippet } = $props();
 

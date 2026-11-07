@@ -1,7 +1,7 @@
 // The wording of every confirmation for something that cannot be undone.
 
-import { fmtCommand, pluralise } from '$lib/format';
-import type { Run } from '$lib/api/types';
+import { fmtCommand, pluralise } from '#lib/format';
+import type { Run } from '#lib/api/types';
 
 export interface ConfirmCopy {
 	title: string;

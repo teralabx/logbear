@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import Toggle from '$lib/components/Toggle.svelte';
-	import Meter from '$lib/components/Meter.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import Toggle from '#lib/components/Toggle.svelte';
+	import Meter from '#lib/components/Meter.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import {
 		apiError,
 		getSettings,
@@ -16,17 +16,17 @@
 		uninstallStep,
 		updateProject,
 		updateSettings
-	} from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
-	import { theme, type ThemeName } from '$lib/stores/theme.svelte';
-	import { confirmSquashProject, type ConfirmCopy } from '$lib/confirm';
+	} from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
+	import { theme, type ThemeName } from '#lib/stores/theme.svelte';
+	import { confirmSquashProject, type ConfirmCopy } from '#lib/confirm';
 	import {
 		STEP_COPY,
 		installInOrder,
 		installable,
 		readInstall,
 		type InstallRead
-	} from '$lib/install';
+	} from '#lib/install';
 	import {
 		fmtAgo,
 		fmtBytes,
@@ -34,14 +34,14 @@
 		minutesToHhmm,
 		pluralise,
 		tildePath
-	} from '$lib/format';
+	} from '#lib/format';
 	import {
 		INSTALL_STEPS,
 		type InstallStep,
 		type RetentionState,
 		type Settings,
 		type StepState
-	} from '$lib/api/types';
+	} from '#lib/api/types';
 
 	let settings = $state<Settings | null>(null);
 	let saved = $state<Settings | null>(null);

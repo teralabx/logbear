@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ExitBadge from '$lib/components/ExitBadge.svelte';
-	import LevelChip from '$lib/components/LevelChip.svelte';
-	import { apiError, projectRef, runDiff } from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ExitBadge from '#lib/components/ExitBadge.svelte';
+	import LevelChip from '#lib/components/LevelChip.svelte';
+	import { apiError, projectRef, runDiff } from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
 	import {
 		fmtCommand,
 		fmtDuration,
@@ -16,9 +16,9 @@
 		runDuration,
 		shortHash,
 		shortSha
-	} from '$lib/format';
-	import type { RunDiff, RunRef } from '$lib/api/types';
-	import { INLINE } from '$lib/icons';
+	} from '#lib/format';
+	import type { RunDiff, RunRef } from '#lib/api/types';
+	import { INLINE } from '#lib/icons';
 	import { ArrowRight } from '@lucide/svelte';
 
 	/**
@@ -148,14 +148,14 @@
 	});
 
 	function setBaseline(kind: 'last_good' | 'last_bad') {
-		const u = new URL(page.url);
+		const u = new URL(page.url.href);
 		u.searchParams.delete('a');
 		u.searchParams.set('base', kind);
-		void goto(u.pathname + u.search, { replaceState: true, noScroll: true });
+		void goto(u.pathname + u.search, { replace: true, reset: false });
 	}
 
 	function clearPins() {
-		void goto(`/project/${projectId}/diff`, { replaceState: true, noScroll: true });
+		void goto(`/project/${projectId}/diff`, { replace: true, reset: false });
 	}
 </script>
 

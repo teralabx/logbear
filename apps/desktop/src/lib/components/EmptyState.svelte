@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { INLINE } from '$lib/icons';
+	import { INLINE } from '#lib/icons';
 	import { Check, Copy } from '@lucide/svelte';
 
 	/**

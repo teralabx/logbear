@@ -14,8 +14,8 @@ import {
 	projectStatus,
 	subscribeEvents,
 	usingMockData
-} from '$lib/api';
-import { pollWhileVisible } from '$lib/poll';
+} from '#lib/api';
+import { pollWhileVisible } from '#lib/poll';
 import type {
 	Counters,
 	DaemonStatus,
@@ -24,7 +24,7 @@ import type {
 	ProjectStatus,
 	Run,
 	LogbearEvent
-} from '$lib/api/types';
+} from '#lib/api/types';
 
 const POLL_MS = 10_000;
 

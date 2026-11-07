@@ -1,10 +1,10 @@
 <script lang="ts">
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ExitBadge from '$lib/components/ExitBadge.svelte';
-	import ErrorCount from '$lib/components/ErrorCount.svelte';
-	import { app } from '$lib/stores/app.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ExitBadge from '#lib/components/ExitBadge.svelte';
+	import ErrorCount from '#lib/components/ErrorCount.svelte';
+	import { app } from '#lib/stores/app.svelte';
 	import {
 		fmtAgo,
 		fmtBytes,
@@ -15,8 +15,8 @@
 		runElapsed,
 		shortSha,
 		tildePath
-	} from '$lib/format';
-	import type { ProjectStatus } from '$lib/api/types';
+	} from '#lib/format';
+	import type { ProjectStatus } from '#lib/api/types';
 
 	// Elapsed time on a running command has to tick on its own — no event
 	// arrives just because a second passed.

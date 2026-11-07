@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { page } from '$app/state';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import TerminalPane from '$lib/components/TerminalPane.svelte';
-	import EntryRow from '$lib/components/EntryRow.svelte';
-	import LevelChip from '$lib/components/LevelChip.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ExitBadge from '$lib/components/ExitBadge.svelte';
-	import { apiError, entries, listRuns, projectRef, rawStream } from '$lib/api';
-	import { entryToAnsi } from '$lib/ansi';
-	import { app } from '$lib/stores/app.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import TerminalPane from '#lib/components/TerminalPane.svelte';
+	import EntryRow from '#lib/components/EntryRow.svelte';
+	import LevelChip from '#lib/components/LevelChip.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ExitBadge from '#lib/components/ExitBadge.svelte';
+	import { apiError, entries, listRuns, projectRef, rawStream } from '#lib/api';
+	import { entryToAnsi } from '#lib/ansi';
+	import { app } from '#lib/stores/app.svelte';
 	import {
 		fmtCommand,
 		fmtDuration,
@@ -19,9 +19,9 @@
 		runElapsed,
 		shortSha,
 		tildePath
-	} from '$lib/format';
-	import { LEVELS, type EntryView, type Level, type Run } from '$lib/api/types';
-	import { INLINE } from '$lib/icons';
+	} from '#lib/format';
+	import { LEVELS, type EntryView, type Level, type Run } from '#lib/api/types';
+	import { INLINE } from '#lib/icons';
 	import { ArrowRight, ChevronDown, ChevronUp } from '@lucide/svelte';
 
 	/**

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { fmtStamp } from '$lib/format';
-	import type { FingerprintHistoryPoint, Level } from '$lib/api/types';
+	import { fmtStamp } from '#lib/format';
+	import type { FingerprintHistoryPoint, Level } from '#lib/api/types';
 
 	/**
 	 * Occurrences of one signature across the last ~30 runs, oldest to newest.

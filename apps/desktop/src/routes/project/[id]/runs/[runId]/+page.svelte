@@ -2,13 +2,13 @@
 	import { tick } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import TerminalPane from '$lib/components/TerminalPane.svelte';
-	import EntryRow from '$lib/components/EntryRow.svelte';
-	import LevelChip from '$lib/components/LevelChip.svelte';
-	import ExitBadge from '$lib/components/ExitBadge.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import TerminalPane from '#lib/components/TerminalPane.svelte';
+	import EntryRow from '#lib/components/EntryRow.svelte';
+	import LevelChip from '#lib/components/LevelChip.svelte';
+	import ExitBadge from '#lib/components/ExitBadge.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ConfirmDialog from '#lib/components/ConfirmDialog.svelte';
 	import {
 		apiError,
 		deleteRun,
@@ -19,8 +19,8 @@
 		reparse,
 		revealPath,
 		squash
-	} from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
+	} from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
 	import {
 		fmtBytes,
 		fmtCommand,
@@ -32,10 +32,10 @@
 		shortHash,
 		shortSha,
 		tildePath
-	} from '$lib/format';
-	import { confirmDeleteRun, confirmSquashRun, type ConfirmCopy } from '$lib/confirm';
-	import { LEVELS, type EntryView, type Level, type Run } from '$lib/api/types';
-	import { INLINE } from '$lib/icons';
+	} from '#lib/format';
+	import { confirmDeleteRun, confirmSquashRun, type ConfirmCopy } from '#lib/confirm';
+	import { LEVELS, type EntryView, type Level, type Run } from '#lib/api/types';
+	import { INLINE } from '#lib/icons';
 	import { ArrowLeft, ArrowRight } from '@lucide/svelte';
 
 	/** One stored run, replayed. Metadata first, then the output. */

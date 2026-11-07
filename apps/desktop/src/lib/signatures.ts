@@ -1,7 +1,7 @@
 // Reading and ordering the Errors screen's signatures.
 
-import { fingerprints } from '$lib/api';
-import type { Fingerprint, ProjectRef } from '$lib/api/types';
+import { fingerprints } from '#lib/api';
+import type { Fingerprint, ProjectRef } from '#lib/api/types';
 
 /** Signatures read per screen. The server applies the level filter before this limit. */
 export const SIGNATURE_LIMIT = 200;

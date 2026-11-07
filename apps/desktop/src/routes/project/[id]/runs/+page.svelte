@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import ExitBadge from '$lib/components/ExitBadge.svelte';
-	import ErrorCount from '$lib/components/ErrorCount.svelte';
-	import { apiError, listRuns, projectRef, runErrorCounts } from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import ExitBadge from '#lib/components/ExitBadge.svelte';
+	import ErrorCount from '#lib/components/ErrorCount.svelte';
+	import { apiError, listRuns, projectRef, runErrorCounts } from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
 	import {
 		fmtCommand,
 		fmtDuration,
@@ -16,9 +16,9 @@
 		runElapsed,
 		shortSha,
 		tildePath
-	} from '$lib/format';
-	import type { Run } from '$lib/api/types';
-	import { INLINE } from '$lib/icons';
+	} from '#lib/format';
+	import type { Run } from '#lib/api/types';
+	import { INLINE } from '#lib/icons';
 	import { ArrowRight } from '@lucide/svelte';
 
 	/**

@@ -1,8 +1,12 @@
 {
   "name": "logbear-desktop",
   "version": "0.1.0",
-  "description": "logbear — local run history and agent memory",
+  "description": "logbear \u2014 local run history and agent memory",
   "type": "module",
+  "imports": {
+    "#lib": "./src/lib",
+    "#lib/*": "./src/lib/*"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -22,9 +26,9 @@
     "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.11",
-    "@sveltejs/kit": "^2.70.4",
-    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/vite": "4.3.5",
     "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^26.6.6",
@@ -32,8 +36,8 @@
     "svelte": "^5.57.3",
     "svelte-check": "^4.7.8",
     "tailwindcss": "4.3.5",
-    "typescript": "~5.6.3",
-    "vite": "^6.4.5",
-    "vitest": "^4.1.12"
+    "typescript": "~6.0.3",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
   }
 }

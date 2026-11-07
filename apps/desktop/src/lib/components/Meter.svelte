@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fmtBytes } from '$lib/format';
+	import { fmtBytes } from '#lib/format';
 
 	/**
 	 * Bytes used against a cap.

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { app } from '$lib/stores/app.svelte';
-	import { fmtAgo } from '$lib/format';
-	import { INLINE } from '$lib/icons';
+	import { app } from '#lib/stores/app.svelte';
+	import { fmtAgo } from '#lib/format';
+	import { INLINE } from '#lib/icons';
 	import { X } from '@lucide/svelte';
 
 	/**
