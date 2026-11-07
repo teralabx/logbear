@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ConfirmCopy } from '$lib/confirm';
+	import type { ConfirmCopy } from '#lib/confirm';
 
 	/**
 	 * Asks before something that cannot be undone. Set `request` to open it. Focus lands on

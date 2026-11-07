@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import PageHeader from '$lib/components/PageHeader.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
-	import ErrorNote from '$lib/components/ErrorNote.svelte';
-	import LevelChip from '$lib/components/LevelChip.svelte';
-	import Sparkline from '$lib/components/Sparkline.svelte';
-	import { apiError, entries, fingerprintHistories, projectRef } from '$lib/api';
-	import { app } from '$lib/stores/app.svelte';
-	import { fmtAgo, fmtStamp, pluralise } from '$lib/format';
+	import PageHeader from '#lib/components/PageHeader.svelte';
+	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorNote from '#lib/components/ErrorNote.svelte';
+	import LevelChip from '#lib/components/LevelChip.svelte';
+	import Sparkline from '#lib/components/Sparkline.svelte';
+	import { apiError, entries, fingerprintHistories, projectRef } from '#lib/api';
+	import { app } from '#lib/stores/app.svelte';
+	import { fmtAgo, fmtStamp, pluralise } from '#lib/format';
 	import {
 		SIGNATURE_LIMIT,
 		readSignatures,
 		sortSignatures,
 		type SignatureSort
-	} from '$lib/signatures';
-	import type { EntryView, Fingerprint, FingerprintHistoryPoint } from '$lib/api/types';
+	} from '#lib/signatures';
+	import type { EntryView, Fingerprint, FingerprintHistoryPoint } from '#lib/api/types';
 
 	/**
 	 * Error signatures, not error lines.

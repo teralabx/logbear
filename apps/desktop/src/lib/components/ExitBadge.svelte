@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Run } from '$lib/api/types';
+	import type { Run } from '#lib/api/types';
 
 	/**
 	 * Exit status encoded twice — in colour and in form — so it survives a

@@ -2,11 +2,11 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import Mark from './Mark.svelte';
-	import { app } from '$lib/stores/app.svelte';
-	import { theme } from '$lib/stores/theme.svelte';
-	import { rail } from '$lib/stores/rail.svelte';
-	import { fmtBytes, tildePath } from '$lib/format';
-	import { ICON } from '$lib/icons';
+	import { app } from '#lib/stores/app.svelte';
+	import { theme } from '#lib/stores/theme.svelte';
+	import { rail } from '#lib/stores/rail.svelte';
+	import { fmtBytes, tildePath } from '#lib/format';
+	import { ICON } from '#lib/icons';
 	import {
 		Activity,
 		GitCompareArrows,
