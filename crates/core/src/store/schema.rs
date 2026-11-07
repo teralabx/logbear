@@ -430,6 +430,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 ///
 /// Dropped and recreated on every open, since they are pure projections and the function
 /// set they call can change between versions.
+/// [`crate::parse::classify::stopped_by_user`] as a query condition. Never NULL, so it can
+/// be negated. `r` is the `runs` table.
+pub const STOPPED_BY_USER_SQL: &str = "(COALESCE(r.signal, '') IN ('SIGINT', 'SIGTERM', 'SIGHUP') \
+     OR COALESCE(r.exit_code, 0) IN (129, 130, 143))";
+
 pub const PROJECT_VIEWS: &str = r#"
 DROP VIEW IF EXISTS v_entries;
 DROP VIEW IF EXISTS v_errors;
@@ -469,7 +474,10 @@ SELECT r.id, r.project_id, r.command, r.cwd, r.session_group, r.started_at, r.en
        COALESCE(c.n_warn, 0)    AS n_warn,
        COALESCE(c.n_info, 0)    AS n_info,
        (r.ended_at - r.started_at) AS duration_micros,
-       (r.exit_code = 0 AND COALESCE(c.n_error, 0) = 0) AS clean
+       ((r.exit_code = 0
+         OR COALESCE(r.signal, '') IN ('SIGINT', 'SIGTERM', 'SIGHUP')
+         OR COALESCE(r.exit_code, 0) IN (129, 130, 143))
+        AND COALESCE(c.n_error, 0) = 0) AS clean
   FROM runs r
   LEFT JOIN run_counters c ON c.run_id = r.id;
 "#;
@@ -533,7 +541,8 @@ calls `logbear_render()` to produce the text on demand, with ANSI resolved.
   v_novel     entries whose signature is being seen for the first time in this project,
               at ANY severity — this is where print-debugging output shows up
   v_runs      runs with per-level counters, duration, and a `clean` flag
-              (`clean` = exited 0 AND logged no errors — this is "it worked")
+              (`clean` = exited 0 or was stopped by the user, AND logged no errors —
+              this is "it worked")
 
 ## How severity works, so you can trust it
 

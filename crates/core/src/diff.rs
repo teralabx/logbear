@@ -3,7 +3,7 @@
 
 use crate::error::Result;
 use crate::model::*;
-use crate::proto::{DiffSignature, GitDiff, LockfileChange, RunDiff, RunRef};
+use crate::proto::{DiffSignature, GitCommit, GitDiff, LockfileChange, RunDiff, RunRef};
 use crate::store::{read, Db};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -62,11 +62,19 @@ pub fn diff(db: &Db, a: Option<RunRef>, b: Option<RunRef>) -> Result<RunDiff> {
     resolved_signatures.sort_by_key(rank);
     changed_counts.sort_by_key(|s| (s.level != Level::Error, -(s.count_b - s.count_a).abs()));
 
-    let (env_added, env_removed) = env_delta(a_run.as_ref(), b_run.as_ref());
+    // With nothing to compare against, everything in B would read as a change.
+    let (env_added, env_removed) = match &a_run {
+        Some(_) => env_delta(a_run.as_ref(), b_run.as_ref()),
+        None => Default::default(),
+    };
+    let lockfiles_changed = match &a_run {
+        Some(_) => lockfile_delta(a_run.as_ref(), b_run.as_ref()),
+        None => Vec::new(),
+    };
 
     Ok(RunDiff {
         git: git_diff(a_run.as_ref(), b_run.as_ref()),
-        lockfiles_changed: lockfile_delta(a_run.as_ref(), b_run.as_ref()),
+        lockfiles_changed,
         command_changed: match (&a_run, &b_run) {
             (Some(x), Some(y)) => x.command != y.command,
             _ => false,
@@ -103,8 +111,18 @@ fn git_diff(a: Option<&Run>, b: Option<&Run>) -> GitDiff {
         branch_b: b.and_then(|r| r.git_branch.clone()),
         dirty_changed: a.and_then(|r| r.git_dirty_hash.clone())
             != b.and_then(|r| r.git_dirty_hash.clone()),
+        dirty_a: a.is_some_and(|r| r.git_dirty_hash.is_some()),
+        dirty_b: b.is_some_and(|r| r.git_dirty_hash.is_some()),
         ..Default::default()
     };
+
+    if let Some(run) = b {
+        let root = Path::new(&run.cwd);
+        if root.exists() {
+            out.dirty_files = dirty_files_of(root, run);
+            out.commits_during_b = commits_during(root, run);
+        }
+    }
 
     // Walking history needs a working tree, which may have moved or been deleted since
     // the run was captured. Best effort, never an error.
@@ -118,6 +136,37 @@ fn git_diff(a: Option<&Run>, b: Option<&Run>) -> GitDiff {
         }
     }
     out
+}
+
+/// Names the files behind a run's dirty hash, while the tree is still in that state.
+///
+/// Only the hash is recorded, so that nothing about your code goes into the database. The
+/// names can still be read back when the working tree matches: same commit, same changes.
+fn dirty_files_of(root: &Path, run: &Run) -> Vec<String> {
+    let matches = run.git_dirty_hash.is_some()
+        && crate::project::head(root) == run.git_sha
+        && crate::project::dirty_hash(root) == run.git_dirty_hash;
+    if matches {
+        crate::project::dirty_files(root)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Commits made between a run starting and ending, or until now while it is still up.
+///
+/// Read from git when asked rather than recorded by the shim, so a command never waits for
+/// it. A run's end is compared in whole seconds, which is all a commit time has.
+fn commits_during(root: &Path, run: &Run) -> Vec<GitCommit> {
+    let Some(sha) = &run.git_sha else {
+        return Vec::new();
+    };
+    let end = run.ended_at.unwrap_or_else(crate::now_micros);
+    let second = 1_000_000;
+    crate::project::commits_between(root, sha, "HEAD")
+        .into_iter()
+        .filter(|c| c.at.is_some_and(|at| at >= run.started_at / second * second && at <= end))
+        .collect()
 }
 
 fn lockfile_delta(a: Option<&Run>, b: Option<&Run>) -> Vec<LockfileChange> {
@@ -192,6 +241,124 @@ mod tests {
         };
         s.lockfile_hashes.insert("mix.lock".into(), lock.into());
         s
+    }
+
+    #[test]
+    fn with_no_baseline_the_environment_is_not_reported_as_new() {
+        let h = h();
+        run_with(&h, b"Error: boom\n", 1, stamp("aaa", "l1"));
+        let d = diff(&h.db, None, None).unwrap();
+        assert!(d.a.is_none());
+        assert!(d.env_added.is_empty(), "{:?}", d.env_added);
+        assert!(d.lockfiles_changed.is_empty(), "{:?}", d.lockfiles_changed);
+        assert_eq!(d.new_signatures.len(), 1, "`diff && deploy` must still see the error");
+    }
+
+    /// A repository with one commit, and the sha of that commit.
+    fn repo(dir: &Path) -> String {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    fn commit(dir: &Path, file: &str, subject: &str) {
+        std::fs::write(dir.join(file), subject).unwrap();
+        for args in [
+            vec!["add", "."],
+            vec!["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-qm", subject],
+        ] {
+            let ok = std::process::Command::new("git").arg("-C").arg(dir).args(&args).status().unwrap();
+            assert!(ok.success());
+        }
+    }
+
+    fn at(dir: &Path, sha: &str, dirty: Option<String>) -> RunStamp {
+        RunStamp {
+            cwd: dir.to_string_lossy().into_owned(),
+            git_dirty_hash: dirty,
+            ..stamp(sha, "l1")
+        }
+    }
+
+    #[test]
+    fn uncommitted_edits_are_named_while_the_tree_still_matches_the_run() {
+        let h = h();
+        let work = tempfile::tempdir().unwrap();
+        let sha = repo(work.path());
+        run_with(&h, b"fine\n", 0, at(work.path(), &sha, None));
+
+        std::fs::write(work.path().join("a.txt"), "edited\n").unwrap();
+        std::fs::write(work.path().join("new.txt"), "added\n").unwrap();
+        let dirty = crate::project::dirty_hash(work.path());
+        run_with(&h, b"Error: boom\n", 1, at(work.path(), &sha, dirty));
+
+        let d = diff(&h.db, None, None).unwrap();
+        assert!(d.git.dirty_changed);
+        assert!(d.git.dirty_b && !d.git.dirty_a);
+        assert_eq!(d.git.dirty_files, vec!["a.txt", "new.txt"]);
+
+        // Edited again since: naming today's files would claim they were in that run.
+        std::fs::write(work.path().join("later.txt"), "later\n").unwrap();
+        let d = diff(&h.db, None, None).unwrap();
+        assert!(d.git.dirty_changed);
+        assert!(d.git.dirty_files.is_empty(), "{:?}", d.git.dirty_files);
+    }
+
+    #[test]
+    fn a_commit_made_while_a_server_was_up_is_reported() {
+        let h = h();
+        let work = tempfile::tempdir().unwrap();
+        let sha = repo(work.path());
+        run_with(&h, b"fine\n", 0, at(work.path(), &sha, None));
+
+        let mut w =
+            Writer::start(&h.db, &h.index, &at(work.path(), &sha, None), Arc::new(Redactor::disabled()))
+                .unwrap();
+        commit(work.path(), "b.txt", "hot reload change");
+        w.push(b"Error: boom\n", crate::now_micros()).unwrap();
+        w.finish(&h.index, Some(1), None).unwrap();
+
+        let d = diff(&h.db, None, None).unwrap();
+        let subjects: Vec<&str> =
+            d.git.commits_during_b.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["hot reload change"]);
+    }
+
+    #[test]
+    fn a_commit_made_after_the_run_ended_is_not_blamed_on_it() {
+        let h = h();
+        let work = tempfile::tempdir().unwrap();
+        let sha = repo(work.path());
+        let mut stamp = at(work.path(), &sha, None);
+        stamp.command = vec!["node".into()];
+        let id = run_with(&h, b"fine\n", 0, stamp);
+        // Backdated rather than slept: commit times only have whole seconds.
+        h.db.with(|c| {
+            c.execute(
+                "UPDATE runs SET started_at = started_at - 90000000, ended_at = ended_at - 60000000
+                  WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        commit(work.path(), "c.txt", "afterwards");
+
+        let d = diff(&h.db, Some(RunRef::Id(id)), Some(RunRef::Id(id))).unwrap();
+        assert!(d.git.commits_during_b.is_empty(), "{:?}", d.git.commits_during_b.len());
     }
 
     #[test]

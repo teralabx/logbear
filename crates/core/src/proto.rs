@@ -613,9 +613,22 @@ pub struct GitDiff {
     pub branch_a: Option<String>,
     pub branch_b: Option<String>,
     pub dirty_changed: bool,
+    /// Whether each run started with uncommitted changes.
+    #[serde(default)]
+    pub dirty_a: bool,
+    #[serde(default)]
+    pub dirty_b: bool,
+    /// Files with uncommitted changes in run B. Worked out when the diff is asked for, not
+    /// stored, so it is empty once the working tree no longer matches that run.
+    #[serde(default)]
+    pub dirty_files: Vec<String>,
     /// `git log --oneline a..b`, best effort; empty when the repo is gone or shallow.
     pub commits: Vec<GitCommit>,
     pub files_changed: Vec<String>,
+    /// Commits made while run B was up. Its stamp was taken at the start, so a server that
+    /// hot-reloads through a commit would otherwise show none.
+    #[serde(default)]
+    pub commits_during_b: Vec<GitCommit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -9,7 +9,7 @@ use logbear_core::client::Client;
 use logbear_core::model::*;
 use logbear_core::paths;
 use logbear_core::proto::{
-    EntryFilter, ProjectRef, QueryResult, Request, RunDiff, RunRef, SquashReport,
+    GitDiff,     EntryFilter, ProjectRef, QueryResult, Request, RunDiff, RunRef, SquashReport,
 };
 use std::io::Write;
 
@@ -326,6 +326,19 @@ fn diff(a: Option<String>, b: Option<String>, json: bool) -> Result<i32, String>
     Ok(if diff.new_signatures.is_empty() { 0 } else { 1 })
 }
 
+/// What changed between two runs on the same or different commits, in a line.
+fn dirty_summary(git: &GitDiff) -> &'static str {
+    match (git.dirty_a, git.dirty_b, git.dirty_files.is_empty()) {
+        (false, true, false) => "the newer run had uncommitted changes the older one didn't:",
+        (false, true, true) => {
+            "the newer run had uncommitted changes the older one didn't; the working tree has moved on, so they can't be listed"
+        }
+        (true, false, _) => "the older run had uncommitted changes that are gone from the newer one",
+        (_, _, false) => "the two runs had different uncommitted changes. The newer run's files:",
+        _ => "the two runs had different uncommitted changes; the working tree has moved on, so they can't be listed",
+    }
+}
+
 fn print_diff(diff: &RunDiff) {
     let describe = |run: &Option<Run>| match run {
         Some(r) => match &r.git_sha {
@@ -339,23 +352,39 @@ fn print_diff(diff: &RunDiff) {
         },
         None => "nothing".to_string(),
     };
-    println!(
-        "{} {} {} {}",
-        ui::ash("comparing"),
-        describe(&diff.a),
-        ui::ash("→"),
-        describe(&diff.b)
-    );
+    if diff.a.is_some() {
+        println!(
+            "{} {} {} {}",
+            ui::ash("comparing"),
+            describe(&diff.a),
+            ui::ash("→"),
+            describe(&diff.b)
+        );
+    } else {
+        println!("{}", ui::bold("no baseline to compare against yet"));
+        println!(
+            "{}",
+            ui::ash(
+                "A run becomes the baseline when it exits 0, or you stop it with Ctrl-C, and it \
+                 logged no errors."
+            )
+        );
+        println!(
+            "{}",
+            ui::ash("Get one working and stop it, or pick a run from `logbear runs`: logbear diff <run>")
+        );
+    }
 
-    if diff.new_signatures.is_empty()
+    let signatures_unchanged = diff.new_signatures.is_empty()
         && diff.resolved_signatures.is_empty()
-        && diff.changed_counts.is_empty()
-    {
+        && diff.changed_counts.is_empty();
+    if signatures_unchanged && diff.a.is_some() {
         println!("{}", ui::clear("no change in error signatures"));
     }
 
     if !diff.new_signatures.is_empty() {
-        println!("\n{}", ui::bold(&format!("new ({})", diff.new_signatures.len())));
+        let heading = if diff.a.is_some() { "new" } else { "errors in this run" };
+        println!("\n{}", ui::bold(&format!("{heading} ({})", diff.new_signatures.len())));
         for sig in &diff.new_signatures {
             println!(
                 "  {} {} {}",
@@ -404,6 +433,27 @@ fn print_diff(diff: &RunDiff) {
             ))
         );
         for commit in diff.git.commits.iter().take(10) {
+            println!(
+                "  {}  {}  {}",
+                ui::ash(&commit.sha.chars().take(7).collect::<String>()),
+                truncate(&commit.subject, 70),
+                ui::ash(&commit.author)
+            );
+        }
+    }
+    if diff.a.is_some() && diff.git.dirty_changed {
+        println!("\n{}", ui::bold("uncommitted changes"));
+        println!("  {}", ui::ash(dirty_summary(&diff.git)));
+        for file in diff.git.dirty_files.iter().take(20) {
+            println!("  {file}");
+        }
+        if diff.git.dirty_files.len() > 20 {
+            println!("  {}", ui::ash(&format!("and {} more", diff.git.dirty_files.len() - 20)));
+        }
+    }
+    if !diff.git.commits_during_b.is_empty() {
+        println!("\n{}", ui::bold("committed while this run was up"));
+        for commit in diff.git.commits_during_b.iter().take(10) {
             println!(
                 "  {}  {}  {}",
                 ui::ash(&commit.sha.chars().take(7).collect::<String>()),
@@ -665,6 +715,23 @@ fn squash(run_id: Option<RunId>, json: bool) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git_with(dirty_a: bool, dirty_b: bool, files: &[&str]) -> GitDiff {
+        GitDiff {
+            dirty_a,
+            dirty_b,
+            dirty_files: files.iter().map(|f| f.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn uncommitted_changes_are_described_from_what_each_run_had() {
+        assert!(dirty_summary(&git_with(false, true, &["a.rs"])).ends_with("didn't:"));
+        assert!(dirty_summary(&git_with(false, true, &[])).contains("can't be listed"));
+        assert!(dirty_summary(&git_with(true, false, &[])).contains("gone"));
+        assert!(dirty_summary(&git_with(true, true, &["a.rs"])).contains("different"));
+    }
 
     #[test]
     fn run_refs_accept_the_names_people_actually_use() {

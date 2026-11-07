@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A dev server you stop now counts as a working run. Ctrl-C, SIGTERM and exits 129, 130 and
+  143 are no longer failures if nothing logged an error, so such a run can be the baseline for
+  `logbear diff` and no longer sends a crash notification. Crashes still count as failures.
+- `logbear diff` shows uncommitted changes, naming the files while the working tree still
+  matches the run, and commits made while the run was up. `logbear_diff` returns the same.
+- With no baseline, `logbear diff` says so and suggests what to do, rather than listing every
+  environment variable as added.
+
 ## [0.1.0] — 2026-11-07
 
 ### Added
