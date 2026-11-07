@@ -151,6 +151,26 @@ pub fn env_keys() -> Vec<String> {
     keys
 }
 
+/// Files with uncommitted changes, tracked or new.
+pub fn dirty_files(cwd: &Path) -> Vec<String> {
+    let mut files: Vec<String> = [
+        git(cwd, &["diff", "--name-only", "--relative", "HEAD"]),
+        git(cwd, &["ls-files", "--others", "--exclude-standard"]),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(|out| out.lines().map(str::to_string).collect::<Vec<_>>())
+    .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// `HEAD` right now, for comparing against what a run recorded.
+pub fn head(cwd: &Path) -> Option<String> {
+    git(cwd, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+}
+
 /// `git log --oneline a..b`, structured.
 pub fn commits_between(root: &Path, a: &str, b: &str) -> Vec<crate::proto::GitCommit> {
     let range = format!("{a}..{b}");

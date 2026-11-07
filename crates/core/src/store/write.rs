@@ -888,6 +888,9 @@ mod tests {
     fn a_finish_refused_by_a_full_disk_can_be_tried_again() {
         let h = harness();
         let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+        // Holds the flush timer off, so the lines are still buffered on a slow machine and
+        // `finish` is what has to write them.
+        w.last_flush = crate::now_micros() + 60_000_000;
         w.push(&bulk(0, 2000), crate::now_micros()).ok();
         fill_the_disk(&h.db);
         assert!(w.finish(&h.index, Some(3), None).is_err());

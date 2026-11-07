@@ -429,6 +429,10 @@ fn diff_json(d: &RunDiff) -> Value {
             .collect::<Vec<_>>()
     };
     json!({
+        "note": d.a.is_none().then_some(
+            "No baseline yet: no earlier run exited 0 or was stopped by the user without logging \
+             errors. new_signatures lists everything in run b, not what changed."
+        ),
         "a": side(&d.a),
         "b": side(&d.b),
         "new_signatures": sigs(&d.new_signatures),
@@ -440,6 +444,12 @@ fn diff_json(d: &RunDiff) -> Value {
             "branch_a": d.git.branch_a,
             "branch_b": d.git.branch_b,
             "dirty_changed": d.git.dirty_changed,
+            "dirty_a": d.git.dirty_a,
+            "dirty_b": d.git.dirty_b,
+            "dirty_files": d.git.dirty_files,
+            "commits_during_b": d.git.commits_during_b.iter().map(|c| json!({
+                "sha": c.sha, "subject": c.subject, "author": c.author, "at": c.at
+            })).collect::<Vec<_>>(),
             "commits": d.git.commits.iter().map(|c| json!({
                 "sha": c.sha, "subject": c.subject, "author": c.author, "at": c.at
             })).collect::<Vec<_>>(),

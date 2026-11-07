@@ -87,10 +87,15 @@ pub fn active_runs(db: &Db) -> Result<Vec<Run>> {
 
 /// Resolves a symbolic run reference.
 ///
-/// `LastGood` requires both a zero exit code and no logged errors, so a run that exited
-/// cleanly while reporting failures does not qualify. Nor does an evicted run with no
-/// counters, which an older rebuild could leave behind: nothing is left to say it was clean.
+/// `LastGood` requires a run that exited 0 or was stopped by the user, and logged no errors,
+/// so a run that exited cleanly while reporting failures does not qualify. Nor does an
+/// evicted run with no counters, which an older rebuild could leave behind: nothing is left
+/// to say it was clean.
+///
+/// A dev server never exits 0 on its own, so stopping one has to count, or it could never
+/// become a baseline. `LastBad` is the other side of the same rule.
 pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
+    let stopped = super::schema::STOPPED_BY_USER_SQL;
     let sql = match r {
         RunRef::Id(id) => {
             return get_run(db, *id).map(Some).or_else(|e| match e {
@@ -101,13 +106,16 @@ pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
         RunRef::Latest => format!("SELECT {RUN_COLUMNS} {RUN_FROM} ORDER BY r.started_at DESC LIMIT 1"),
         RunRef::LastGood => format!(
             "SELECT {RUN_COLUMNS} {RUN_FROM}
-              WHERE r.ended_at IS NOT NULL AND r.exit_code = 0 AND COALESCE(c.n_error,0) = 0
+              WHERE r.ended_at IS NOT NULL
+                AND (r.exit_code = 0 OR {stopped})
+                AND COALESCE(c.n_error,0) = 0
                 AND NOT (r.chunks_evicted = 1 AND c.run_id IS NULL)
               ORDER BY r.started_at DESC LIMIT 1"
         ),
         RunRef::LastBad => format!(
             "SELECT {RUN_COLUMNS} {RUN_FROM}
-              WHERE r.ended_at IS NOT NULL AND (r.exit_code != 0 OR COALESCE(c.n_error,0) > 0)
+              WHERE r.ended_at IS NOT NULL
+                AND ((r.exit_code != 0 AND NOT {stopped}) OR COALESCE(c.n_error,0) > 0)
               ORDER BY r.started_at DESC LIMIT 1"
         ),
     };
@@ -788,6 +796,77 @@ mod tests {
         }
         w.finish(&h.index, Some(exit), None).unwrap();
         w.run_id()
+    }
+
+    fn ended(h: &H, output: &[u8], exit: Option<i32>, signal: Option<&str>) -> RunId {
+        let mut w = Writer::start(
+            &h.db,
+            &h.index,
+            &RunStamp { command: vec!["node".into(), "server.js".into()], ..Default::default() },
+            Arc::new(Redactor::disabled()),
+        )
+        .unwrap();
+        if !output.is_empty() {
+            w.push(output, crate::now_micros()).unwrap();
+        }
+        w.finish(&h.index, exit, signal).unwrap();
+        w.run_id()
+    }
+
+    #[test]
+    fn a_server_you_stopped_is_a_good_baseline() {
+        // A signalled child is recorded with a code of 1 beside its signal.
+        for (code, signal) in [
+            (Some(1), Some("SIGINT")),
+            (Some(1), Some("SIGTERM")),
+            (Some(130), None),
+            (Some(143), None),
+        ] {
+            let h = h();
+            let id = ended(&h, b"listening on 3000\n", code, signal);
+            let found = resolve_run(&h.db, &RunRef::LastGood).unwrap();
+            assert_eq!(found.map(|r| r.id), Some(id), "{code:?} {signal:?}");
+            assert_eq!(
+                resolve_run(&h.db, &RunRef::LastBad).unwrap().map(|r| r.id),
+                None,
+                "{code:?} {signal:?} is not a failure"
+            );
+        }
+    }
+
+    #[test]
+    fn a_server_that_logged_errors_before_you_stopped_it_is_not_good() {
+        let h = h();
+        let id = ended(&h, b"Error: boom\n", Some(1), Some("SIGINT"));
+        assert_eq!(resolve_run(&h.db, &RunRef::LastGood).unwrap().map(|r| r.id), None);
+        assert_eq!(resolve_run(&h.db, &RunRef::LastBad).unwrap().map(|r| r.id), Some(id));
+    }
+
+    #[test]
+    fn a_crash_is_never_a_good_baseline() {
+        for (code, signal) in [(Some(1), None), (Some(1), Some("SIGSEGV")), (Some(1), Some("SIGKILL"))] {
+            let h = h();
+            let id = ended(&h, b"listening on 3000\n", code, signal);
+            assert_eq!(resolve_run(&h.db, &RunRef::LastGood).unwrap().map(|r| r.id), None);
+            assert_eq!(resolve_run(&h.db, &RunRef::LastBad).unwrap().map(|r| r.id), Some(id));
+        }
+    }
+
+    #[test]
+    fn the_run_and_the_view_agree_with_the_baseline_on_what_clean_means() {
+        let h = h();
+        let stopped = ended(&h, b"listening\n", Some(1), Some("SIGINT"));
+        let crashed = ended(&h, b"listening\n", Some(1), None);
+        assert!(get_run(&h.db, stopped).unwrap().is_clean());
+        assert!(!get_run(&h.db, crashed).unwrap().is_clean());
+        let clean = |id: RunId| -> i64 {
+            h.db.read(|c| {
+                Ok(c.query_row("SELECT clean FROM v_runs WHERE id = ?1", [id], |r| r.get(0))?)
+            })
+            .unwrap()
+        };
+        assert_eq!(clean(stopped), 1);
+        assert_eq!(clean(crashed), 0);
     }
 
     #[test]

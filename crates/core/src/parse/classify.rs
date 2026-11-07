@@ -50,14 +50,23 @@ pub fn classify(text: &str) -> Classification {
     }
 }
 
+/// Whether the run ended because someone stopped it, rather than by failing.
+///
+/// Ctrl-C and a stop from outside are how a dev server normally ends. Some processes die of
+/// the signal, and others catch it and exit the way a shell would report it.
+///
+/// [`crate::store::schema::STOPPED_BY_USER_SQL`] is the same rule for queries.
+pub fn stopped_by_user(exit_code: Option<i32>, signal: Option<&str>) -> bool {
+    matches!(signal, Some("SIGINT" | "SIGTERM" | "SIGHUP")) || matches!(exit_code, Some(129 | 130 | 143))
+}
+
 /// Reports run-level failure from the process exit status, so a silent crash registers
 /// even when the process printed nothing.
 ///
 /// Called by the daemon when the process ends.
 pub fn run_failed(exit_code: Option<i32>, signal: Option<&str>) -> Option<&'static str> {
-    // Interactive shutdown signals are checked first: Ctrl-C exits 130, which would
-    // otherwise look like a crash.
-    if matches!(signal, Some("SIGINT") | Some("SIGTERM") | Some("SIGHUP")) {
+    // Checked first: Ctrl-C exits 130, which would otherwise look like a crash.
+    if stopped_by_user(exit_code, signal) {
         return None;
     }
     match (exit_code, signal) {
@@ -71,6 +80,35 @@ pub fn run_failed(exit_code: Option<i32>, signal: Option<&str>) -> Option<&'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_a_server_is_not_a_failure_however_it_reports_it() {
+        for (code, signal) in [
+            (Some(1), Some("SIGINT")),
+            (Some(1), Some("SIGTERM")),
+            (Some(1), Some("SIGHUP")),
+            (Some(130), None),
+            (Some(143), None),
+            (Some(129), None),
+        ] {
+            assert!(stopped_by_user(code, signal), "{code:?} {signal:?}");
+            assert_eq!(run_failed(code, signal), None, "{code:?} {signal:?}");
+        }
+    }
+
+    #[test]
+    fn a_crash_is_still_a_failure() {
+        for (code, signal) in [
+            (Some(1), None),
+            (Some(137), None),
+            (Some(1), Some("SIGSEGV")),
+            (Some(1), Some("SIGKILL")),
+            (None, None),
+        ] {
+            assert!(!stopped_by_user(code, signal), "{code:?} {signal:?}");
+            assert!(run_failed(code, signal).is_some(), "{code:?} {signal:?}");
+        }
+    }
 
     fn lvl(s: &str) -> Level {
         classify(s).level

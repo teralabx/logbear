@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logbear.svg" alt="The LogBear mascot" width="96" height="96">
+</p>
+
 # LogBear
 
 [![CI](https://github.com/teralabx/logbear/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/logbear/actions/workflows/ci.yml)
@@ -5,7 +9,7 @@
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE.md)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#platform-support)
 
-**It worked two days ago. What changed?**
+**Your coding agent can't see your dev server crash.**
 
 LogBear wraps a development process, records everything it emits, and tells your coding
 agent the moment something breaks.
@@ -178,9 +182,14 @@ logbear updates on              # opt in to a daily check for new releases (off 
 logbear upgrade                 # install the latest release (Homebrew or install script)
 ```
 
-`logbear diff` with no arguments compares the **last known good** run — the most recent one
-that exited cleanly *and* logged no errors — against the latest. That is what people mean
-by "it worked yesterday", and it is almost never the previous run.
+`logbear diff` with no arguments compares the **last known good** run against the latest.
+That is the most recent run that logged no errors and either exited 0 or was stopped by you
+with Ctrl-C or SIGTERM, which is how a dev server normally ends. It is what people mean by
+"it worked yesterday", and it is almost never the previous run.
+
+The diff also shows uncommitted changes between the two runs, naming the files while your
+working tree still matches the latest run, and commits made while that run was up. Only a
+hash of uncommitted changes is stored; file names are read from git when you ask.
 
 ### A program with the same name as a command
 

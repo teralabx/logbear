@@ -159,9 +159,12 @@ pub struct Run {
 }
 
 impl Run {
-    /// Whether the run exited 0 and produced no error-level entry.
+    /// Whether the run "worked": it exited 0 or was stopped by the user, as a dev server
+    /// normally is, and produced no error-level entry.
     pub fn is_clean(&self) -> bool {
-        self.exit_code == Some(0) && self.counters.n_error == 0
+        let ended_well = self.exit_code == Some(0)
+            || crate::parse::classify::stopped_by_user(self.exit_code, self.signal.as_deref());
+        ended_well && self.counters.n_error == 0
     }
 
     pub fn command_line(&self) -> String {
