@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-11-07
+
 ### Added
 
 - `logbear upgrade` installs the latest release through whatever installed this copy,
@@ -142,4 +144,5 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A derived-schema bump rebuilds the index.
 - Runs abandoned by a dead daemon are closed rather than shown as running.
 
-[Unreleased]: https://github.com/teralabx/logbear/commits/master
+[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/teralabx/logbear/releases/tag/v0.1.0
