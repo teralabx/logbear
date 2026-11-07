@@ -247,7 +247,9 @@ fn a_missing_daemon_costs_almost_nothing() {
     cmd.args(["/bin/sh", "-c", "exit 4"]);
     let done = bounded(cmd, None);
     assert_eq!(done.status.code(), Some(4));
-    assert!(done.took < Duration::from_millis(1000), "took {:?}", done.took);
+    // Generous for a loaded CI runner. Waiting for a daemon that cannot start used to cost
+    // about 2.4 s on an idle machine, which is what this guards against.
+    assert!(done.took < Duration::from_millis(2000), "took {:?}", done.took);
 }
 
 #[test]
