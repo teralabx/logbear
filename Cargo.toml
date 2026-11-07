@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT"
@@ -23,8 +23,8 @@ categories = ["command-line-utilities", "development-tools", "development-tools:
 
 [workspace.dependencies]
 # The version is what lets the dependent crates publish; the path is what builds them here.
-logbear-core = { path = "crates/core", version = "0.1.0" }
-logbear-setup = { path = "crates/setup", version = "0.1.0" }
+logbear-core = { path = "crates/core", version = "0.1.1" }
+logbear-setup = { path = "crates/setup", version = "0.1.1" }
 
 anyhow = "1"
 blake3 = "1.8"

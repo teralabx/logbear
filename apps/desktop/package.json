@@ -1,6 +1,6 @@
 {
   "name": "logbear-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "logbear \u2014 local run history and agent memory",
   "type": "module",
   "imports": {

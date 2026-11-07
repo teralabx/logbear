@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-07
+
 ### Fixed
 
 - A dev server you stop now counts as a working run. Ctrl-C, SIGTERM and exits 129, 130 and
@@ -154,5 +156,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A derived-schema bump rebuilds the index.
 - Runs abandoned by a dead daemon are closed rather than shown as running.
 
-[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/teralabx/logbear/releases/tag/v0.1.1
 [0.1.0]: https://github.com/teralabx/logbear/releases/tag/v0.1.0
