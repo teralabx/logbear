@@ -83,6 +83,8 @@ pub struct Daemon {
     pub settings: RwLock<Settings>,
     pub started_at: i64,
     pub shutdown: AtomicBool,
+    /// Set alongside `shutdown` when the daemon stops because an upgrade replaced it.
+    pub retired: AtomicBool,
     projects: Mutex<HashMap<ProjectId, Arc<ProjectHandle>>>,
     /// Serialises opening, which can take as long as a migration, without holding
     /// `projects` and so every request for a project that is already open.
@@ -110,6 +112,7 @@ impl Daemon {
             settings: RwLock::new(settings),
             started_at: logbear_core::now_micros(),
             shutdown: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
             projects: Mutex::new(HashMap::new()),
             opening: Mutex::new(()),
             max_open_projects: open_project_limit(),

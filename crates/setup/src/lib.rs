@@ -156,30 +156,9 @@ pub fn uninstall(step: Step) -> Result<StepState, String> {
 
 /// Binaries ship beside the app executable, as Tauri sidecars.
 fn bin_dir() -> PathBuf {
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."));
-    stable_bin_dir(&dir)
-}
-
-/// A Homebrew keg's `bin` under its version-stable `opt` link.
-///
-/// Every path this writes into an agent's config outlives the process that wrote it, and a
-/// `Cellar/logbear/0.1.0/bin` path is deleted by the next `brew upgrade`, silently breaking
-/// every hook. `opt/logbear` follows the installed version.
-fn stable_bin_dir(dir: &Path) -> PathBuf {
-    let parts: Vec<_> = dir.components().collect();
-    let n = parts.len();
-    if n >= 4
-        && parts[n - 1].as_os_str() == "bin"
-        && parts[n - 3].as_os_str() == "logbear"
-        && parts[n - 4].as_os_str() == "Cellar"
-    {
-        let prefix: PathBuf = parts[..n - 4].iter().collect();
-        return prefix.join("opt/logbear/bin");
-    }
-    dir.to_path_buf()
+    std::env::current_exe()
+        .map(|exe| logbear_core::paths::install_dir(&exe))
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Whether these binaries came from Homebrew, which owns the daemon service
@@ -1775,14 +1754,14 @@ mod tests {
     #[test]
     fn a_homebrew_cellar_path_is_recorded_under_opt() {
         assert_eq!(
-            stable_bin_dir(Path::new("/opt/homebrew/Cellar/logbear/0.1.0/bin")),
+            logbear_core::paths::stable_bin_dir(Path::new("/opt/homebrew/Cellar/logbear/0.1.0/bin")),
             PathBuf::from("/opt/homebrew/opt/logbear/bin")
         );
         for other in [
             "/Applications/logbear.app/Contents/MacOS",
             "/Users/x/.local/bin",
         ] {
-            assert_eq!(stable_bin_dir(Path::new(other)), PathBuf::from(other));
+            assert_eq!(logbear_core::paths::stable_bin_dir(Path::new(other)), PathBuf::from(other));
         }
     }
 

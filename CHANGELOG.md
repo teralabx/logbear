@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `logbear upgrade` installs the latest release through whatever installed this copy,
+  Homebrew or the install script, and checks the new binary answers with the new version.
+- The daemon notices an upgrade replacing its binary and restarts onto the new one as soon
+  as its live runs finish, so `brew upgrade` takes effect without a reboot.
+- `logbear doctor` reports a daemon on a different version from the CLI.
 - `logbear setup` connects LogBear to every coding agent it finds — the MCP server and hook
   for Claude Code, Codex, pi and Hermes — plus the daemon service where Homebrew does not
   own it. It shows the plan and asks first, backs up and merges every config, and
@@ -43,7 +48,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   "squash finished runs" button in Settings do it on demand.
 - `FingerprintHistories` and `RunErrorCounts` protocol requests, and `fingerprint_id`,
   `unobserved` and `tail_lines` fields on existing ones.
-- Homebrew formula for the CLI, daemon, MCP server and hook, distributed through the
+- Homebrew formula for the CLI, daemon, MCP server and hook, installing the prebuilt release
+  binaries, distributed through the
   `teralabx/tap` tap.
 - crates.io publishing metadata, so `cargo install logbear logbeard logbear-mcp logbear-hook`
   works.
@@ -136,9 +142,4 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A derived-schema bump rebuilds the index.
 - Runs abandoned by a dead daemon are closed rather than shown as running.
 
-## [0.1.0] — unreleased
-
-Initial release.
-
-[Unreleased]: https://github.com/teralabx/logbear/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/teralabx/logbear/releases/tag/v0.1.0
+[Unreleased]: https://github.com/teralabx/logbear/commits/master

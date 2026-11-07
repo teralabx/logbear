@@ -37,6 +37,7 @@ pub fn dispatch(cmd: Cmd) -> Result<i32, String> {
             purge,
         } => crate::setup::run(agents, yes, remove, purge),
         Cmd::Updates { action } => crate::updates::run(action),
+        Cmd::Upgrade => crate::updates::upgrade(),
         Cmd::Query { sql, json } => query(&sql, json),
         Cmd::SqlSchema => sql_schema(),
         Cmd::Squash { run_id, json } => squash(run_id, json),

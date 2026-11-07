@@ -302,7 +302,11 @@ pub fn daemon_binary() -> Option<PathBuf> {
         if let Some(dir) = resolved.parent() {
             for candidate in [dir.join("logbeard"), dir.join("../logbeard")] {
                 if candidate.exists() {
-                    return Some(candidate);
+                    // Through `opt`, so the daemon can see an upgrade replace its binary.
+                    // Started from the Cellar it would watch a directory that keeps its
+                    // old file for as long as Homebrew's cleanup is turned off.
+                    let stable = paths::stable_bin_dir(dir).join("logbeard");
+                    return Some(if stable.exists() { stable } else { candidate });
                 }
             }
         }

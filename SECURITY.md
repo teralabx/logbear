@@ -40,8 +40,9 @@ about data escaping where it should not:
   it under `LOGBEAR_HOME` (default `~/.logbear`) with your user's permissions by design.
 - Anything requiring an attacker who already has code execution as your user.
 - The daemon has no network code and listens only on a unix socket, so there is no remote
-  attack surface to report against it. The one outbound request anywhere is the opt-in
-  update check (`logbear updates`), which runs the system `curl` against GitHub.
+  attack surface to report against it. The only outbound requests anywhere are the opt-in
+  update check (`logbear updates`) and `logbear upgrade`, which you run by name. Both use
+  the system `curl` against GitHub.
 
 ## Supported versions
 

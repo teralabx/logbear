@@ -22,6 +22,7 @@ pub const SUBCOMMANDS: &[&str] = &[
     "doctor",
     "setup",
     "updates",
+    "upgrade",
     "query",
     "sql-schema",
     "squash",
@@ -208,6 +209,10 @@ pub enum Cmd {
         /// on | off | check. Without it, the current state.
         action: Option<String>,
     },
+
+    /// Install the latest release with whatever installed this copy (Homebrew or the
+    /// install script). The daemon restarts itself once its live runs finish.
+    Upgrade,
 
     /// Read-only SQL against the current project's database.
     Query {

@@ -6,6 +6,7 @@
 mod conn;
 mod lock;
 mod os_notify;
+mod retire;
 mod spool;
 mod state;
 
@@ -166,6 +167,7 @@ fn serve() -> i32 {
     // Connection threads are still reading. Output a shim has handed to the socket counts as
     // delivered on its side, so it has to land before the runs close.
     std::thread::sleep(SHUTDOWN_DRAIN);
+    let retired = daemon.retired.load(Ordering::SeqCst);
     daemon.close_active_runs();
     // Ours to remove: nothing else could have bound it while the lock was held.
     let _ = std::fs::remove_file(&socket);
@@ -173,7 +175,11 @@ fn serve() -> i32 {
     // Last, so the door stays shut until the socket is gone: a daemon starting the instant
     // this one lets go must not find a socket file with no listener behind it.
     lock.release();
-    0
+    if retired {
+        retire::EXIT_CODE
+    } else {
+        0
+    }
 }
 
 /// Turns the signals that stop a daemon into the shutdown it already knows how to do.
@@ -239,9 +245,16 @@ fn spawn_spool_sweep(daemon: Arc<Daemon>) {
 /// Ticks live runs, so a quiet server's last entry shows up on time.
 fn spawn_maintenance(daemon: Arc<Daemon>) {
     std::thread::spawn(move || {
+        let mut watch = retire::Watch::start();
         while !daemon.shutdown.load(Ordering::SeqCst) {
             std::thread::sleep(TICK);
             daemon.tick_runs();
+
+            if watch.should_retire(daemon.active_run_count()) {
+                log("this binary was replaced by an upgrade; exiting so the new one can start");
+                daemon.retired.store(true, Ordering::SeqCst);
+                daemon.shutdown.store(true, Ordering::SeqCst);
+            }
         }
     });
 }

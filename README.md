@@ -84,7 +84,8 @@ brew services start logbear
 logbear setup             # connect your coding agents
 ```
 
-It lives in its own tap until it qualifies for `homebrew-core`; Homebrew may ask you to
+It installs prebuilt binaries, so there is nothing to compile and no Rust to install. It
+lives in its own tap until it qualifies for `homebrew-core`; Homebrew may ask you to
 `brew trust` the tap the first time. See [`packaging/homebrew`](packaging/homebrew).
 
 **Install script** — the same four binaries, prebuilt, into `~/.local/bin`:
@@ -174,6 +175,7 @@ logbear doctor                  # check every integration
 logbear setup                   # connect agents: MCP server and hook for each one found
 logbear setup --remove          # take it back out; --purge also deletes captured data
 logbear updates on              # opt in to a daily check for new releases (off by default)
+logbear upgrade                 # install the latest release (Homebrew or install script)
 ```
 
 `logbear diff` with no arguments compares the **last known good** run — the most recent one
@@ -335,13 +337,14 @@ agent because our daemon is down is far worse than one that misses a notificatio
   at 0600, until they are ingested.
 - **Interactive programs are not captured.** `psql`, `ssh`, `vim` and friends are sessions
   rather than runs; they are denylisted by default and run untouched.
-- **LogBear makes no network calls; your agent sees what you connect it to.** Hooks and
-  the MCP server hand log text to your coding agent, and a hosted agent sends what it reads
-  to its model provider. LogBear itself sends what you capture nowhere. The one network
-  request it can make is the update check, and that is **off unless you turn it on** with
-  `logbear updates on`: then, at most once a day, one GET to GitHub's releases API carrying
-  a `User-Agent` with the installed version, and nothing else. It is the whole of
-  [`crates/shim/src/updates.rs`](crates/shim/src/updates.rs).
+- **LogBear sends what you capture nowhere; your agent sees what you connect it to.** Hooks
+  and the MCP server hand log text to your coding agent, and a hosted agent sends what it
+  reads to its model provider. LogBear itself sends what you capture nowhere. The only
+  network requests it can make are about its own releases. The update check is **off unless
+  you turn it on** with `logbear updates on`: then, at most once a day, one GET to GitHub's
+  releases API carrying a `User-Agent` with the installed version, and nothing else.
+  `logbear upgrade` makes the same request when you run it, then downloads the release. That
+  is the whole of [`crates/shim/src/updates.rs`](crates/shim/src/updates.rs).
 
 ---
 
@@ -355,7 +358,7 @@ crates/mcp       `logbear-mcp`, the stdio MCP server
 crates/hook      `logbear-hook`, one binary for every harness (and the pi extension)
 crates/setup     the installer, shared by `logbear setup` and the desktop app
 apps/desktop     Tauri v2 + SvelteKit
-packaging/       the Homebrew formula
+packaging/       the Homebrew formula template
 docs/            implementation notes
 ```
 
