@@ -6,6 +6,7 @@
 //! new output, diffing two runs against git, and advancing a watermark.
 
 use crate::backend::Backend;
+use logbear_core::fence::fence_output;
 use logbear_core::model::{EntryView, Level};
 use logbear_core::proto::{ProjectRef, RunDiff, RunRef};
 use serde_json::{json, Map, Value};
@@ -253,8 +254,11 @@ fn query<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Va
 
     match backend.query(project, &sql, params, max_rows) {
         Ok(result) => {
-            let mut text = serde_json::to_string(&result)
-                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
+            // Rows are whatever the query selected, and it may well have selected logs.
+            let mut text = fence_output(
+                &serde_json::to_string(&result)
+                    .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+            );
             if result.truncated {
                 text.push_str(
                     "\n\nTruncated: the row or byte cap cut this result short. Narrow the query, \
@@ -313,10 +317,10 @@ fn wait<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
              logbear_query(\"SELECT id, command, started_at, ended_at FROM v_runs ORDER BY \
              started_at DESC LIMIT 3\")."
         )),
-        Ok(entries) => Outcome::ok(
-            serde_json::to_string(&entries.iter().map(entry_json).collect::<Vec<_>>())
+        Ok(entries) => Outcome::ok(fence_output(
+            &serde_json::to_string(&entries.iter().map(entry_json).collect::<Vec<_>>())
                 .unwrap_or_default(),
-        ),
+        )),
         Err(e) => Outcome::err(
             "logbear_wait",
             e,
@@ -341,7 +345,9 @@ fn diff<B: Backend>(backend: &mut B, project: ProjectRef, args: &Map<String, Val
     let b = Some(b.unwrap_or(RunRef::Latest));
 
     match backend.diff(project, a, b) {
-        Ok(d) => Outcome::ok(serde_json::to_string(&diff_json(&d)).unwrap_or_default()),
+        Ok(d) => Outcome::ok(fence_output(
+            &serde_json::to_string(&diff_json(&d)).unwrap_or_default(),
+        )),
         Err(e) => Outcome::err(
             "logbear_diff",
             e,

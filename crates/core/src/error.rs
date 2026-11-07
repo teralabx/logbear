@@ -40,6 +40,22 @@ pub enum Error {
     #[error("protocol error: {0}")]
     Protocol(String),
 
+    /// A check found damage that SQLite has not reported as an error of its own.
+    #[error("{0} is damaged: {1}")]
+    Corrupt(PathBuf, String),
+
+    /// The file was written by a newer logbear. It is left exactly as it was: dropping what
+    /// this build does not understand would destroy the user's history.
+    #[error(
+        "{path} is at storage version {found}, but this logbear understands up to {supported}. \
+         Upgrade logbear to read it; the file has not been touched"
+    )]
+    DatabaseTooNew {
+        path: PathBuf,
+        found: i64,
+        supported: i64,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -53,6 +69,27 @@ impl Error {
         Error::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// True when SQLite says the file itself is damaged, which retrying cannot fix.
+    pub fn is_corrupt(&self) -> bool {
+        matches!(self, Error::Corrupt(..))
+            || matches!(
+                self.sqlite_code(),
+                Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+            )
+    }
+
+    /// True when a write failed for want of space. Transient: it clears when space does.
+    pub fn is_disk_full(&self) -> bool {
+        matches!(self.sqlite_code(), Some(rusqlite::ErrorCode::DiskFull))
+    }
+
+    fn sqlite_code(&self) -> Option<rusqlite::ErrorCode> {
+        match self {
+            Error::Sqlite(e) => e.sqlite_error_code(),
+            _ => None,
         }
     }
 }

@@ -31,7 +31,7 @@
 		type="button"
 		{onclick}
 		{title}
-		class="inline-flex h-5 cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[11px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms] hover:border-hair-strong hover:text-base-content {active
+		class="inline-flex h-5 cursor-pointer items-center gap-[5px] rounded-[2px] border px-[7px] text-[12px] leading-none whitespace-nowrap transition-[border-color,color,background-color] duration-[120ms] hover:border-hair-strong hover:text-base-content {active
 			? 'border-[color-mix(in_oklch,var(--lvl)_55%,transparent)] bg-[color-mix(in_oklch,var(--lvl)_12%,transparent)] text-base-content'
 			: 'border-hair bg-transparent text-meta'}"
 		data-level={level}
@@ -45,7 +45,7 @@
 	</button>
 {:else}
 	<span
-		class="inline-flex h-5 items-center gap-[5px] rounded-[2px] border border-[color-mix(in_oklch,var(--lvl)_38%,transparent)] bg-transparent px-[7px] text-[11px] leading-none whitespace-nowrap text-[var(--lvl)]"
+		class="inline-flex h-5 items-center gap-[5px] rounded-[2px] border border-[color-mix(in_oklch,var(--lvl)_38%,transparent)] bg-transparent px-[7px] text-[12px] leading-none whitespace-nowrap text-[var(--lvl)]"
 		data-level={level}
 		{title}
 	>

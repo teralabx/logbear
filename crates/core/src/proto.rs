@@ -205,6 +205,24 @@ pub enum Request {
     IngestSpool {
         path: String,
     },
+    /// Sent first by a shim, so a daemon left over from an older install can be replaced
+    /// rather than quietly dropping requests it does not understand.
+    Hello {
+        protocol: u32,
+    },
+    /// Turns this connection into the ingest stream of a run the shim lost contact with.
+    /// The daemon starts a fresh run when `run_id` cannot take the tail, and answers with
+    /// the id to use.
+    ResumeRun {
+        stamp: RunStamp,
+        started_at: i64,
+        run_id: RunId,
+    },
+    /// In-band on an ingest stream: replay this spool file here, in order, then delete it.
+    /// Carries a burst the socket could not take without the sender ever blocking on it.
+    IngestSegment {
+        path: String,
+    },
 
     // ---- read ----
     Status,
@@ -417,6 +435,9 @@ pub struct DaemonStatus {
     pub active_runs: usize,
     pub total_db_bytes: i64,
     pub spool_pending: usize,
+    /// Spools set aside as unreadable. They are never ingested, so they are not pending.
+    #[serde(default)]
+    pub spool_quarantined: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -516,6 +537,17 @@ pub struct Settings {
     pub denylist: Vec<String>,
     pub redaction_enabled: bool,
     pub extra_redaction_patterns: Vec<String>,
+}
+
+impl Settings {
+    /// Reads the settings file directly, which is what lets the shim decide about a command
+    /// without waiting on a daemon that may be down or wedged.
+    pub fn load() -> Settings {
+        std::fs::read_to_string(crate::paths::settings_file())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for Settings {
@@ -633,6 +665,12 @@ pub struct RetentionState {
 // ---------------------------------------------------------------------------
 // Framing
 // ---------------------------------------------------------------------------
+
+/// Bumped when a shim needs something an older daemon would not understand.
+pub const PROTOCOL: u32 = 2;
+
+/// Format of a spool file. A daemon leaves anything newer alone rather than quarantining it.
+pub const SPOOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub enum Frame {

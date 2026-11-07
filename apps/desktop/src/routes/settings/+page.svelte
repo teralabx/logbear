@@ -4,10 +4,10 @@
 	import Toggle from '$lib/components/Toggle.svelte';
 	import Meter from '$lib/components/Meter.svelte';
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import {
 		apiError,
 		getSettings,
-		installStatus,
 		installStep,
 		projectRef,
 		retention,
@@ -18,6 +18,15 @@
 		updateSettings
 	} from '$lib/api';
 	import { app } from '$lib/stores/app.svelte';
+	import { theme, type ThemeName } from '$lib/stores/theme.svelte';
+	import { confirmSquashProject, type ConfirmCopy } from '$lib/confirm';
+	import {
+		STEP_COPY,
+		installInOrder,
+		installable,
+		readInstall,
+		type InstallRead
+	} from '$lib/install';
 	import {
 		fmtAgo,
 		fmtBytes,
@@ -28,15 +37,17 @@
 	} from '$lib/format';
 	import {
 		INSTALL_STEPS,
-		type InstallStatus,
 		type InstallStep,
 		type RetentionState,
-		type Settings
+		type Settings,
+		type StepState
 	} from '$lib/api/types';
 
 	let settings = $state<Settings | null>(null);
 	let saved = $state<Settings | null>(null);
-	let install = $state<InstallStatus | null>(null);
+	let installRead = $state<InstallRead>({ state: 'loading' });
+	const install = $derived(installRead.state === 'ready' ? installRead.status : null);
+	let confirming = $state<{ copy: ConfirmCopy; run: () => void } | null>(null);
 	let retentions = $state<Record<number, RetentionState>>({});
 	let squashing = $state<Record<number, boolean>>({});
 	let squashed = $state<Record<number, string>>({});
@@ -64,6 +75,7 @@
 	let installingAll = $state(false);
 	let allProgress = $state<{ done: number; total: number } | null>(null);
 	let allFailures = $state<string[]>([]);
+	let refreshError = $state<string | null>(null);
 
 	const MB = 1024 * 1024;
 
@@ -76,20 +88,49 @@
 	 * every ten seconds; if that poll re-read settings it would silently throw
 	 * away whatever the reader was halfway through typing.
 	 */
-	async function loadAll() {
+	async function loadSettings() {
 		loadError = null;
 		try {
-			const [s, i] = await Promise.all([getSettings(), installStatus()]);
+			const s = await getSettings();
 			settings = s;
 			saved = structuredClone(s);
-			install = i;
 		} catch (err) {
 			loadError = apiError(err);
 		}
 	}
 
+	/**
+	 * Separate from settings, which need the daemon. This is how someone whose daemon is
+	 * down gets it running, so a settings failure must not leave it unread.
+	 */
+	async function loadInstall() {
+		refreshError = null;
+		const next = await readInstall();
+		// A failed re-read should not take away rows that are already on screen.
+		if (next.state === 'failed' && install) refreshError = next.error;
+		else installRead = next;
+	}
+
+	async function retryInstall() {
+		installRead = { state: 'loading' };
+		await loadInstall();
+	}
+
+	function replaceStep(step: InstallStep, state: StepState) {
+		if (installRead.state === 'ready') {
+			installRead = { state: 'ready', status: { ...installRead.status, [step]: state } };
+		}
+	}
+
+	/** The daemon may have just come up, and with it everything it held back. */
+	async function afterDaemonStep() {
+		await app.refresh();
+		if (!settings) await loadSettings();
+	}
+
 	onMount(() => {
-		void loadAll();
+		void loadSettings();
+		void loadInstall();
 	});
 
 	/** Retention meters do follow the project list — they are read-only. */
@@ -157,7 +198,8 @@
 		saveError = null;
 		try {
 			const next = direction === 'install' ? await installStep(step) : await uninstallStep(step);
-			if (install) install = { ...install, [step]: next };
+			replaceStep(step, next);
+			if (step === 'daemon') void afterDaemonStep();
 		} catch (err) {
 			saveError = apiError(err);
 		} finally {
@@ -165,19 +207,9 @@
 		}
 	}
 
-	/** Steps that could be installed right now: available, and not already done. */
-	const pending = $derived(
-		install ? INSTALL_STEPS.filter((s) => install![s].available && !install![s].installed) : []
-	);
+	const pending = $derived(install ? installable(install) : []);
 
-	/**
-	 * Install every outstanding step in one go.
-	 *
-	 * Sequential rather than parallel: several steps write to the same shell profiles and
-	 * harness configs, and two of them racing would interleave their edits. One failure does
-	 * not stop the rest — the steps are independent, and a machine missing Codex should still
-	 * get its Claude Code integration.
-	 */
+	/** Install every outstanding step in one go. */
 	async function installAll() {
 		const steps = pending;
 		if (steps.length === 0) return;
@@ -186,72 +218,28 @@
 		saveError = null;
 		allFailures = [];
 		allProgress = { done: 0, total: steps.length };
+		stepBusy = steps[0];
 
-		for (const step of steps) {
-			stepBusy = step;
-			try {
-				const next = await installStep(step);
-				if (install) install = { ...install, [step]: next };
-			} catch (err) {
-				allFailures = [...allFailures, `${STEP_COPY[step].title}: ${apiError(err)}`];
-			}
-			allProgress = { done: allProgress.done + 1, total: steps.length };
-		}
+		allFailures = await installInOrder(steps, installStep, (step, done, state) => {
+			if (state) replaceStep(step, state);
+			allProgress = { done, total: steps.length };
+			stepBusy = steps[done] ?? null;
+		});
 
 		stepBusy = null;
 		installingAll = false;
 		allProgress = null;
-		// Re-read rather than trust the per-step replies: installing the PATH shims changes
-		// what the later steps can see about themselves.
-		try {
-			install = await installStatus();
-		} catch {
-			// The individual replies already updated the rows; a failed refresh is cosmetic.
-		}
+		// Re-read rather than trust the per-step replies: installing `logbear` changes what
+		// the later steps can see about themselves.
+		await loadInstall();
+		void afterDaemonStep();
 	}
 
-	const STEP_COPY: Record<InstallStep, { title: string; what: string }> = {
-		path: {
-			title: 'PATH shims',
-			what: 'Puts ~/.logbear/bin first in your shell PATH. Commands like npm, mix and cargo then run through logbear with no prefix — including the ones your Makefiles and your coding agent invoke.'
-		},
-		daemon: {
-			title: 'Background daemon',
-			what: 'Registers a login agent so capture keeps working after this window is closed. Without it, only runs started while the app is open are recorded.'
-		},
-		mcp_claude: {
-			title: 'MCP server — Claude Code',
-			what: 'Registers logbear as an MCP server for Claude Code, giving it three read-only tools: recent runs, diff between two runs, and errors for a run.'
-		},
-		mcp_codex: {
-			title: 'MCP server — Codex',
-			what: 'The same three read-only tools, registered in the Codex CLI config.'
-		},
-		hook_claude: {
-			title: 'Session hook — Claude Code',
-			what: 'Adds a SessionStart hook that hands Claude Code a short summary of recent runs, so it starts a session already knowing what failed.'
-		},
-		hook_codex: {
-			title: 'Session hook — Codex',
-			what: 'The same session summary, wired into the Codex CLI.'
-		},
-		mcp_pi: {
-			title: 'MCP server — pi',
-			what: 'Registers logbear in ~/.pi/agent/mcp.json with direct tool exposure, so pi sees the tools without searching for them. Needs pi 1.0 or later.'
-		},
-		mcp_hermes: {
-			title: 'MCP server — Hermes',
-			what: 'Adds logbear under mcp_servers in ~/.hermes/config.yaml, between marker comments so removing it leaves the rest of the file untouched.'
-		},
-		hook_pi: {
-			title: 'Extension — pi',
-			what: 'pi has no command hooks, so this writes a small extension to ~/.pi/agent/extensions that runs the logbear hook: it states the rule once per session, notes new output after edits, and keeps pi working while errors it has not seen are unread.'
-		},
-		hook_hermes: {
-			title: 'Shell hooks — Hermes',
-			what: 'Adds pre_llm_call and pre_verify hooks to ~/.hermes/config.yaml. Hermes holds back from finishing a turn that edited code while new errors are unread, and hears about errors from other turns when your next message arrives. Approve both when Hermes asks.'
-		}
-	};
+	const THEMES: { value: ThemeName | 'system'; label: string }[] = [
+		{ value: 'system', label: 'system' },
+		{ value: 'logbear-light', label: 'light' },
+		{ value: 'logbear-dark', label: 'dark' }
+	];
 
 	const quietOn = $derived(settings?.quiet_hours != null);
 </script>
@@ -261,9 +249,13 @@
 	sub={app.daemon ? `logbear ${app.daemon.version} · pid ${app.daemon.pid}` : 'daemon not reachable'}
 />
 
-<div class="pane flex-1 pb-[90px]">
+<div class="pane @container flex-1 pb-[90px]">
 	{#if loadError}
-		<ErrorNote what="Could not read settings." detail={loadError} retry={() => void loadAll()} />
+		<ErrorNote
+			what="Could not read settings."
+			detail={loadError}
+			retry={() => void loadSettings()}
+		/>
 	{/if}
 	{#if saveError}
 		<ErrorNote what="That change did not stick." detail={saveError} />
@@ -272,11 +264,11 @@
 	{#if settings}
 		<!-- ---------------------------------------------------------------- -->
 		<section
-			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
 		>
 			<div>
 				<h3 class="text-[13px] font-semibold">Storage</h3>
-				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
+				<p class="meta mt-1.5 text-[12px] leading-[1.65]">
 					logbear stores raw output on disk. When a project passes its cap the oldest finished runs
 					are squashed first: each keeps one copy of every distinct entry and drops its repeats.
 					Only if that is not enough are whole runs evicted — their counts and fingerprints
@@ -300,8 +292,8 @@
 								if (settings && Number.isFinite(v)) settings.retention_bytes = Math.max(1, v) * MB;
 							}}
 						/>
-						<span class="meta text-[11px]">MB</span>
-						<span class="meta max-w-[62ch] text-[11px] leading-[1.6]"
+						<span class="meta text-[12px]">MB</span>
+						<span class="meta max-w-[62ch] text-[12px] leading-[1.6]"
 							>Applies to any project without its own cap.</span
 						>
 					</div>
@@ -317,7 +309,7 @@
 								<span class="block text-[12.5px] font-medium">{p.name}</span>
 								<button
 									type="button"
-									class="meta block max-w-full cursor-pointer overflow-hidden text-left text-[11px] text-ellipsis whitespace-nowrap hover:text-base-content"
+									class="meta block max-w-full cursor-pointer overflow-hidden text-left text-[12px] text-ellipsis whitespace-nowrap hover:text-base-content"
 									onclick={() => void revealPath(p.root)}
 									title="Reveal {p.root} in Finder">{tildePath(p.root)}</button
 								>
@@ -341,16 +333,20 @@
 									<div class="mt-1.5 flex flex-wrap items-baseline gap-2">
 										<button
 											type="button"
-											class="cursor-pointer rounded-[2px] border border-hair px-2 py-[3px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+											class="cursor-pointer rounded-[2px] border border-hair px-2 py-[3px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 											disabled={squashing[p.id] === true}
-											onclick={() => void squashProject(p.id)}
+											onclick={() =>
+												(confirming = {
+													copy: confirmSquashProject(p.name, r.runs_total),
+													run: () => void squashProject(p.id)
+												})}
 											title="Shrink every finished run to the first occurrence of each distinct entry, now rather than when the cap is reached. Repeats are deleted for good; counts and signatures are kept."
 											>{squashing[p.id] ? 'squashing…' : 'squash finished runs'}</button
 										>
-										{#if squashed[p.id]}<span class="meta text-[11px]">{squashed[p.id]}</span>{/if}
+										{#if squashed[p.id]}<span class="meta text-[12px]">{squashed[p.id]}</span>{/if}
 									</div>
 								{:else}
-									<p class="meta text-[11px]">Reading store size…</p>
+									<p class="meta text-[12px]">Reading store size…</p>
 								{/if}
 							</div>
 
@@ -372,14 +368,14 @@
 											});
 										}}
 									/>
-									<span class="meta text-[11px]">MB</span>
+									<span class="meta text-[12px]">MB</span>
 								</div>
 								{#if p.retention_bytes === null}
-									<span class="meta text-[11px]">using default</span>
+									<span class="meta text-[12px]">using default</span>
 								{:else}
 									<button
 										type="button"
-										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
+										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[12px] text-ellipsis whitespace-nowrap hover:text-base-content"
 										onclick={() => void setProject(p.id, { retentionBytes: null })}
 										>use default</button
 									>
@@ -387,7 +383,7 @@
 							</div>
 						</div>
 					{:else}
-						<p class="meta text-[11px]">No projects tracked yet.</p>
+						<p class="meta text-[12px]">No projects tracked yet.</p>
 					{/each}
 				</div>
 			</div>
@@ -395,11 +391,11 @@
 
 		<!-- ---------------------------------------------------------------- -->
 		<section
-			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
 		>
 			<div>
 				<h3 class="text-[13px] font-semibold">Notifications</h3>
-				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
+				<p class="meta mt-1.5 text-[12px] leading-[1.65]">
 					A notification fires when a run produces an error signature this project has not seen
 					before. Repeats of a known signature stay silent.
 				</p>
@@ -450,7 +446,7 @@
 										);
 								}}
 							/>
-							<span class="meta max-w-[62ch] text-[11px] leading-[1.6]">
+							<span class="meta max-w-[62ch] text-[12px] leading-[1.6]">
 								{minutesToHhmm(settings.quiet_hours.start_min)} →
 								{minutesToHhmm(settings.quiet_hours.end_min)}
 								{settings.quiet_hours.end_min < settings.quiet_hours.start_min
@@ -468,7 +464,7 @@
 							<span class="block text-[12.5px] font-medium">{p.name}</span>
 							<button
 								type="button"
-								class="badge badge-xs h-auto cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.16em] uppercase hover:border-hair-strong {p.notify_enabled
+								class="badge badge-xs h-auto text-[12px] cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.1em] uppercase hover:border-hair-strong {p.notify_enabled
 									? 'badge-outline'
 									: 'badge-dash text-meta'}"
 								onclick={() => void setProject(p.id, { notifyEnabled: !p.notify_enabled })}
@@ -483,21 +479,21 @@
 
 		<!-- ---------------------------------------------------------------- -->
 		<section
-			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
 		>
 			<div>
 				<h3 class="text-[13px] font-semibold">Agent push</h3>
-				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-					When a run fails, logbear can push a short block of context — the command, the exit code,
-					the new signatures — into the coding agent's next turn instead of waiting to be asked.
+				<p class="meta mt-1.5 text-[12px] leading-[1.65]">
+					With an agent hook installed, LogBear tells the coding agent about new errors as they
+					happen, and can stop it finishing a turn until it has dealt with them.
 				</p>
 			</div>
 
 			<div class="min-w-0">
 				<Toggle
 					bind:checked={settings.push_enabled}
-					label="Push run context to agents"
-					hint="Requires the session hook below to be installed for at least one agent."
+					label="Push errors to agents"
+					hint="Needs an agent hook from Install below. Off, the hooks stay in place but never block or add anything."
 				/>
 
 				<div class="my-3">
@@ -512,9 +508,9 @@
 							bind:value={settings.block_budget}
 							disabled={!settings.push_enabled}
 						/>
-						<span class="meta max-w-[62ch] text-[11px] leading-[1.6]">
-							The most blocks logbear will push into one agent session. Reached budget means later
-							failures are still recorded and still queryable — they just stop being volunteered.
+						<span class="meta max-w-[62ch] text-[12px] leading-[1.6]">
+							How many times one agent session can be stopped from finishing. After that, new
+							errors reach the agent as advice and are still recorded and queryable.
 						</span>
 					</div>
 				</div>
@@ -526,7 +522,7 @@
 							<span class="block text-[12.5px] font-medium">{p.name}</span>
 							<button
 								type="button"
-								class="badge badge-xs h-auto cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.16em] uppercase hover:border-hair-strong {p.push_enabled
+								class="badge badge-xs h-auto text-[12px] cursor-pointer border-hair px-[8px] py-[2px] tracking-[0.1em] uppercase hover:border-hair-strong {p.push_enabled
 									? 'badge-outline'
 									: 'badge-dash text-meta'}"
 								onclick={() => void setProject(p.id, { pushEnabled: !p.push_enabled })}
@@ -541,11 +537,11 @@
 
 		<!-- ---------------------------------------------------------------- -->
 		<section
-			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
 		>
 			<div>
 				<h3 class="text-[13px] font-semibold">Capture and redaction</h3>
-				<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
+				<p class="meta mt-1.5 text-[12px] leading-[1.65]">
 					Redaction happens on the way in. Data that never lands cannot leak. Environment variable
 					values are never recorded at all — only their names.
 				</p>
@@ -565,7 +561,7 @@
 					<textarea
 						id="denylist"
 						rows="3"
-						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[11.5px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
+						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[12px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 						value={settings.denylist.join('\n')}
 						oninput={(e) => {
 							if (settings)
@@ -575,7 +571,7 @@
 									.filter(Boolean);
 						}}
 					></textarea>
-					<p class="meta mt-[5px] max-w-[62ch] text-[11px] leading-[1.6]">
+					<p class="meta mt-[5px] max-w-[62ch] text-[12px] leading-[1.6]">
 						One per line. Sessions rather than runs — a shell, an editor, a database client — are
 						passed through untouched and nothing is stored.
 					</p>
@@ -586,7 +582,7 @@
 					<textarea
 						id="patterns"
 						rows="3"
-						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[11.5px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
+						class="w-full max-w-[640px] resize-y rounded-[2px] border border-hair bg-code-bg px-[9px] py-[7px] font-mono text-[12px] leading-[1.6] outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content focus:border-hair-strong"
 						value={settings.extra_redaction_patterns.join('\n')}
 						oninput={(e) => {
 							if (settings)
@@ -596,7 +592,7 @@
 									.filter(Boolean);
 						}}
 					></textarea>
-					<p class="meta mt-[5px] max-w-[62ch] text-[11px] leading-[1.6]">
+					<p class="meta mt-[5px] max-w-[62ch] text-[12px] leading-[1.6]">
 						One regular expression per line, applied in addition to the built-in set. Matches are
 						replaced with <code>[redacted]</code> before anything is written to disk.
 					</p>
@@ -607,18 +603,50 @@
 
 	<!-- ------------------------------------------------------------------ -->
 	<section
-		class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 rule-b"
+		class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
+	>
+		<div>
+			<h3 class="text-[13px] font-semibold">Appearance</h3>
+			<p class="meta mt-1.5 text-[12px] leading-[1.65]">
+				System follows the light or dark setting of your OS, including when it changes.
+			</p>
+		</div>
+		<div class="min-w-0">
+			<div
+				class="inline-flex overflow-hidden rounded-[2px] border border-hair"
+				role="group"
+				aria-label="Theme"
+			>
+				{#each THEMES as t, i (t.value)}
+					<button
+						type="button"
+						class="cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {i > 0
+							? 'border-l border-hair'
+							: ''} {theme.choice === t.value ? 'bg-base-content text-base-100' : 'text-meta'}"
+						aria-pressed={theme.choice === t.value}
+						onclick={() => (t.value === 'system' ? theme.followSystem() : theme.set(t.value))}
+						>{t.label}</button
+					>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<!-- ------------------------------------------------------------------ -->
+	<section
+		class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3 rule-b"
 	>
 		<div>
 			<h3 class="text-[13px] font-semibold">Install</h3>
-			<p class="meta mt-1.5 text-[11.5px] leading-[1.65]">
-				Each step is independent and reversible. Anything logbear edits is backed up first, and the
-				backup path is shown here.
+			<p class="meta mt-1.5 text-[12px] leading-[1.65]">
+				Each step is independent and can be removed here. Installing backs up a config file before
+				changing it and shows the backup path. The agent hooks can block your agent; read them
+				before installing.
 			</p>
 			{#if install && pending.length > 0}
 				<button
 					type="button"
-					class="btn btn-primary btn-sm mt-3 h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+					class="btn btn-primary btn-sm mt-3 h-auto px-[11px] py-[4px] text-[12px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
 					disabled={stepBusy !== null || installingAll}
 					onclick={() => void installAll()}
 				>
@@ -628,21 +656,28 @@
 						Install all {pending.length} remaining
 					{/if}
 				</button>
-				<p class="meta mt-1.5 text-[11px] leading-[1.6]">
-					Sets up everything below in one go, including the Claude Code and Codex integrations.
+				<p class="meta mt-1.5 text-[12px] leading-[1.6]">
+					Sets up every step not yet installed, including the agent hooks.
 				</p>
 			{/if}
 		</div>
 
 		<div class="min-w-0">
+			{#if refreshError}
+				<ErrorNote
+					what="Could not refresh the install state."
+					detail={refreshError}
+					retry={() => void loadInstall()}
+				/>
+			{/if}
 			{#if allFailures.length > 0}
 				<div class="mb-3 rounded border border-warning/40 px-3 py-2">
-					<p class="text-[11.5px] font-medium text-warning">
+					<p class="text-[12px] font-medium text-warning">
 						{pluralise(allFailures.length, 'step')} could not be installed
 					</p>
 					<ul class="mt-1 flex flex-col gap-0.5">
 						{#each allFailures as failure (failure)}
-							<li class="meta text-[10.5px] leading-[1.6]">{failure}</li>
+							<li class="meta text-[12px] leading-[1.6]">{failure}</li>
 						{/each}
 					</ul>
 				</div>
@@ -673,16 +708,16 @@
 										{s.installed ? 'installed' : s.available ? 'not installed' : 'unavailable'}
 									</span>
 								</div>
-								<p class="meta mt-1 max-w-[74ch] text-[11px] leading-[1.6]">
+								<p class="meta mt-1 max-w-[74ch] text-[12px] leading-[1.6]">
 									{STEP_COPY[step].what}
 								</p>
-								<p class="mt-1 max-w-[74ch] text-[10.5px] leading-[1.6] text-base-content opacity-75">
+								<p class="mt-1 max-w-[74ch] text-[12px] leading-[1.6] text-base-content opacity-75">
 									{s.detail}
 								</p>
 								{#if s.backup}
 									<button
 										type="button"
-										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
+										class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[12px] text-ellipsis whitespace-nowrap hover:text-base-content"
 										onclick={() => void revealPath(s.backup!)}
 										title="Reveal the backup in Finder">backup: {s.backup}</button
 									>
@@ -692,7 +727,7 @@
 								{#if s.installed}
 									<button
 										type="button"
-										class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[11.5px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
+										class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[12px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
 										disabled={stepBusy !== null}
 										onclick={() => void runStep(step, 'uninstall')}
 									>
@@ -701,7 +736,7 @@
 								{:else}
 									<button
 										type="button"
-										class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+										class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[12px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
 										disabled={stepBusy !== null || !s.available}
 										onclick={() => void runStep(step, 'install')}
 									>
@@ -712,8 +747,14 @@
 						</div>
 					{/each}
 				</div>
+			{:else if installRead.state === 'failed'}
+				<ErrorNote
+					what="Could not read the install state."
+					detail={installRead.error}
+					retry={() => void retryInstall()}
+				/>
 			{:else}
-				<p class="meta text-[11px]">Reading install state…</p>
+				<p class="meta text-[12px]">Reading install state…</p>
 			{/if}
 		</div>
 	</section>
@@ -721,7 +762,7 @@
 	<!-- ------------------------------------------------------------------ -->
 	{#if app.daemon}
 		<section
-			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5"
+			class="grid max-w-[1180px] grid-cols-[minmax(220px,300px)_minmax(0,1fr)] gap-8 px-4 py-5 @max-[900px]:grid-cols-1 @max-[900px]:gap-3"
 		>
 			<div>
 				<h3 class="text-[13px] font-semibold">Daemon</h3>
@@ -745,7 +786,7 @@
 						<dd class="text-[12px]">
 							<button
 								type="button"
-								class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[10.5px] text-ellipsis whitespace-nowrap hover:text-base-content"
+								class="meta max-w-full cursor-pointer overflow-hidden border-b border-dotted border-hair-strong text-left text-[12px] text-ellipsis whitespace-nowrap hover:text-base-content"
 								onclick={() => void revealPath(app.daemon!.socket)}
 								>{tildePath(app.daemon.socket)}</button
 							>
@@ -786,13 +827,13 @@
 		{#if dirty}
 			<button
 				type="button"
-				class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[11.5px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
+				class="btn btn-outline btn-sm h-auto border-hair-strong px-[11px] py-[4px] text-[12px] font-normal hover:border-base-content hover:bg-transparent disabled:border-hair-strong disabled:bg-transparent disabled:text-base-content disabled:opacity-45"
 				onclick={revert}
 				disabled={saving}>Discard</button
 			>
 			<button
 				type="button"
-				class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[11.5px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
+				class="btn btn-primary btn-sm h-auto px-[11px] py-[4px] text-[12px] font-normal disabled:border-primary disabled:bg-primary disabled:text-primary-content disabled:opacity-45"
 				onclick={save}
 				disabled={saving}
 			>
@@ -801,3 +842,12 @@
 		{/if}
 	</div>
 {/if}
+
+<ConfirmDialog
+	request={confirming?.copy ?? null}
+	oncancel={() => (confirming = null)}
+	onconfirm={() => {
+		confirming?.run();
+		confirming = null;
+	}}
+/>

@@ -15,26 +15,25 @@
   "license": "MIT",
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
-    "@lucide/svelte": "^1.67.0",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
+    "@lucide/svelte": "^1.70.0",
+    "@tauri-apps/api": "^2.12.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/xterm": "^6.0.0"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.6",
-    "@sveltejs/kit": "^2.9.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
-    "@tailwindcss/vite": "4.3.3",
-    "@tauri-apps/cli": "^2",
+    "@sveltejs/adapter-static": "^3.0.11",
+    "@sveltejs/kit": "^2.70.4",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tailwindcss/vite": "4.3.5",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^26.6.6",
-    "daisyui": "5.7.4",
-    "svelte": "^5.0.0",
-    "svelte-check": "^4.0.0",
-    "tailwindcss": "4.3.3",
-    "typescript": "~5.6.2",
-    "vite": "^6.0.3",
-    "vitest": "^4.1.10"
+    "daisyui": "5.7.50",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "tailwindcss": "4.3.5",
+    "typescript": "~5.6.3",
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
   }
 }

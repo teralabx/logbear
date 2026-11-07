@@ -14,7 +14,7 @@
 >
 	<div class="flex min-w-0 items-baseline gap-2.5">
 		<h2 class="text-[15px] font-semibold whitespace-nowrap">{title}</h2>
-		{#if sub}<span class="meta truncate text-[11.5px]">{sub}</span>{/if}
+		{#if sub}<span class="meta truncate text-[12px]">{sub}</span>{/if}
 		{#if children}{@render children()}{/if}
 	</div>
 	{#if actions}

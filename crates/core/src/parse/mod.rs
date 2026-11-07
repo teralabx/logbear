@@ -141,6 +141,8 @@ pub struct Parser {
     /// closing a group does not require reading back from storage. Drained as groups
     /// close, so it only ever holds the entry currently open.
     pending: std::collections::VecDeque<(i64, String)>,
+    /// Bytes of text in `pending`.
+    pending_size: usize,
     mode: DelimiterMode,
     mode_locked: bool,
     /// Rendered text of lines seen before the mode settled — regrouped once it does.
@@ -150,12 +152,23 @@ pub struct Parser {
     /// classification or fingerprinting. Redacting any later would leak the secret into
     /// the entry text and the fingerprint template.
     redactor: Option<std::sync::Arc<crate::redact::Redactor>>,
+    /// Lives here rather than in the redactor, which is shared across runs: a private key
+    /// spans lines, and one run being inside a block says nothing about another.
+    redact_state: crate::redact::LineState,
 }
 
 /// Silence after which an open group is closed, so the live view is not blocked by a
 /// producer that goes quiet mid-entry. Well above the sub-millisecond gaps within a stack
 /// trace, so it never splits one.
 pub const IDLE_CLOSE_MICROS: i64 = 400_000;
+
+/// Size at which an open entry is closed whether or not it looks finished.
+///
+/// Everything indented is a continuation, so a pretty-printed dump is one entry for as long
+/// as it runs, and its text sits in `pending` until something ends it. Far above a real stack
+/// trace, and counted in lines and bytes alone, so a reparse splits in the same places.
+pub const MAX_ENTRY_LINES: usize = 4096;
+pub const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 
 impl Default for Parser {
     fn default() -> Self {
@@ -170,11 +183,13 @@ impl Parser {
             detector: mode::Detector::default(),
             grouper: group::Grouper::new(DelimiterMode::Fallback),
             pending: std::collections::VecDeque::new(),
+            pending_size: 0,
             mode: DelimiterMode::Fallback,
             mode_locked: false,
             warmup: Vec::new(),
             last_activity: 0,
             redactor: None,
+            redact_state: Default::default(),
         }
     }
 
@@ -193,6 +208,11 @@ impl Parser {
         p
     }
 
+    /// Carries on from a later line, for stored output with a gap in it.
+    pub fn skip_to(&mut self, next_index: i64) {
+        self.splitter.next_index = next_index;
+    }
+
     pub fn with_redactor(mut self, r: std::sync::Arc<crate::redact::Redactor>) -> Parser {
         self.redactor = Some(r);
         self
@@ -200,6 +220,11 @@ impl Parser {
 
     pub fn mode(&self) -> DelimiterMode {
         self.mode
+    }
+
+    #[cfg(test)]
+    fn pending_bytes(&self) -> usize {
+        self.pending.iter().map(|(_, t)| t.len()).sum()
     }
 
     /// Feed captured bytes.
@@ -252,7 +277,7 @@ impl Parser {
     fn consume(&mut self, lines: Vec<RawLine>, out: &mut ParseOutput) {
         for mut line in lines {
             if let Some(r) = &self.redactor {
-                r.redact(&mut line.bytes);
+                r.redact_line(&mut line.bytes, &mut self.redact_state);
             }
             let text = vt::render_line(&line.bytes);
 
@@ -266,8 +291,8 @@ impl Parser {
                 continue;
             }
 
-            out.lines.push(line.clone());
-            self.feed_grouper(&line, &text, out);
+            self.feed_grouper(&line, text, out);
+            out.lines.push(line);
         }
     }
 
@@ -284,14 +309,16 @@ impl Parser {
 
         let warmup = std::mem::take(&mut self.warmup);
         for (line, text) in warmup {
-            self.feed_grouper(&line, &text, out);
+            self.feed_grouper(&line, text, out);
         }
     }
 
-    fn feed_grouper(&mut self, line: &RawLine, text: &str, out: &mut ParseOutput) {
+    fn feed_grouper(&mut self, line: &RawLine, text: String, out: &mut ParseOutput) {
         // Buffered before grouping: the line that closes the previous group is the line
         // that opens the next one, and both need their text available.
-        self.pending.push_back((line.index, text.to_string()));
+        self.pending_size += text.len();
+        self.pending.push_back((line.index, text));
+        let text = self.pending.back().map_or("", |(_, t)| t.as_str());
 
         let closed = self.grouper.push(&group::Line {
             index: line.index,
@@ -302,6 +329,21 @@ impl Parser {
 
         if let Some(g) = closed {
             self.close(g, out);
+        }
+
+        // Only the open entry is left in `pending` now, so this is its size.
+        if self.pending.len() >= MAX_ENTRY_LINES || self.pending_size >= MAX_ENTRY_BYTES {
+            if let Some(g) = self.grouper.flush() {
+                let start = g.start_line;
+                self.close(g, out);
+                // Cut by size, not by anything in the stream, so the boundary is a guess.
+                if let Some(e) = out.entries.last_mut().filter(|e| e.start_line == start) {
+                    e.boundaries = Boundaries::Inferred;
+                }
+            }
+            // Nothing was open, so what is held is blank lines that belong to no entry.
+            self.pending.clear();
+            self.pending_size = 0;
         }
     }
 
@@ -337,6 +379,7 @@ impl Parser {
                 break;
             }
             let (_, text) = self.pending.pop_front().expect("front exists");
+            self.pending_size -= text.len();
             if index >= g.start_line {
                 kept.push(text);
             }
@@ -512,6 +555,55 @@ mod tests {
     fn fallback_mode_admits_that_boundaries_are_inferred() {
         let (_, _, entries) = feed(NODE);
         assert!(entries.iter().all(|e| e.boundaries == Boundaries::Inferred));
+    }
+
+    #[test]
+    fn an_endless_entry_cannot_grow_the_pending_buffer() {
+        let line = format!("    {}\n", "x".repeat(200));
+        let mut p = Parser::new();
+        p.push(b"Error: boom\n", 0);
+        let (mut peak, mut entries, mut lines) = (0, 0, 1);
+        for i in 0..100_000 {
+            let out = p.push(line.as_bytes(), i);
+            entries += out.entries.len();
+            lines += out.lines.len();
+            peak = peak.max(p.pending_bytes());
+        }
+        assert_eq!(lines, 100_001, "bounding the entry must not lose a line");
+        assert!(peak <= 2 * MAX_ENTRY_BYTES, "pending reached {peak} bytes");
+        assert!(entries > 1, "an oversize entry should have been closed");
+    }
+
+    #[test]
+    fn an_endless_traceback_cannot_grow_the_pending_buffer() {
+        let mut p = Parser::new();
+        p.push(b"[info] a\n[info] b\n[info] c\n[info] d\n[info] e\n", 0);
+        p.push(b"Traceback (most recent call last):\n", 0);
+        for i in 0..50_000 {
+            p.push(b"column zero text that never terminates the block\n", i);
+        }
+        assert!(p.pending_bytes() <= 2 * MAX_ENTRY_BYTES, "{}", p.pending_bytes());
+    }
+
+    #[test]
+    fn a_closed_oversize_entry_says_its_boundary_is_a_guess() {
+        let mut p = Parser::new();
+        let mut entries = p.push(b"Error: boom\n", 0).entries;
+        for i in 0..(MAX_ENTRY_LINES + 10) as i64 {
+            entries.extend(p.push(b"    at frame\n", i).entries);
+        }
+        assert!(entries[0].end_line - entries[0].start_line < MAX_ENTRY_LINES as i64);
+        assert_eq!(entries[0].boundaries, Boundaries::Inferred);
+    }
+
+    #[test]
+    fn ordinary_entries_are_not_split_by_the_bound() {
+        let mut stream = b"Error: boom\n".to_vec();
+        for _ in 0..500 {
+            stream.extend_from_slice(b"    at Module._compile (node:internal/modules/cjs/loader:1105:14)\n");
+        }
+        let (_, _, entries) = feed(&stream);
+        assert_eq!(entries.len(), 1);
     }
 
     #[test]

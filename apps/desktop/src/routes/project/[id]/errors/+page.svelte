@@ -5,9 +5,15 @@
 	import ErrorNote from '$lib/components/ErrorNote.svelte';
 	import LevelChip from '$lib/components/LevelChip.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
-	import { apiError, entries, fingerprintHistories, fingerprints, projectRef } from '$lib/api';
+	import { apiError, entries, fingerprintHistories, projectRef } from '$lib/api';
 	import { app } from '$lib/stores/app.svelte';
 	import { fmtAgo, fmtStamp, pluralise } from '$lib/format';
+	import {
+		SIGNATURE_LIMIT,
+		readSignatures,
+		sortSignatures,
+		type SignatureSort
+	} from '$lib/signatures';
 	import type { EntryView, Fingerprint, FingerprintHistoryPoint } from '$lib/api/types';
 
 	/**
@@ -27,12 +33,13 @@
 	let instances = $state<Record<number, EntryView[]>>({});
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
-	let sort = $state<'frequency' | 'recency' | 'spread'>('frequency');
+	let sort = $state<SignatureSort>('frequency');
 	let errorsOnly = $state(true);
 	let open = $state<number | null>(null);
 
 	$effect(() => {
 		const id = projectId;
+		const only = errorsOnly;
 		if (!Number.isFinite(id)) return;
 		let cancelled = false;
 		loading = true;
@@ -42,7 +49,7 @@
 		(async () => {
 			try {
 				const ref = projectRef(id);
-				const list = await fingerprints(ref, 200, false);
+				const list = await readSignatures(ref, only);
 				if (cancelled) return;
 				fps = list;
 
@@ -93,15 +100,11 @@
 		};
 	});
 
-	const shown = $derived.by(() => {
-		let out = fps.filter((f) => (errorsOnly ? f.level === 'error' : true));
-		out = [...out].sort((a, b) => {
-			if (sort === 'recency') return b.last_seen - a.last_seen;
-			if (sort === 'spread') return b.run_count - a.run_count || b.total_count - a.total_count;
-			return b.total_count - a.total_count || b.last_seen - a.last_seen;
-		});
-		return out;
-	});
+	const shown = $derived(sortSignatures(fps, sort));
+
+	/** The list's columns. In a narrow window the runs column goes and the sparkline shrinks. */
+	const COLUMNS =
+		'grid-cols-[84px_minmax(0,1fr)_140px_92px_54px_128px] @max-[860px]:grid-cols-[84px_minmax(0,1fr)_124px_48px_96px]';
 
 	/** Occurrences in the most recent run that carried this signature. */
 	function latestBurst(id: number): number {
@@ -126,7 +129,9 @@
 
 <PageHeader
 	title="Errors"
-	sub={project ? `${project.name} · ${shown.length} signatures` : ''}
+	sub={project
+		? `${project.name} · ${shown.length === SIGNATURE_LIMIT ? 'latest ' : ''}${shown.length} signatures`
+		: ''}
 >
 	{#snippet actions()}
 		<div
@@ -136,7 +141,7 @@
 		>
 			<button
 				type="button"
-				class="cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {sort ===
+				class="cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {sort ===
 				'frequency'
 					? 'bg-base-content text-base-100'
 					: 'text-meta'}"
@@ -144,7 +149,7 @@
 			>
 			<button
 				type="button"
-				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {sort ===
+				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {sort ===
 				'recency'
 					? 'bg-base-content text-base-100'
 					: 'text-meta'}"
@@ -152,7 +157,7 @@
 			>
 			<button
 				type="button"
-				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {sort ===
+				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {sort ===
 				'spread'
 					? 'bg-base-content text-base-100'
 					: 'text-meta'}"
@@ -162,7 +167,7 @@
 		</div>
 		<button
 			type="button"
-			class="cursor-pointer rounded-[2px] border px-2 py-[4px] text-[10px] tracking-[0.16em] uppercase {errorsOnly
+			class="cursor-pointer rounded-[2px] border px-2 py-[4px] text-[12px] tracking-[0.1em] uppercase {errorsOnly
 				? 'border-base-content bg-base-content text-base-100'
 				: 'border-hair text-meta'}"
 			aria-pressed={errorsOnly}
@@ -184,15 +189,15 @@
 		/>
 	</div>
 {:else}
-	<div class="pane min-h-0 flex-1">
+	<div class="pane @container min-h-0 flex-1">
 		<div
-			class="sticky top-0 z-[2] grid grid-cols-[76px_minmax(280px,1fr)_140px_92px_54px_128px] items-center gap-3 border-b border-hair-strong bg-base-100 px-4 py-[7px]"
+			class="sticky top-0 z-[2] grid {COLUMNS} items-center gap-3 border-b border-hair-strong bg-base-100 px-4 py-[7px]"
 		>
 			<span class="label-xs">level</span>
 			<span class="label-xs">signature</span>
 			<span class="label-xs">last 30 runs</span>
 			<span class="label-xs">total</span>
-			<span class="label-xs">runs</span>
+			<span class="label-xs @max-[860px]:hidden">runs</span>
 			<span class="label-xs">last seen</span>
 		</div>
 
@@ -209,29 +214,29 @@
 			>
 				<button
 					type="button"
-					class="grid w-full cursor-pointer grid-cols-[76px_minmax(280px,1fr)_140px_92px_54px_128px] items-center gap-3 px-4 py-2 text-left hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)]"
+					class="grid w-full cursor-pointer {COLUMNS} items-center gap-3 px-4 py-2 text-left hover:bg-[color-mix(in_oklch,var(--color-base-content)_4%,transparent)]"
 					aria-expanded={open === f.id}
 					onclick={() => (open = open === f.id ? null : f.id)}
 				>
 					<span><LevelChip level={f.level} /></span>
 					<span class="min-w-0">
 						<code class="block truncate text-[12px]">{f.template}</code>
-						<span class="mt-[2px] block text-[10.5px] text-meta"
+						<span class="mt-[2px] block text-[12px] text-meta"
 							>first seen {fmtStamp(f.first_seen)}</span
 						>
 					</span>
 					<span><Sparkline points={h} level={f.level} /></span>
 					<span class="tnum">
 						<b class="text-[13px] font-semibold">{f.total_count}</b>
-						{#if latestBurst(f.id) > 1}<span class="ml-1 text-[10.5px] text-meta"
+						{#if latestBurst(f.id) > 1}<span class="ml-1 text-[12px] text-meta @max-[860px]:hidden"
 								>·{latestBurst(f.id)}× last</span
 							>{/if}
 					</span>
-					<span class="tnum text-right text-[12px] text-meta">{f.run_count}</span>
-					<span class="tnum text-[11.5px] text-meta" title={fmtStamp(f.last_seen)}>
+					<span class="tnum text-right text-[12px] text-meta @max-[860px]:hidden">{f.run_count}</span>
+					<span class="tnum text-[12px] text-meta" title={fmtStamp(f.last_seen)}>
 						{fmtAgo(f.last_seen)}
 						{#if quiet >= 3}<span
-								class="ml-[6px] inline-block text-[9px] tracking-[0.16em] text-success uppercase"
+								class="ml-[6px] inline-block text-[12px] tracking-[0.1em] text-success uppercase"
 								title="Not seen in the last {quiet} runs">quiet {quiet}</span
 							>{/if}
 					</span>
@@ -247,14 +252,14 @@
 									? `${INSTANCES} newest stored instances`
 									: pluralise(rows.length, 'stored instance') + ', newest first'}</span
 							>
-							<span class="tnum text-[10.5px] text-meta">fingerprint {f.hash.slice(0, 12)}</span>
+							<span class="tnum text-[12px] text-meta">fingerprint {f.hash.slice(0, 12)}</span>
 						</div>
 						{#if instancesError && !fetched}
 							<ErrorNote what="Could not read this signature's instances." detail={instancesError} />
 						{:else if !fetched}
-							<p class="mt-[6px] text-[11.5px] text-meta">Reading instances…</p>
+							<p class="mt-[6px] text-[12px] text-meta">Reading instances…</p>
 						{:else if rows.length === 0}
-							<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+							<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 								The instances for this signature have been evicted by the retention cap. The
 								signature's counts survive eviction; the text does not.
 							</p>
@@ -263,13 +268,13 @@
 								{#each rows as e (e.id)}
 									<li class="[&+li]:border-t [&+li]:border-hair">
 										<a
-											class="tnum grid grid-cols-[108px_72px_auto_1fr] items-baseline gap-[10px] px-[10px] py-1 text-[11.5px] hover:bg-[color-mix(in_oklch,var(--color-base-content)_6%,transparent)]"
+											class="tnum grid grid-cols-[138px_72px_auto_1fr] items-baseline gap-[10px] px-[10px] py-1 text-[12px] hover:bg-[color-mix(in_oklch,var(--color-base-content)_6%,transparent)]"
 											href="/project/{projectId}/runs/{e.run_id}"
 										>
-											<span class="text-[11px] text-meta">{fmtStamp(e.captured_at)}</span>
+											<span class="text-[12px] text-meta">{fmtStamp(e.captured_at)}</span>
 											<span class="text-meta">run #{e.run_id}</span>
 											{#if e.is_new_signature}<span
-													class="rounded-[2px] bg-flare px-1 text-[9px] font-semibold tracking-[0.14em] text-ink uppercase"
+													class="rounded-[2px] bg-flare px-1 text-[12px] font-semibold tracking-[0.1em] text-ink uppercase"
 													>first</span
 												>{/if}
 											<span class="min-w-0 truncate">{e.text.split('\n')[0]}</span>
@@ -278,7 +283,7 @@
 								{/each}
 							</ul>
 							{#if fetched.length > rows.length}
-								<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+								<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 									Showing the {rows.length} newest. Older instances are on each run's page, or
 									<code>logbear query</code> reaches all of them.
 								</p>

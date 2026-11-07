@@ -1,22 +1,38 @@
 //! Ingest. One [`Writer`] per live run.
 //!
 //! The writer is the only thing that mutates a project database. Work is batched into
-//! transactions flushed on whichever of the entry, byte and time thresholds trips first,
-//! bounding both the fsync rate and how long an entry stays invisible.
+//! transactions flushed on whichever of the time and byte thresholds trips first. At a low
+//! rate that is the clock, so an entry is visible almost at once; under load it is the byte
+//! threshold, so batches grow with the rate and a firehose commits far less often.
+//!
+//! A flush that fails loses nothing: the batch stays buffered and is retried, so a full
+//! disk costs capture at most what no longer fits in [`MAX_BUFFERED_BYTES`].
 
 use crate::error::Result;
 use crate::model::*;
 use crate::parse::{ParsedEntry, Parser, RawLine};
 use crate::model::RunStamp;
 use crate::redact::Redactor;
-use crate::store::{index::IndexDb, pack_chunk, Db};
-use rusqlite::Connection;
+use crate::store::{index::IndexDb, pack_chunk, read, Db};
+use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Flush thresholds; a flush happens when any one of them trips.
-pub const FLUSH_ENTRIES: usize = 100;
+/// Flush thresholds; a flush happens when either trips.
 pub const FLUSH_MICROS: i64 = 100_000;
-pub const FLUSH_BYTES: usize = 64 * 1024;
+pub const FLUSH_BYTES: usize = 1024 * 1024;
+
+/// What a writer holds while storage is failing, past which the oldest output goes. One
+/// flush's worth is the normal maximum, so this is only ever reached during an outage.
+pub const MAX_BUFFERED_BYTES: usize = 32 * 1024 * 1024;
+
+/// How long after a failed flush the next one is tried, doubling up to the maximum. A full
+/// disk fails slowly, and the capture thread should not spend its time on that.
+const RETRY_MIN_MICROS: i64 = 250_000;
+const RETRY_MAX_MICROS: i64 = 5_000_000;
+
+/// A run this large has churned the page cache, so its end is worth a release.
+const RELEASE_AFTER_BYTES: i64 = 8 * 1024 * 1024;
 
 /// How far a resumed run's start may sit from the moment its shim asked for it.
 pub const RESUME_WINDOW_MICROS: i64 = 60_000_000;
@@ -37,6 +53,15 @@ pub struct Writer {
     total_bytes: i64,
     mode: DelimiterMode,
     mode_written: bool,
+    /// When a flush may next be tried; zero unless the last one failed.
+    retry_at: i64,
+    retry_delay: i64,
+    /// What may be held while storage is failing.
+    max_buffered: usize,
+    /// Lines given up on during this outage, reported when it ends.
+    lines_lost: i64,
+    /// When the run ended, fixed by the first attempt so a retry does not move it.
+    finished_at: Option<i64>,
 }
 
 /// What a flush produced, so subscribers can be updated without re-reading the database.
@@ -56,7 +81,7 @@ impl Writer {
     ) -> Result<Writer> {
         let now = crate::now_micros();
         let project_id = db.project_id();
-        let command = serde_json::to_string(&stamp.command)?;
+        let command = serde_json::to_string(&redactor.redact_argv(&stamp.command))?;
         let env_keys = serde_json::to_string(&stamp.env_keys)?;
         let lockfiles = serde_json::to_string(&stamp.lockfile_hashes)?;
 
@@ -106,6 +131,11 @@ impl Writer {
             total_bytes: 0,
             mode: DelimiterMode::Fallback,
             mode_written: false,
+            retry_at: 0,
+            retry_delay: 0,
+            max_buffered: MAX_BUFFERED_BYTES,
+            lines_lost: 0,
+            finished_at: None,
         })
     }
 
@@ -131,9 +161,7 @@ impl Writer {
         shim_started_at: i64,
         redactor: Arc<Redactor>,
     ) -> Result<Option<Writer>> {
-        use rusqlite::OptionalExtension;
-
-        let command = serde_json::to_string(&stamp.command)?;
+        let command = serde_json::to_string(&redactor.redact_argv(&stamp.command))?;
         let found = db.with(|conn| {
             let row: Option<(String, i64, Option<i32>, Option<String>)> = conn
                 .query_row(
@@ -203,6 +231,11 @@ impl Writer {
             total_bytes,
             mode,
             mode_written: total_lines > 0,
+            retry_at: 0,
+            retry_delay: 0,
+            max_buffered: MAX_BUFFERED_BYTES,
+            lines_lost: 0,
+            finished_at: None,
         }))
     }
 
@@ -219,10 +252,13 @@ impl Writer {
     }
 
     /// Feeds captured bytes, returning anything a flush produced.
+    ///
+    /// The clock here is the real one rather than `captured_at`: a spool replay feeds
+    /// timestamps from the past, and the flush interval is about now.
     pub fn push(&mut self, bytes: &[u8], captured_at: i64) -> Result<Option<Flushed>> {
         let out = self.parser.push(bytes, captured_at);
         self.absorb(out);
-        if self.should_flush(captured_at) {
+        if self.should_flush(crate::now_micros()) {
             return self.flush().map(Some);
         }
         Ok(None)
@@ -234,20 +270,23 @@ impl Writer {
         let out = self.parser.tick(now);
         let had = !out.entries.is_empty() || !out.lines.is_empty();
         self.absorb(out);
-        if had || self.should_flush(now) {
+        if (had && now >= self.retry_at) || self.should_flush(now) {
             return self.flush().map(Some);
         }
         Ok(None)
     }
 
     /// Ends the run: flushes everything and stamps the outcome on the run row.
+    ///
+    /// Safe to call again after a failure: nothing is lost, and the run keeps the end time
+    /// of the first attempt.
     pub fn finish(
         &mut self,
         index: &IndexDb,
         exit_code: Option<i32>,
         signal: Option<&str>,
     ) -> Result<Flushed> {
-        let now = crate::now_micros();
+        let now = *self.finished_at.get_or_insert_with(crate::now_micros);
         let out = self.parser.finish(now);
         self.absorb(out);
         let flushed = self.flush()?;
@@ -273,6 +312,9 @@ impl Writer {
             exit_code,
             self.counters.n_error,
         )?;
+        if self.total_bytes >= RELEASE_AFTER_BYTES {
+            self.db.release_memory();
+        }
         Ok(flushed)
     }
 
@@ -289,18 +331,47 @@ impl Writer {
         }
         self.buffered_lines.append(&mut out.lines);
         self.buffered_entries.append(&mut out.entries);
+        if self.buffered_bytes > self.max_buffered {
+            self.shed_oldest();
+        }
+    }
+
+    /// Storage has been failing long enough that memory is the next thing to go, so the
+    /// oldest half of what is held makes way for what is still arriving. The newest output
+    /// is the output that explains whatever is about to happen.
+    fn shed_oldest(&mut self) {
+        let target = self.max_buffered / 2;
+        let mut freed = 0;
+        let cut = self
+            .buffered_lines
+            .iter()
+            .position(|l| {
+                freed += l.bytes.len() + 1;
+                self.buffered_bytes - freed <= target
+            })
+            .map_or(self.buffered_lines.len(), |i| i + 1);
+        let last_lost = self.buffered_lines[..cut].last().map_or(-1, |l| l.index);
+        self.buffered_lines.drain(..cut);
+        self.buffered_entries.retain(|e| e.end_line > last_lost);
+        self.buffered_bytes -= freed;
+        self.lines_lost += cut as i64;
     }
 
     fn should_flush(&self, now: i64) -> bool {
         if self.buffered_lines.is_empty() && self.buffered_entries.is_empty() {
             return false;
         }
-        self.buffered_entries.len() >= FLUSH_ENTRIES
-            || self.buffered_bytes >= FLUSH_BYTES
-            || now - self.last_flush >= FLUSH_MICROS
+        if now < self.retry_at {
+            return false;
+        }
+        self.buffered_bytes >= FLUSH_BYTES || now - self.last_flush >= FLUSH_MICROS
     }
 
     /// Writes everything buffered in a single transaction.
+    ///
+    /// On failure the batch stays buffered, whole, for the next attempt: the parser has
+    /// moved on, so dropping it would leave entries pointing at lines that were never
+    /// stored.
     pub fn flush(&mut self) -> Result<Flushed> {
         if self.buffered_lines.is_empty() && self.buffered_entries.is_empty() {
             return Ok(Flushed {
@@ -309,122 +380,80 @@ impl Writer {
             });
         }
 
-        let run_id = self.run_id;
-        let lines = std::mem::take(&mut self.buffered_lines);
-        let entries = std::mem::take(&mut self.buffered_entries);
-        let seq = self.next_seq;
-        let mode = self.mode;
-        let write_mode = !self.mode_written && !lines.is_empty();
-        self.buffered_bytes = 0;
-        self.last_flush = crate::now_micros();
+        let write_mode = !self.mode_written && !self.buffered_lines.is_empty();
+        let now = crate::now_micros();
+        self.last_flush = now;
 
         let mut counters = self.counters;
-        let views = self.db.with_mut(|conn| {
+        let lines = &self.buffered_lines;
+        let entries = &self.buffered_entries;
+        let (run_id, seq, mode) = (self.run_id, self.next_seq, self.mode);
+        let written = self.db.with_mut(|conn| {
             let tx = conn.transaction()?;
-
-            if !lines.is_empty() {
-                tx.execute(
-                    "INSERT INTO chunks (run_id, seq, captured_at, first_line, n_lines, bytes)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![
-                        run_id,
-                        seq,
-                        lines[0].captured_at,
-                        lines[0].index,
-                        lines.len() as i64,
-                        pack_chunk(&lines),
-                    ],
-                )?;
-            }
-
-            if write_mode {
-                tx.execute(
-                    "UPDATE runs SET delimiter_mode = ?2 WHERE id = ?1",
-                    rusqlite::params![run_id, mode.as_str()],
-                )?;
-            }
-
-            let mut views = Vec::with_capacity(entries.len());
-            for e in &entries {
-                let (fp_id, is_new) = upsert_fingerprint(&tx, e)?;
-                tx.execute(
-                    "INSERT INTO entries (run_id, start_line, end_line, captured_at, level,
-                                          evidence, is_error, error_reason, fingerprint_id,
-                                          boundaries)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    rusqlite::params![
-                        run_id,
-                        e.start_line,
-                        e.end_line,
-                        e.captured_at,
-                        e.level.as_str(),
-                        e.evidence.as_str(),
-                        e.is_error as i64,
-                        e.error_reason,
-                        fp_id,
-                        e.boundaries.as_str(),
-                    ],
-                )?;
-                let entry_id = tx.last_insert_rowid();
-                tx.execute(
-                    "INSERT INTO entries_fts (rowid, text) VALUES (?1, ?2)",
-                    rusqlite::params![entry_id, e.text],
-                )?;
-                bump_run_fingerprint(&tx, run_id, fp_id, e.captured_at)?;
-                counters.bump(e.level);
-
-                views.push(EntryView {
-                    entry: Entry {
-                        id: entry_id,
-                        run_id,
-                        start_line: e.start_line,
-                        end_line: e.end_line,
-                        captured_at: e.captured_at,
-                        level: e.level,
-                        evidence: e.evidence,
-                        is_error: e.is_error,
-                        error_reason: e.error_reason.clone(),
-                        fingerprint_id: Some(fp_id),
-                        boundaries: e.boundaries,
-                    },
-                    text: e.text.clone(),
-                    template: Some(e.template.clone()),
-                    is_new_signature: is_new,
-                });
-            }
-
-            tx.execute(
-                "INSERT INTO run_counters (run_id, n_entries, n_error, n_warn, n_info,
-                                           n_debug, n_trace, n_unknown)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(run_id) DO UPDATE SET
-                   n_entries = excluded.n_entries, n_error = excluded.n_error,
-                   n_warn = excluded.n_warn, n_info = excluded.n_info,
-                   n_debug = excluded.n_debug, n_trace = excluded.n_trace,
-                   n_unknown = excluded.n_unknown",
-                rusqlite::params![
+            let ids = write_batch(
+                &tx,
+                Batch {
                     run_id,
-                    counters.n_entries,
-                    counters.n_error,
-                    counters.n_warn,
-                    counters.n_info,
-                    counters.n_debug,
-                    counters.n_trace,
-                    counters.n_unknown,
-                ],
+                    chunk: Some((seq, lines)),
+                    mode: write_mode.then_some(mode),
+                    entries,
+                    counters: Some(&mut counters),
+                    recount: true,
+                },
             )?;
-
             tx.commit()?;
-            Ok(views)
-        })?;
+            Ok(ids)
+        });
+        let ids = match written {
+            Ok(ids) => ids,
+            Err(e) => {
+                self.retry_delay = (self.retry_delay * 2).clamp(RETRY_MIN_MICROS, RETRY_MAX_MICROS);
+                self.retry_at = now + self.retry_delay;
+                return Err(e);
+            }
+        };
 
-        if !lines.is_empty() {
+        if !self.buffered_lines.is_empty() {
             self.next_seq += 1;
         }
         if write_mode {
             self.mode_written = true;
         }
+        let views = self
+            .buffered_entries
+            .drain(..)
+            .zip(ids)
+            .map(|(e, (id, fp_id, is_new))| EntryView {
+                entry: Entry {
+                    id,
+                    run_id,
+                    start_line: e.start_line,
+                    end_line: e.end_line,
+                    captured_at: e.captured_at,
+                    level: e.level,
+                    evidence: e.evidence,
+                    is_error: e.is_error,
+                    error_reason: e.error_reason,
+                    fingerprint_id: Some(fp_id),
+                    boundaries: e.boundaries,
+                },
+                text: e.text,
+                template: Some(e.template),
+                is_new_signature: is_new,
+            })
+            .collect();
+        self.buffered_lines.clear();
+        self.buffered_bytes = 0;
         self.counters = counters;
+        self.retry_at = 0;
+        self.retry_delay = 0;
+        if self.lines_lost > 0 {
+            eprintln!(
+                "logbeard: run {run_id} lost {} line(s) while storage was failing",
+                self.lines_lost
+            );
+            self.lines_lost = 0;
+        }
 
         Ok(Flushed {
             entries: views,
@@ -433,63 +462,210 @@ impl Writer {
     }
 }
 
-/// Inserts or updates a fingerprint, returning its id and whether the project has seen it
-/// for the first time.
-fn upsert_fingerprint(conn: &Connection, e: &ParsedEntry) -> Result<(FingerprintId, bool)> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM fingerprints WHERE hash = ?1",
-            [&e.hash],
-            |r| r.get(0),
-        )
-        .ok();
-
-    match existing {
-        Some(id) => {
-            conn.execute(
-                "UPDATE fingerprints
-                    SET last_seen = max(last_seen, ?2), total_count = total_count + 1
-                  WHERE id = ?1",
-                rusqlite::params![id, e.captured_at],
-            )?;
-            Ok((id, false))
-        }
-        None => {
-            conn.execute(
-                "INSERT INTO fingerprints (template, hash, level, first_seen, last_seen,
-                                           total_count, run_count)
-                 VALUES (?1, ?2, ?3, ?4, ?4, 1, 0)",
-                rusqlite::params![e.template, e.hash, e.level.as_str(), e.captured_at],
-            )?;
-            Ok((conn.last_insert_rowid(), true))
-        }
-    }
+/// What one batch adds to one signature.
+struct SignatureDelta {
+    id: FingerprintId,
+    count: i64,
+    first_at: i64,
+    last_at: i64,
 }
 
-fn bump_run_fingerprint(
-    conn: &Connection,
-    run_id: RunId,
-    fp_id: FingerprintId,
-    at: i64,
-) -> Result<()> {
-    let changed = conn.execute(
-        "UPDATE run_fingerprints SET count = count + 1, last_at = max(last_at, ?3)
-          WHERE run_id = ?1 AND fingerprint_id = ?2",
-        rusqlite::params![run_id, fp_id, at],
-    )?;
-    if changed == 0 {
-        conn.execute(
-            "INSERT INTO run_fingerprints (run_id, fingerprint_id, count, first_at, last_at)
-             VALUES (?1, ?2, 1, ?3, ?3)",
-            rusqlite::params![run_id, fp_id, at],
-        )?;
-        // run_count counts distinct runs, so it moves only when the pair is new.
-        conn.execute(
-            "UPDATE fingerprints SET run_count = run_count + 1 WHERE id = ?1",
-            [fp_id],
-        )?;
+/// One transaction's worth of derived rows.
+pub(crate) struct Batch<'a> {
+    pub run_id: RunId,
+    /// The stored output, if this batch has any, and its sequence number.
+    pub chunk: Option<(i64, &'a [RawLine])>,
+    /// Written to the run row when set.
+    pub mode: Option<DelimiterMode>,
+    pub entries: &'a [ParsedEntry],
+    /// The run's running totals, stored with the batch. `None` leaves stored totals alone.
+    pub counters: Option<&'a mut Counters>,
+    /// Whether these entries add to signature counts. A squashed run's are already recorded
+    /// from before the squash, and adding the survivors would count them twice.
+    pub recount: bool,
+}
+
+/// The statements of one flush, returning each entry's id, its signature's id and whether
+/// that signature is new to the project.
+///
+/// Signatures are totalled across the batch and written once each, since most lines in a
+/// batch repeat a template and the alternative is two updates per line.
+pub(crate) fn write_batch(
+    tx: &Connection,
+    batch: Batch<'_>,
+) -> Result<Vec<(EntryId, FingerprintId, bool)>> {
+    let Batch {
+        run_id,
+        chunk,
+        mode,
+        entries,
+        mut counters,
+        recount,
+    } = batch;
+
+    if let Some((seq, lines)) = chunk.filter(|(_, lines)| !lines.is_empty()) {
+        let first = &lines[0];
+        tx.prepare_cached(
+            "INSERT INTO chunks (run_id, seq, captured_at, first_line, n_lines, bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?
+        .execute(rusqlite::params![
+            run_id,
+            seq,
+            first.captured_at,
+            first.index,
+            lines.len() as i64,
+            pack_chunk(lines),
+        ])?;
     }
-    Ok(())
+
+    if let Some(mode) = mode {
+        tx.prepare_cached("UPDATE runs SET delimiter_mode = ?2 WHERE id = ?1")?
+            .execute(rusqlite::params![run_id, mode.as_str()])?;
+    }
+
+    let mut find_fp = tx.prepare_cached("SELECT id FROM fingerprints WHERE hash = ?1")?;
+    let mut new_fp = tx.prepare_cached(
+        "INSERT INTO fingerprints (template, hash, level, first_seen, last_seen,
+                                   total_count, run_count)
+         VALUES (?1, ?2, ?3, ?4, ?4, 0, 0)",
+    )?;
+    let mut new_entry = tx.prepare_cached(
+        "INSERT INTO entries (run_id, start_line, end_line, captured_at, level,
+                              evidence, is_error, error_reason, fingerprint_id,
+                              boundaries)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    let mut index_text =
+        tx.prepare_cached("INSERT INTO entries_fts (rowid, text) VALUES (?1, ?2)")?;
+
+    let mut signatures: HashMap<&str, SignatureDelta> = HashMap::new();
+    let mut ids = Vec::with_capacity(entries.len());
+    for e in entries {
+        let (fp_id, is_new) = match signatures.get_mut(e.hash.as_str()) {
+            Some(delta) => {
+                delta.count += 1;
+                delta.first_at = delta.first_at.min(e.captured_at);
+                delta.last_at = delta.last_at.max(e.captured_at);
+                (delta.id, false)
+            }
+            None => {
+                let known: Option<i64> =
+                    find_fp.query_row([&e.hash], |r| r.get(0)).optional()?;
+                let id = match known {
+                    Some(id) => id,
+                    None => {
+                        new_fp.execute(rusqlite::params![
+                            e.template,
+                            e.hash,
+                            e.level.as_str(),
+                            e.captured_at
+                        ])?;
+                        tx.last_insert_rowid()
+                    }
+                };
+                signatures.insert(
+                    &e.hash,
+                    SignatureDelta {
+                        id,
+                        count: 1,
+                        first_at: e.captured_at,
+                        last_at: e.captured_at,
+                    },
+                );
+                (id, known.is_none())
+            }
+        };
+
+        new_entry.execute(rusqlite::params![
+            run_id,
+            e.start_line,
+            e.end_line,
+            e.captured_at,
+            e.level.as_str(),
+            e.evidence.as_str(),
+            e.is_error as i64,
+            e.error_reason,
+            fp_id,
+            e.boundaries.as_str(),
+        ])?;
+        let entry_id = tx.last_insert_rowid();
+        index_text.execute(rusqlite::params![entry_id, e.text])?;
+        if let Some(c) = counters.as_deref_mut() {
+            c.bump(e.level);
+        }
+
+        ids.push((entry_id, fp_id, is_new));
+    }
+
+    let mut bump_run = tx.prepare_cached(
+        "UPDATE run_fingerprints SET count = count + ?3, last_at = max(last_at, ?4)
+          WHERE run_id = ?1 AND fingerprint_id = ?2",
+    )?;
+    let mut has_run = tx.prepare_cached(
+        "SELECT count(*) FROM run_fingerprints WHERE run_id = ?1 AND fingerprint_id = ?2",
+    )?;
+    let mut new_run = tx.prepare_cached(
+        "INSERT INTO run_fingerprints (run_id, fingerprint_id, count, first_at, last_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    let mut bump_fp = tx.prepare_cached(
+        "UPDATE fingerprints
+            SET first_seen = min(first_seen, ?2), last_seen = max(last_seen, ?3),
+                total_count = total_count + ?4, run_count = run_count + ?5
+          WHERE id = ?1",
+    )?;
+    for delta in signatures.values() {
+        let known: i64 = if recount {
+            bump_run.execute(rusqlite::params![run_id, delta.id, delta.count, delta.last_at])? as i64
+        } else {
+            has_run.query_row(rusqlite::params![run_id, delta.id], |r| r.get(0))?
+        };
+        // run_count counts distinct runs, so it moves only when the pair is new.
+        if known == 0 {
+            new_run.execute(rusqlite::params![
+                run_id,
+                delta.id,
+                delta.count,
+                delta.first_at,
+                delta.last_at
+            ])?;
+        }
+        if recount || known == 0 {
+            bump_fp.execute(rusqlite::params![
+                delta.id,
+                delta.first_at,
+                delta.last_at,
+                delta.count,
+                (known == 0) as i64
+            ])?;
+        }
+    }
+
+    if let Some(c) = counters {
+        tx.prepare_cached(
+            "INSERT INTO run_counters (run_id, n_entries, n_error, n_warn, n_info,
+                                       n_debug, n_trace, n_unknown)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(run_id) DO UPDATE SET
+               n_entries = excluded.n_entries, n_error = excluded.n_error,
+               n_warn = excluded.n_warn, n_info = excluded.n_info,
+               n_debug = excluded.n_debug, n_trace = excluded.n_trace,
+               n_unknown = excluded.n_unknown",
+        )?
+        .execute(rusqlite::params![
+            run_id,
+            c.n_entries,
+            c.n_error,
+            c.n_warn,
+            c.n_info,
+            c.n_debug,
+            c.n_trace,
+            c.n_unknown,
+        ])?;
+    }
+
+    Ok(ids)
 }
 
 /// Groups consecutive runs of the same command into one session, so that repeatedly
@@ -511,7 +687,6 @@ fn session_group_for(conn: &Connection, command: &str) -> Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::read;
 
     struct Harness {
         _tmp: tempfile::TempDir,
@@ -634,6 +809,139 @@ mod tests {
     }
 
     #[test]
+    fn a_quiet_run_flushes_at_once_and_a_busy_one_in_large_batches() {
+        let h = harness();
+        let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+
+        // Slow enough that every line finds the interval already past: nothing is held back
+        // for a batch that is not coming, which is what keeps crash-to-hook short.
+        w.last_flush -= FLUSH_MICROS;
+        assert!(w.push(b"[info] one\n", crate::now_micros()).unwrap().is_some());
+        w.last_flush -= FLUSH_MICROS;
+        assert!(w.push(b"[info] two\n", crate::now_micros()).unwrap().is_some());
+
+        // A burst inside one interval holds until the byte threshold.
+        let line = format!("[info] {}\n", "x".repeat(1024));
+        let mut flushes = 0;
+        for _ in 0..(3 * FLUSH_BYTES / line.len()) {
+            w.last_flush = crate::now_micros();
+            if w.push(line.as_bytes(), crate::now_micros()).unwrap().is_some() {
+                flushes += 1;
+            }
+        }
+        assert!((2..=3).contains(&flushes), "3 MB took {flushes} flushes");
+    }
+
+    /// Fails every write that needs a new page, as a full disk would.
+    fn fill_the_disk(db: &Db) {
+        db.with(|c| {
+            let pages: i64 = c.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            c.execute_batch(&format!("PRAGMA max_page_count = {pages};"))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn free_the_disk(db: &Db) {
+        db.with(|c| {
+            c.execute_batch("PRAGMA max_page_count = 1073741823;")?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn bulk(from: usize, to: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for i in from..to {
+            out.extend_from_slice(format!("[info] request {i} {}\n", "x".repeat(200)).as_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn a_full_disk_loses_nothing_once_it_clears() {
+        let h = harness();
+        let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+        w.push(b"[info] before\n", crate::now_micros()).unwrap();
+        w.flush().unwrap();
+
+        fill_the_disk(&h.db);
+        w.push(&bulk(0, 2000), crate::now_micros()).ok();
+        let err = w.flush().expect_err("nothing fits");
+        assert!(err.is_disk_full(), "{err}");
+
+        // Still capturing, and the run's lines are all still in hand.
+        w.push(&bulk(2000, 2100), crate::now_micros()).ok();
+
+        free_the_disk(&h.db);
+        w.finish(&h.index, Some(0), None).unwrap();
+        let run = read::get_run(&h.db, w.run_id()).unwrap();
+        assert_eq!(run.counters.n_entries, 2101);
+        assert_eq!(run.exit_code, Some(0));
+        let lines = read::line_count(&h.db, w.run_id()).unwrap();
+        assert_eq!(lines, 2101, "a line stored out of place would leave a gap");
+        let kept = h.db.with(|c| crate::store::read_lines(c, w.run_id(), 0, lines)).unwrap();
+        assert_eq!(kept.len(), 2101);
+    }
+
+    #[test]
+    fn a_finish_refused_by_a_full_disk_can_be_tried_again() {
+        let h = harness();
+        let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+        w.push(&bulk(0, 2000), crate::now_micros()).ok();
+        fill_the_disk(&h.db);
+        assert!(w.finish(&h.index, Some(3), None).is_err());
+        let first_end = w.finished_at;
+
+        free_the_disk(&h.db);
+        w.retry_at = 0;
+        w.finish(&h.index, Some(3), None).unwrap();
+        assert_eq!(w.finished_at, first_end, "a retry must not move the end of the run");
+        let run = read::get_run(&h.db, w.run_id()).unwrap();
+        assert_eq!(run.exit_code, Some(3));
+        assert_eq!(run.ended_at, first_end);
+        assert_eq!(run.counters.n_entries, 2000);
+    }
+
+    #[test]
+    fn a_long_outage_gives_up_the_oldest_output_and_keeps_the_newest() {
+        let h = harness();
+        let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+        w.max_buffered = 64 * 1024;
+        fill_the_disk(&h.db);
+        for start in (0..3000).step_by(100) {
+            w.push(&bulk(start, start + 100), crate::now_micros()).ok();
+        }
+        assert!(w.buffered_bytes <= w.max_buffered, "held {} bytes", w.buffered_bytes);
+        assert!(w.lines_lost > 0);
+
+        free_the_disk(&h.db);
+        w.finish(&h.index, Some(0), None).unwrap();
+        let id = w.run_id();
+        let newest = read::entries(&h.db, &crate::proto::EntryFilter { run_id: Some(id), limit: 1, ..Default::default() })
+            .unwrap();
+        assert!(newest[0].text.contains("request 2999"), "{}", newest[0].text);
+        assert!(w.lines_lost == 0, "reported once storage came back");
+
+        // The gap where lines went missing must not trip anything that reads the run later.
+        assert!(crate::store::retention::squash_run(&h.db, id).is_ok());
+        assert!(crate::store::retention::reparse_run(&h.db, id).is_ok());
+    }
+
+    #[test]
+    fn a_panic_with_the_writer_locked_does_not_take_the_project_down() {
+        let h = harness();
+        let db = h.db.clone();
+        let _ = std::thread::spawn(move || {
+            let _ = db.with(|_| -> Result<()> { panic!("boom") });
+        })
+        .join();
+        let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
+        w.push(b"[info] still here\n", crate::now_micros()).unwrap();
+        w.finish(&h.index, Some(0), None).unwrap();
+    }
+
+    #[test]
     fn counters_survive_many_flushes() {
         let h = harness();
         let mut w = Writer::start(&h.db, &h.index, &stamp(), Arc::new(Redactor::disabled())).unwrap();
@@ -655,6 +963,22 @@ mod tests {
 /// `ended_at` is set to the last byte captured rather than the current clock, so a run
 /// reconciled hours later does not report an inflated duration.
 pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
+    Ok(close_orphans(db)?.len())
+}
+
+/// [`close_orphaned_runs`], and the same on the central index, whose summaries would
+/// otherwise call those runs live for good and whose open runs say which projects need
+/// looking at on startup.
+pub fn reconcile_orphans(db: &Db, index: &IndexDb) -> Result<usize> {
+    let orphans = close_orphans(db)?;
+    for (run_id, ended_at) in &orphans {
+        let n_error = read::get_run(db, *run_id).map_or(0, |r| r.counters.n_error);
+        index.record_run_end(db.project_id(), *run_id, *ended_at, None, n_error)?;
+    }
+    Ok(orphans.len())
+}
+
+fn close_orphans(db: &Db) -> Result<Vec<(RunId, i64)>> {
     let orphans: Vec<(RunId, i64)> = db.with(|conn| {
         let mut stmt = conn.prepare(
             "SELECT r.id, COALESCE(
@@ -667,7 +991,7 @@ pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
     })?;
 
     if orphans.is_empty() {
-        return Ok(0);
+        return Ok(orphans);
     }
     db.with_mut(|conn| {
         let tx = conn.transaction()?;
@@ -682,13 +1006,13 @@ pub fn close_orphaned_runs(db: &Db) -> Result<usize> {
         tx.commit()?;
         Ok(())
     })?;
-    Ok(orphans.len())
+    Ok(orphans)
 }
 
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
-    use crate::store::{index::IndexDb, read};
+    use crate::store::index::IndexDb;
 
     #[test]
     fn a_run_abandoned_by_a_dead_daemon_is_closed_on_the_next_start() {

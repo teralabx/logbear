@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -19,14 +22,15 @@ jobs:
     # macOS is the supported platform, and the PTY and launchd paths only exist here.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install the toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # tauri-build refuses to compile the desktop crate unless every `externalBin` sidecar
       # exists, and those are build outputs (`scripts/sidecars.sh`), never committed.
@@ -40,13 +44,42 @@ jobs:
           done
 
       # No `cargo fmt --check`: this codebase is hand-formatted wider than rustfmt's
-      # defaults, and adopting them is a 36-file mechanical diff nobody has asked for.
+      # defaults, and adopting them is a 39-file mechanical diff nobody has asked for.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
       - run: cargo test --workspace
 
       # These spawn the real binary under a PTY, so they are ignored by default.
-      - run: cargo test --workspace -- --ignored
+      - run: cargo test -p logbear -- --ignored
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Read rather than repeated, so the job checks what the manifest declares.
+      - name: Read the declared version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      # See the Rust job: the desktop crate will not compile without these.
+      - name: Stub the Tauri sidecars
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p apps/desktop/src-tauri/binaries
+          for bin in logbear logbeard logbear-mcp logbear-hook; do
+            touch "apps/desktop/src-tauri/binaries/$bin-$triple"
+          done
+
+      - run: cargo check --workspace --all-targets --locked
 
   frontend:
     name: Desktop frontend
@@ -55,9 +88,9 @@ jobs:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
 
       - run: bun install --frozen-lockfile
 
@@ -71,11 +104,13 @@ jobs:
     name: Packaging metadata
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # Catches a manifest that cannot be published — a missing description, a licence
       # file that does not resolve — before a release depends on it.

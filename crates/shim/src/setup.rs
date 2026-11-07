@@ -79,9 +79,10 @@ fn title(step: Step) -> &'static str {
 
 /// What `setup` would do, given what is installed now.
 ///
-/// PATH is never a step here: whatever ran this command is already on it. The daemon is one
-/// only when this install owns its service — Homebrew's is `brew services` — and only when
-/// no agent was named, since `--agent pi` asks about pi and nothing else.
+/// PATH is never installed here: whatever ran this command is already on it. A remove takes
+/// back out whatever the desktop app put there. Both PATH and the daemon are steps only when
+/// no agent was named, since `--agent pi` asks about pi and nothing else, and the daemon only
+/// when this install owns its service: Homebrew's is `brew services`.
 pub fn plan(status: &InstallStatus, only: &[Agent], remove: bool, homebrew: bool) -> Vec<Planned> {
     let mut out = Vec::new();
 
@@ -126,6 +127,15 @@ pub fn plan(status: &InstallStatus, only: &[Agent], remove: bool, homebrew: bool
             });
         }
     }
+
+    if remove && only.is_empty() {
+        let path = state(status, Step::Path);
+        out.push(Planned {
+            step: Step::Path,
+            action: wanted(path, true),
+            detail: path.detail.clone(),
+        });
+    }
     out
 }
 
@@ -137,21 +147,31 @@ fn wanted(s: &StepState, remove: bool) -> Action {
     }
 }
 
-pub fn run(only: Vec<Agent>, yes: bool, remove: bool) -> Result<i32, String> {
-    let steps = plan(
-        &logbear_setup::status(),
-        &only,
-        remove,
-        logbear_setup::homebrew_managed(),
-    );
+pub fn run(only: Vec<Agent>, yes: bool, remove: bool, purge: bool) -> Result<i32, String> {
+    let mut status = logbear_setup::status();
+    if remove {
+        status.path = logbear_setup::path_removal();
+    }
+    let steps = plan(&status, &only, remove, logbear_setup::homebrew_managed());
     print!("{}", render_plan(&steps));
+
+    let data = logbear_core::paths::home();
+    if purge {
+        println!(
+            "\nAlso deletes {} and everything captured in it. This cannot be undone.",
+            data.display()
+        );
+    }
 
     let todo: Vec<&Planned> = steps
         .iter()
         .filter(|p| matches!(p.action, Action::Install | Action::Remove))
         .collect();
-    if todo.is_empty() {
+    if todo.is_empty() && !purge {
         println!("\n{}", ui::clear("nothing to do"));
+        if remove && only.is_empty() {
+            println!("\n{}", data_note(&data));
+        }
         return Ok(0);
     }
 
@@ -161,11 +181,16 @@ pub fn run(only: Vec<Agent>, yes: bool, remove: bool) -> Result<i32, String> {
             return Ok(1);
         }
         let verb = if remove { "Remove" } else { "Make" };
-        print!(
-            "\n{verb} these {} change{}? [y/N] ",
-            todo.len(),
-            plural(todo.len())
-        );
+        if todo.is_empty() {
+            print!("\nDelete it? [y/N] ");
+        } else {
+            let also = if purge { " and delete the data" } else { "" };
+            print!(
+                "\n{verb} these {} change{}{also}? [y/N] ",
+                todo.len(),
+                plural(todo.len())
+            );
+        }
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         let _ = std::io::stdin().lock().read_line(&mut answer);
@@ -208,7 +233,34 @@ pub fn run(only: Vec<Agent>, yes: bool, remove: bool) -> Result<i32, String> {
             println!("\n{note}");
         }
     }
+
+    if purge {
+        // The data outlives a failed step on purpose: until the agents are disconnected, a
+        // retry may still need what is there.
+        if failures > 0 {
+            println!("\nKept {}: fix the failures above first.", data.display());
+        } else {
+            match logbear_setup::purge_data() {
+                Ok(Some(dir)) => println!("\n{} deleted {}", ui::clear("ok "), dir.display()),
+                Ok(None) => println!("\nNo data to delete at {}.", data.display()),
+                Err(e) => {
+                    failures += 1;
+                    println!("\n{} {e}", ui::flare("err"));
+                }
+            }
+        }
+    } else if remove && only.is_empty() {
+        println!("\n{}", data_note(&data));
+    }
     Ok(if failures == 0 { 0 } else { 1 })
+}
+
+/// A remove leaves captured data alone, so say where it went.
+fn data_note(data: &std::path::Path) -> String {
+    format!(
+        "Your captured data is still in {}. To delete it too: logbear setup --remove --purge",
+        data.display()
+    )
 }
 
 /// What the agent itself still needs from the user. Each one fails quietly otherwise: an
@@ -354,6 +406,29 @@ mod tests {
         assert_eq!(action(&p, Step::Daemon), Some(&Action::Remove));
         assert_eq!(action(&p, Step::HookClaude), Some(&Action::Remove));
         assert_eq!(action(&p, Step::McpClaude), Some(&Action::Done));
+    }
+
+    #[test]
+    fn remove_takes_path_back_out() {
+        let p = plan(&fresh(), &[], true, false);
+        assert_eq!(action(&p, Step::Path), Some(&Action::Remove));
+    }
+
+    #[test]
+    fn remove_with_nothing_on_path_leaves_path_alone() {
+        let mut s = fresh();
+        s.path = st(false, true);
+        let p = plan(&s, &[], true, false);
+        assert_eq!(action(&p, Step::Path), Some(&Action::Done));
+    }
+
+    #[test]
+    fn removing_one_agent_leaves_path_and_the_daemon_alone() {
+        let mut s = fresh();
+        s.mcp_pi = st(true, true);
+        let p = plan(&s, &[Agent::Pi], true, false);
+        assert_eq!(action(&p, Step::Path), None);
+        assert_eq!(action(&p, Step::Daemon), None);
     }
 
     #[test]

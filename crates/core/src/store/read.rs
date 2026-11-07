@@ -88,7 +88,8 @@ pub fn active_runs(db: &Db) -> Result<Vec<Run>> {
 /// Resolves a symbolic run reference.
 ///
 /// `LastGood` requires both a zero exit code and no logged errors, so a run that exited
-/// cleanly while reporting failures does not qualify.
+/// cleanly while reporting failures does not qualify. Nor does an evicted run with no
+/// counters, which an older rebuild could leave behind: nothing is left to say it was clean.
 pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
     let sql = match r {
         RunRef::Id(id) => {
@@ -101,6 +102,7 @@ pub fn resolve_run(db: &Db, r: &RunRef) -> Result<Option<Run>> {
         RunRef::LastGood => format!(
             "SELECT {RUN_COLUMNS} {RUN_FROM}
               WHERE r.ended_at IS NOT NULL AND r.exit_code = 0 AND COALESCE(c.n_error,0) = 0
+                AND NOT (r.chunks_evicted = 1 AND c.run_id IS NULL)
               ORDER BY r.started_at DESC LIMIT 1"
         ),
         RunRef::LastBad => format!(
@@ -148,7 +150,14 @@ pub fn entries(db: &Db, f: &EntryFilter) -> Result<Vec<EntryView>> {
         params.push(Box::new(level.as_str().to_string()));
     }
     if let Some(since) = f.since {
-        wheres.push("e.captured_at > ?".into());
+        // By run first, so the walk is over runs that could match and not the whole table.
+        // A run's entries cannot be newer than the run's end.
+        wheres.push(
+            "e.run_id IN (SELECT id FROM runs WHERE ended_at IS NULL OR ended_at >= ?)
+             AND e.captured_at > ?"
+                .into(),
+        );
+        params.push(Box::new(since));
         params.push(Box::new(since));
     }
     if let Some(fp) = f.fingerprint_id {
@@ -441,7 +450,7 @@ pub fn unread(
     };
     let entries = entries(db, &filter)?;
 
-    let (count, oldest, newest) = db.with(|conn| {
+    let (count, oldest, newest) = db.read(|conn| {
         let row: (i64, Option<i64>, Option<i64>) = conn.query_row(
             "SELECT count(*), min(captured_at), max(id) FROM entries
               WHERE is_error = 1 AND id > ?1",
@@ -451,7 +460,7 @@ pub fn unread(
         Ok(row)
     })?;
 
-    let new_signatures = db.with(|conn| {
+    let new_signatures = db.read(|conn| {
         Ok(conn.query_row(
             // NULL fingerprints count as new: an error that failed fingerprinting cannot
             // be matched against anything this session has seen, and the safe direction
@@ -469,7 +478,7 @@ pub fn unread(
 
     // Every level, not just errors: the nudge exists because a change can go wrong without
     // logging anything the daemon would classify as an error.
-    let unseen_lines = db.with(|conn| {
+    let unseen_lines = db.read(|conn| {
         Ok(conn.query_row(
             "SELECT count(*) FROM entries WHERE id > ?1",
             [cursor.nudge_entry_id],
@@ -477,7 +486,7 @@ pub fn unread(
         )?)
     })?;
 
-    let server_running = db.with(|conn| {
+    let server_running = db.read(|conn| {
         Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM runs WHERE ended_at IS NULL)",
             [],
@@ -696,7 +705,7 @@ pub fn query_receipt_fps(
                 "SELECT DISTINCT fingerprint_id FROM entries
                   WHERE id IN ({marks}) AND is_error = 1 AND fingerprint_id IS NOT NULL"
             );
-            fps.extend(db.with(|conn| {
+            fps.extend(db.read(|conn| {
                 let mut stmt = conn.prepare(&sql)?;
                 let refs: Vec<&dyn rusqlite::ToSql> =
                     ids.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -716,7 +725,7 @@ pub fn query_receipt_fps(
             let sql = format!(
                 "SELECT id FROM fingerprints WHERE level = 'error' AND template IN ({marks})"
             );
-            fps.extend(db.with(|conn| {
+            fps.extend(db.read(|conn| {
                 let mut stmt = conn.prepare(&sql)?;
                 let refs: Vec<&dyn rusqlite::ToSql> =
                     templates.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -820,6 +829,9 @@ mod tests {
             }
             t += 1_000;
             w.push(&out, t).unwrap();
+            if i % 97 == 0 {
+                w.flush().unwrap();
+            }
         }
         w.finish(&h.index, Some(1), None).unwrap();
         let id = w.run_id();
@@ -893,6 +905,46 @@ mod tests {
         got.sort_by_key(|c| c.run_id);
         let got: Vec<(RunId, i64, i64)> = got.iter().map(|c| (c.run_id, c.total, c.new)).collect();
         assert_eq!(got, vec![(r1, 1, 1), (r2, 2, 1)]);
+    }
+
+    #[test]
+    fn since_finds_entries_by_time_across_runs() {
+        let h = h();
+        let old = run(&h, b"[info] old\n", 0);
+        h.db.with(|c| {
+            c.execute("UPDATE entries SET captured_at = 100 WHERE run_id = ?1", [old])?;
+            c.execute("UPDATE runs SET ended_at = 200 WHERE id = ?1", [old])?;
+            Ok(())
+        })
+        .unwrap();
+        let new = run(&h, b"[info] new\n", 0);
+
+        let found = entries(&h.db, &EntryFilter { since: Some(1_000), ..Default::default() }).unwrap();
+        assert_eq!(found.iter().map(|e| e.entry.run_id).collect::<Vec<_>>(), vec![new]);
+        let all = entries(&h.db, &EntryFilter { since: Some(50), ..Default::default() }).unwrap();
+        assert_eq!(all.len(), 2, "a run that ended after the cutoff is still looked at");
+    }
+
+    #[test]
+    fn status_queries_use_the_error_indexes_rather_than_a_scan() {
+        let h = h();
+        run(&h, b"[error] boom\n", 1);
+        let plan = |sql: &str| -> String {
+            h.db.read(|c| {
+                let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(3))?;
+                Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?.join("; "))
+            })
+            .unwrap()
+        };
+        let errors = plan("SELECT count(*) FROM entries WHERE is_error = 1 AND captured_at > 1");
+        assert!(errors.contains("entries_errors"), "{errors}");
+        let new = plan(
+            "SELECT rf.run_id, COUNT(*) FROM fingerprints f
+              CROSS JOIN run_fingerprints rf ON f.id = rf.fingerprint_id
+              WHERE f.level = 'error' AND f.first_seen >= rf.first_at GROUP BY rf.run_id",
+        );
+        assert!(new.contains("fingerprints_errors"), "{new}");
     }
 
     #[test]

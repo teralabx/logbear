@@ -6,7 +6,7 @@
 # one that matters when a user types `logbear mix phx.server` for the first time.
 #
 # Everything happens inside a throwaway LOGBEAR_HOME, so running this cannot touch your
-# real history.
+# real history, and the only daemon it ever signals is the one it started.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -15,17 +15,26 @@ BIN="$ROOT/target/debug"
 
 LOGBEAR_HOME="$(mktemp -d)"
 WORK="$(mktemp -d)"
+OUT="$(mktemp -d)"
+DAEMON_PID=""
 export LOGBEAR_HOME
+# Either of these would point the binaries back at a real daemon.
+unset LOGBEAR_SOCKET LOGBEAR_DAEMON
 trap 'cleanup' EXIT
 
 PASS=0
 FAIL=0
 
 cleanup() {
+  # `stop` reaches only the daemon on this LOGBEAR_HOME's socket, including one a wrapped
+  # command started by itself. Never match on the process name: that finds the daemon you
+  # are actually running.
   "$BIN/logbeard" stop >/dev/null 2>&1 || true
   sleep 0.3
-  pkill -f "logbeard serve" 2>/dev/null || true
-  rm -rf "$LOGBEAR_HOME" "$WORK"
+  if [ -n "$DAEMON_PID" ]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+  fi
+  rm -rf "$LOGBEAR_HOME" "$WORK" "$OUT"
 }
 
 ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -48,6 +57,7 @@ done
 
 step "Daemon starts and answers"
 "$BIN/logbeard" serve >"$LOGBEAR_HOME/daemon.out" 2>&1 &
+DAEMON_PID=$!
 for _ in $(seq 1 100); do
   [ -S "$LOGBEAR_HOME/logbeard.sock" ] && break
   sleep 0.1
@@ -61,10 +71,10 @@ git init -q . 2>/dev/null
 git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "first" 2>/dev/null
 
 # A clean run first, so there is a last-known-good to diff against.
-"$BIN/logbear" /bin/sh -c 'echo "GET /users"; echo "compiled 41 files"' >/tmp/rl-clean.out 2>&1
+"$BIN/logbear" /bin/sh -c 'echo "GET /users"; echo "compiled 41 files"' >"$OUT/clean.out" 2>&1
 CLEAN_RC=$?
 [ "$CLEAN_RC" = "0" ] && ok "exit code propagated for a clean run" || bad "exit code propagated for a clean run" "got $CLEAN_RC"
-contains "passthrough reached the terminal" "$(cat /tmp/rl-clean.out)" "GET /users"
+contains "passthrough reached the terminal" "$(cat "$OUT/clean.out")" "GET /users"
 
 # Then a failing run with a multi-line stack trace and a secret in it.
 "$BIN/logbear" /bin/sh -c '
@@ -73,7 +83,7 @@ printf "connecting to postgres://admin:hunter2@db:5432/app\n"
 printf "Error: connection refused\n"
 printf "    at Object.<anonymous> (/app/server.js:12:9)\n"
 printf "    at Module._compile (node:internal/modules:1105:14)\n"
-exit 3' >/tmp/rl-bad.out 2>&1
+exit 3' >"$OUT/bad.out" 2>&1
 BAD_RC=$?
 [ "$BAD_RC" = "3" ] && ok "non-zero exit code propagated verbatim" || bad "non-zero exit code propagated verbatim" "expected 3, got $BAD_RC"
 
@@ -150,12 +160,13 @@ sleep 1.5
 OPEN_BEFORE="$("$BIN/logbear" query "SELECT count(*) AS n FROM runs WHERE ended_at IS NULL" --json 2>/dev/null | tr -d ' \n')"
 contains "the run is live while it runs" "$OPEN_BEFORE" '"n"'
 
-pkill -f "logbeard serve" 2>/dev/null
+kill "$DAEMON_PID" 2>/dev/null
 kill "$WRAPPED" 2>/dev/null
 wait "$WRAPPED" 2>/dev/null
 sleep 0.5
 
 "$BIN/logbeard" serve >>"$LOGBEAR_HOME/daemon.out" 2>&1 &
+DAEMON_PID=$!
 for _ in $(seq 1 100); do
   [ -S "$LOGBEAR_HOME/logbeard.sock" ] && break
   sleep 0.1

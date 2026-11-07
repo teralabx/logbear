@@ -10,8 +10,9 @@
 
 use clap::{Parser, Subcommand};
 
-/// The closed list. A name added here is taken away from the wrap path, so the names are
-/// deliberately ones nobody has an executable called.
+/// The closed list. A name added here is taken away from the wrap path, and some of these do
+/// shadow real programs (`cat`, `diff`): `logbear -- cat notes.txt` wraps the program, and
+/// the `--help` text says so.
 pub const SUBCOMMANDS: &[&str] = &[
     "cat",
     "logs",
@@ -104,8 +105,12 @@ pub fn classify(args: &[String]) -> Dispatch {
     after_help = "Anything that is not one of the commands above is a command to wrap:\n  \
                   logbear mix phx.server\n  \
                   logbear --no-pty npm test     pipes instead of a pty (degraded timing)\n  \
-                  logbear --force psql          capture even a denylisted command\n  \
-                  logbear -- logs               wrap a program actually named `logs`"
+                  logbear --force psql          capture even a denylisted command\n\n\
+                  The commands above take priority over programs with the same name, so\n\
+                  `logbear cat notes.txt` is this tool's `cat`. Put `--` first to wrap the\n\
+                  program instead:\n  \
+                  logbear -- cat notes.txt      wrap the real `cat`\n  \
+                  logbear -- diff a.txt b.txt   wrap the real `diff`"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -178,7 +183,8 @@ pub enum Cmd {
 
     /// Connect logbear to the coding agents on this machine: MCP server and hook for each of
     /// Claude Code, Codex, pi and Hermes found, plus the daemon service. Shows the plan and
-    /// asks before writing anything; every config is backed up and merged.
+    /// asks before writing anything; every config is backed up and merged, and one that will
+    /// not parse is refused and left alone.
     Setup {
         /// Only these agents. Repeatable. Without it, every agent found, and the daemon.
         #[arg(long = "agent", value_enum)]
@@ -186,9 +192,14 @@ pub enum Cmd {
         /// Apply without asking.
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Undo instead: take logbear back out of each agent's config.
+        /// Undo instead: take logbear back out of each agent's config and, unless agents are
+        /// named, remove the daemon service, the PATH link and the shell profile block.
+        /// Captured data is kept; the command prints where it is.
         #[arg(long)]
         remove: bool,
+        /// With --remove: also stop the daemon and delete all captured data. Cannot be undone.
+        #[arg(long, requires = "remove", conflicts_with = "agents")]
+        purge: bool,
     },
 
     /// Opt-in update checks: `on`, `off`, or `check` now. Off by default; when on,
@@ -326,6 +337,22 @@ mod tests {
     fn the_clap_definition_is_well_formed() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn help_says_how_to_reach_a_program_a_subcommand_shadows() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("logbear -- cat notes.txt"), "{help}");
+        assert_eq!(wrapped(&["--", "cat", "notes.txt"]).command, ["cat", "notes.txt"]);
+    }
+
+    #[test]
+    fn purge_is_only_reachable_through_a_full_remove() {
+        let parse = |parts: &[&str]| Cli::try_parse_from(parts.iter().copied());
+        assert!(parse(&["logbear", "setup", "--purge"]).is_err());
+        assert!(parse(&["logbear", "setup", "--remove", "--purge"]).is_ok());
+        assert!(parse(&["logbear", "setup", "--remove", "--purge", "--agent", "pi"]).is_err());
     }
 
     #[test]

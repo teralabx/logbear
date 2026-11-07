@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/teralabx/logbear/security/advisories/new
     about: Report privately. Never in a public issue.
   - name: Question or idea
-    url: https://github.com/teralabx/logbear/discussions
-    about: For anything that is not yet a bug report or a concrete proposal.
+    url: https://github.com/teralabx/logbear/issues
+    about: Search existing issues for anything that is not yet a bug report or a concrete proposal.

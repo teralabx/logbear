@@ -56,20 +56,49 @@ pub fn contains(root: &Path, run_cwd: &Path) -> bool {
     cwd.starts_with(&root)
 }
 
-/// Builds the stamp recorded at the instant a command is spawned.
+/// Builds the stamp recorded for a run.
+///
+/// Runs beside the wrapped command rather than ahead of it. The git calls run concurrently,
+/// so a short command pays for the slowest one rather than the sum of them.
 pub fn stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp {
-    let root = project_root(cwd);
+    let (root, git_sha, git_branch, git_dirty_hash) = std::thread::scope(|s| {
+        let root = s.spawn(|| project_root(cwd));
+        let sha = s.spawn(|| git(cwd, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()));
+        let branch = s.spawn(|| {
+            git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .map(|s| s.trim().to_string())
+                .filter(|s| s != "HEAD")
+        });
+        let dirty = s.spawn(|| dirty_hash(cwd));
+        (
+            root.join().unwrap_or_else(|_| cwd.to_path_buf()),
+            sha.join().unwrap_or(None),
+            branch.join().unwrap_or(None),
+            dirty.join().unwrap_or(None),
+        )
+    });
+    let mut stamp = quick_stamp(command, cwd, cols, rows);
+    stamp.project_name = project_name(&root);
+    stamp.project_root = root.to_string_lossy().into_owned();
+    stamp.git_sha = git_sha;
+    stamp.git_branch = git_branch;
+    stamp.git_dirty_hash = git_dirty_hash;
+    stamp.lockfile_hashes = lockfile_hashes(&root);
+    stamp
+}
+
+/// A stamp that runs nothing: enough to file the run under the right project when the real
+/// one is not ready, as when a command finishes before git has answered.
+pub fn quick_stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp {
+    let root = cwd
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .unwrap_or(cwd);
     RunStamp {
         command,
         cwd: cwd.to_string_lossy().into_owned(),
-        project_name: project_name(&root),
+        project_name: project_name(root),
         project_root: root.to_string_lossy().into_owned(),
-        git_sha: git(cwd, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()),
-        git_branch: git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
-            .map(|s| s.trim().to_string())
-            .filter(|s| s != "HEAD"),
-        git_dirty_hash: dirty_hash(cwd),
-        lockfile_hashes: lockfile_hashes(&root),
         env_keys: env_keys(),
         term_cols: cols,
         term_rows: rows,
@@ -78,6 +107,7 @@ pub fn stamp(command: Vec<String>, cwd: &Path, cols: u16, rows: u16) -> RunStamp
         shell: std::env::var("SHELL")
             .ok()
             .and_then(|s| PathBuf::from(s).file_name().map(|f| f.to_string_lossy().into_owned())),
+        ..Default::default()
     }
 }
 

@@ -9,21 +9,46 @@ use logbear_core::notify::{Candidate, Decision, Notifier};
 use logbear_core::paths;
 use logbear_core::proto::*;
 use logbear_core::redact::Redactor;
-use logbear_core::store::{index::IndexDb, read, retention, Db, Writer};
+use logbear_core::store::{self, index::IndexDb, read, retention, Db, Writer};
 use logbear_core::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 /// How long [`Daemon::resume_run`] waits for the abandoned connection to close its run.
 const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Projects held open at once, whatever the file descriptor limit allows. Every directory a
+/// command runs in becomes a project, so these accumulate far faster than repos do; the
+/// rest open on demand.
+const MAX_OPEN_PROJECTS: usize = 64;
+const MIN_OPEN_PROJECTS: usize = 4;
+/// Descriptors kept back from the limit for sockets and logs.
+const RESERVED_FDS: u64 = 64;
+/// One open project: a writer with its WAL, the shared memory file, two idle readers with
+/// theirs, a checkpointer, and the two lazy readers an agent's query can open.
+const FDS_PER_PROJECT: u64 = 12;
+/// A project with no live run closes after this long without being used.
+const IDLE_CLOSE_MICROS: i64 = 5 * 60 * 1_000_000;
 
 /// Everything about one project the daemon holds open.
 pub struct ProjectHandle {
     pub project: Project,
     pub db: Db,
     pub notifier: Mutex<Notifier>,
+    last_used: AtomicI64,
+}
+
+/// A live run's key. Run ids are rowids of a per-project table, so every project has a
+/// run 1 and the id alone says nothing.
+type RunKey = (ProjectId, RunId);
+
+/// A run whose end could not be written, kept to try again.
+struct Unfinished {
+    live: Arc<LiveRun>,
+    exit_code: Option<i32>,
+    signal: Option<String>,
 }
 
 /// A live run and the writer feeding it.
@@ -59,7 +84,12 @@ pub struct Daemon {
     pub started_at: i64,
     pub shutdown: AtomicBool,
     projects: Mutex<HashMap<ProjectId, Arc<ProjectHandle>>>,
-    runs: Mutex<HashMap<RunId, Arc<LiveRun>>>,
+    /// Serialises opening, which can take as long as a migration, without holding
+    /// `projects` and so every request for a project that is already open.
+    opening: Mutex<()>,
+    max_open_projects: usize,
+    runs: Mutex<HashMap<RunKey, Arc<LiveRun>>>,
+    unfinished: Mutex<Vec<Unfinished>>,
     subscribers: Mutex<Vec<Subscriber>>,
     waiters: Mutex<Vec<Waiter>>,
     redactor: RwLock<Arc<Redactor>>,
@@ -81,7 +111,10 @@ impl Daemon {
             started_at: logbear_core::now_micros(),
             shutdown: AtomicBool::new(false),
             projects: Mutex::new(HashMap::new()),
+            opening: Mutex::new(()),
+            max_open_projects: open_project_limit(),
             runs: Mutex::new(HashMap::new()),
+            unfinished: Mutex::new(Vec::new()),
             subscribers: Mutex::new(Vec::new()),
             waiters: Mutex::new(Vec::new()),
             redactor: RwLock::new(redactor),
@@ -150,43 +183,154 @@ impl Daemon {
         Ok(handle)
     }
 
+    fn open_handles(&self) -> MutexGuard<'_, HashMap<ProjectId, Arc<ProjectHandle>>> {
+        self.projects.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cached_handle(&self, id: ProjectId) -> Option<Arc<ProjectHandle>> {
+        let open = self.open_handles();
+        let handle = open.get(&id)?;
+        handle.last_used.store(logbear_core::now_micros(), Ordering::Relaxed);
+        Some(handle.clone())
+    }
+
     fn handle_for(&self, project: Project) -> Result<Arc<ProjectHandle>> {
-        let mut open = self
-            .projects
-            .lock()
-            .map_err(|_| Error::other("project map poisoned"))?;
-        if let Some(h) = open.get(&project.id) {
-            return Ok(h.clone());
+        if let Some(h) = self.cached_handle(project.id) {
+            return Ok(h);
         }
-        let db = Db::open(Path::new(&project.db_path), project.id)?;
-        if db.derived_stale() {
-            match retention::rebuild_derived(&db) {
-                Ok(n) => eprintln!(
-                    "{}: rebuilt {n} entries from chunks after a derived-schema change",
-                    project.name
-                ),
-                Err(e) => eprintln!("{}: derived rebuild failed: {e}", project.name),
+        let _opening = self.opening.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(h) = self.cached_handle(project.id) {
+            return Ok(h);
+        }
+        // Dropped once `projects` is unlocked: closing a database is a checkpoint.
+        let closed = self.make_room();
+
+        let (db, quarantined) = open_project_db(&project)?;
+        if let Some(aside) = quarantined {
+            eprintln!(
+                "logbeard: {}: database was damaged; moved it to {} and started afresh",
+                project.name,
+                aside.display()
+            );
+            let _ = self.index.forget_runs(project.id);
+        }
+        let _ = db.stamp_identity(&project);
+
+        // Fresh from disk with no live run here: a run it calls open belongs to a daemon
+        // that is gone. Done on open rather than at startup so startup need not open every
+        // project, and it stays cheap: no open runs, no work.
+        if !self.has_live_run(project.id) {
+            match store::write::reconcile_orphans(&db, &self.index) {
+                Ok(n) if n > 0 => {
+                    eprintln!("logbeard: {}: closed {n} run(s) left open", project.name)
+                }
+                Err(e) => eprintln!("logbeard: {}: could not close old runs: {e}", project.name),
+                _ => {}
             }
         }
+
         let handle = Arc::new(ProjectHandle {
             project,
             db,
             notifier: Mutex::new(Notifier::new()),
+            last_used: AtomicI64::new(logbear_core::now_micros()),
         });
-        open.insert(handle.project.id, handle.clone());
+        self.open_handles().insert(handle.project.id, handle.clone());
+        if handle.db.derived_stale() {
+            rebuild_in_background(handle.clone());
+        }
+        drop(closed);
         Ok(handle)
+    }
+
+    /// Removes the least recently used closable handle if the limit has been reached.
+    fn make_room(&self) -> Vec<Arc<ProjectHandle>> {
+        let mut open = self.open_handles();
+        let mut closed = Vec::new();
+        while open.len() >= self.max_open_projects {
+            let victim = open
+                .values()
+                .filter(|h| self.closable(h))
+                .min_by_key(|h| h.last_used.load(Ordering::Relaxed))
+                .map(|h| h.project.id);
+            match victim.and_then(|id| open.remove(&id)) {
+                Some(h) => closed.push(h),
+                // Everything is busy. Going over the limit beats refusing a run.
+                None => break,
+            }
+        }
+        closed
+    }
+
+    /// Nothing is using it: no live run, and no connection holding the handle. The count of
+    /// 1 is the map's own reference.
+    fn closable(&self, handle: &Arc<ProjectHandle>) -> bool {
+        Arc::strong_count(handle) == 1 && !self.has_live_run(handle.project.id)
+    }
+
+    fn has_live_run(&self, project: ProjectId) -> bool {
+        self.live_runs().keys().any(|(p, _)| *p == project)
+    }
+
+    /// Closes projects nothing has used for a while, handing back their descriptors and
+    /// memory.
+    pub fn close_idle_projects(&self) {
+        let cutoff = logbear_core::now_micros() - IDLE_CLOSE_MICROS;
+        let closed: Vec<Arc<ProjectHandle>> = {
+            let mut open = self.open_handles();
+            let idle: Vec<ProjectId> = open
+                .values()
+                .filter(|h| h.last_used.load(Ordering::Relaxed) < cutoff && self.closable(h))
+                .map(|h| h.project.id)
+                .collect();
+            idle.iter().filter_map(|id| open.remove(id)).collect()
+        };
+        drop(closed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_idle_projects_now(&self) {
+        for handle in self.open_projects() {
+            handle.last_used.store(0, Ordering::Relaxed);
+        }
+        self.close_idle_projects();
     }
 
     /// Re-reads a project row after its config changed, so cached handles do not serve
     /// stale mute or retention settings.
     pub fn refresh_project(&self, id: ProjectId) -> Result<()> {
-        if let Ok(mut open) = self.projects.lock() {
-            open.remove(&id);
-        }
+        let stale = self.open_handles().remove(&id);
         if let Some(p) = self.index.get(id)? {
             self.handle_for(p)?;
         }
+        drop(stale);
         Ok(())
+    }
+
+    /// Replaces a project database found to be damaged while in use.
+    fn quarantine_project(&self, handle: &ProjectHandle) -> Result<()> {
+        self.open_handles().remove(&handle.project.id);
+        let aside = store::quarantine(handle.db.path())?;
+        eprintln!(
+            "logbeard: {}: database is damaged; moved it to {}",
+            handle.project.name,
+            aside.display()
+        );
+        self.index.forget_runs(handle.project.id)
+    }
+
+    /// On-disk size of every registered project, open or not.
+    pub fn total_db_bytes(&self) -> i64 {
+        self.index
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|p| {
+                ["", "-wal", "-shm"].map(|suffix| format!("{}{suffix}", p.db_path))
+            })
+            .filter_map(|path| std::fs::metadata(path).ok())
+            .map(|m| m.len() as i64)
+            .sum()
     }
 
     pub fn retention_cap(&self, project: &Project) -> i64 {
@@ -199,8 +343,16 @@ impl Daemon {
 
     pub fn start_run(&self, stamp: &RunStamp) -> Result<(Arc<ProjectHandle>, Arc<LiveRun>)> {
         let cwd = PathBuf::from(&stamp.cwd);
-        let handle = self.resolve_or_register(&cwd, &stamp.project_name)?;
-        let writer = Writer::start(&handle.db, &self.index, stamp, self.redactor())?;
+        let mut handle = self.resolve_or_register(&cwd, &stamp.project_name)?;
+        let writer = match Writer::start(&handle.db, &self.index, stamp, self.redactor()) {
+            Err(e) if e.is_corrupt() => {
+                eprintln!("logbeard: {}: {e}", handle.project.name);
+                self.quarantine_project(&handle)?;
+                handle = self.resolve_or_register(&cwd, &stamp.project_name)?;
+                Writer::start(&handle.db, &self.index, stamp, self.redactor())?
+            }
+            other => other?,
+        };
         let run_id = writer.run_id();
 
         // A restarted server should be able to notify about the same error again rather
@@ -212,13 +364,10 @@ impl Daemon {
         let live = Arc::new(LiveRun {
             run_id,
             project_id: handle.project.id,
-            command: stamp.command.join(" "),
+            command: self.redactor().redact_argv(&stamp.command).join(" "),
             writer: Mutex::new(writer),
         });
-        self.runs
-            .lock()
-            .map_err(|_| Error::other("run map poisoned"))?
-            .insert(run_id, live.clone());
+        self.live_runs().insert((handle.project.id, run_id), live.clone());
 
         if let Ok(run) = read::get_run(&handle.db, run_id) {
             self.broadcast_project(handle.project.id, Event::RunStarted { run });
@@ -235,22 +384,23 @@ impl Daemon {
         shim_started_at: i64,
         run_id: RunId,
     ) -> Result<Option<(Arc<ProjectHandle>, Arc<LiveRun>)>> {
+        let cwd = PathBuf::from(&stamp.cwd);
+        let Some(project) = self.index.resolve_path(&cwd)? else {
+            return Ok(None);
+        };
+
         // The connection that started the run closes it when it reads EOF, after landing
         // whatever was still in the socket. Those bytes precede the spool's, so wait for
         // it; a connection still stuck after that is left alone and the tail gets a run of
         // its own rather than interleaving with it.
         let deadline = std::time::Instant::now() + RESUME_WAIT;
-        while self.is_live(run_id) {
+        while self.live_runs().contains_key(&(project.id, run_id)) {
             if std::time::Instant::now() >= deadline {
                 return Ok(None);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        let cwd = PathBuf::from(&stamp.cwd);
-        let Some(project) = self.index.resolve_path(&cwd)? else {
-            return Ok(None);
-        };
         let handle = self.handle_for(project)?;
         let Some(writer) = Writer::resume(&handle.db, run_id, stamp, shim_started_at, self.redactor())? else {
             return Ok(None);
@@ -259,18 +409,30 @@ impl Daemon {
         let live = Arc::new(LiveRun {
             run_id,
             project_id: handle.project.id,
-            command: stamp.command.join(" "),
+            command: self.redactor().redact_argv(&stamp.command).join(" "),
             writer: Mutex::new(writer),
         });
-        self.runs
-            .lock()
-            .map_err(|_| Error::other("run map poisoned"))?
-            .insert(run_id, live.clone());
+        self.live_runs().insert((handle.project.id, run_id), live.clone());
         Ok(Some((handle, live)))
     }
 
-    fn is_live(&self, run_id: RunId) -> bool {
-        self.runs.lock().map(|r| r.contains_key(&run_id)).unwrap_or(false)
+    /// Whether a connection is still streaming this run. Run ids are per project, so the
+    /// stamp says which project is meant.
+    pub fn is_live(&self, stamp: &RunStamp, run_id: RunId) -> bool {
+        let Ok(Some(project)) = self.index.resolve_path(Path::new(&stamp.cwd)) else {
+            return false;
+        };
+        self.live_runs().contains_key(&(project.id, run_id))
+    }
+
+    fn live_runs(&self) -> MutexGuard<'_, HashMap<RunKey, Arc<LiveRun>>> {
+        self.runs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn writer<'a>(&self, live: &'a LiveRun) -> MutexGuard<'a, Writer> {
+        // A panic in the parser leaves the writer's buffers consistent: they are only
+        // appended to, and only by a line that was fully built.
+        live.writer.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn finish_run(
@@ -280,19 +442,60 @@ impl Daemon {
         exit_code: Option<i32>,
         signal: Option<&str>,
     ) -> Result<()> {
-        {
-            let mut w = live
-                .writer
-                .lock()
-                .map_err(|_| Error::other("writer poisoned"))?;
-            let flushed = w.finish(&self.index, exit_code, signal)?;
-            self.publish(handle, live, flushed);
+        let finished = self.writer(live).finish(&self.index, exit_code, signal);
+        // Off the live list either way, and only now, since this is what a resume waits for.
+        // The shim has gone, so nothing more is coming; what storage refused is kept to try
+        // again rather than leaving the run open until a restart.
+        let taken = self.live_runs().remove(&(handle.project.id, live.run_id));
+        match finished {
+            Ok(flushed) => {
+                self.after_finish(handle, live, flushed, exit_code, signal);
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(live) = taken {
+                    self.unfinished.lock().unwrap_or_else(PoisonError::into_inner).push(Unfinished {
+                        live,
+                        exit_code,
+                        signal: signal.map(str::to_string),
+                    });
+                }
+                Err(e)
+            }
         }
-        self.runs
-            .lock()
-            .map_err(|_| Error::other("run map poisoned"))?
-            .remove(&live.run_id);
+    }
 
+    /// Tries again to record the end of runs storage refused.
+    pub fn retry_unfinished(&self) {
+        let waiting = std::mem::take(
+            &mut *self.unfinished.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        for u in waiting {
+            let signal = u.signal.as_deref();
+            let finished = self.writer(&u.live).finish(&self.index, u.exit_code, signal);
+            let handle = self.resolve(&ProjectRef::Id(u.live.project_id));
+            match (finished, handle) {
+                (Ok(flushed), Ok(handle)) => {
+                    self.after_finish(&handle, &u.live, flushed, u.exit_code, signal)
+                }
+                (Ok(_), Err(_)) => {}
+                (Err(_), _) => {
+                    self.unfinished.lock().unwrap_or_else(PoisonError::into_inner).push(u)
+                }
+            }
+        }
+    }
+
+    /// Tells everyone a run has ended.
+    fn after_finish(
+        &self,
+        handle: &ProjectHandle,
+        live: &LiveRun,
+        flushed: logbear_core::store::write::Flushed,
+        exit_code: Option<i32>,
+        signal: Option<&str>,
+    ) {
+        self.publish(handle, live, flushed);
         if let Ok(run) = read::get_run(&handle.db, live.run_id) {
             self.broadcast_project(handle.project.id, Event::RunFinished { run });
         }
@@ -312,11 +515,8 @@ impl Daemon {
             self.deliver(decision);
         }
 
-        // The cap is enforced after the run rather than during it: evicting bytes while
-        // the user is still watching them arrive is the wrong moment.
-        let cap = self.retention_cap(&handle.project);
-        let _ = retention::enforce(&handle.db, cap);
-        Ok(())
+        // Retention is left to its thread, which will see the size within seconds. The
+        // caller here is waiting to report the run's exit.
     }
 
     /// Pushes captured bytes into a run, fanning out whatever the flush produced.
@@ -327,13 +527,7 @@ impl Daemon {
         bytes: &[u8],
         captured_at: i64,
     ) -> Result<()> {
-        let flushed = {
-            let mut w = live
-                .writer
-                .lock()
-                .map_err(|_| Error::other("writer poisoned"))?;
-            w.push(bytes, captured_at)?
-        };
+        let flushed = self.writer(live).push(bytes, captured_at)?;
         if let Some(f) = flushed {
             self.publish(handle, live, f);
         }
@@ -343,19 +537,13 @@ impl Daemon {
     /// Closes entries that have gone quiet, so a server that stopped mid-stack-trace still
     /// shows what it printed.
     pub fn tick_runs(&self) {
-        let live: Vec<Arc<LiveRun>> = match self.runs.lock() {
-            Ok(m) => m.values().cloned().collect(),
-            Err(_) => return,
-        };
+        let live: Vec<Arc<LiveRun>> = self.live_runs().values().cloned().collect();
         let now = logbear_core::now_micros();
         for run in live {
             let Ok(handle) = self.resolve(&ProjectRef::Id(run.project_id)) else {
                 continue;
             };
-            let flushed = match run.writer.lock() {
-                Ok(mut w) => w.tick(now).ok().flatten(),
-                Err(_) => None,
-            };
+            let flushed = self.writer(&run).tick(now).ok().flatten();
             if let Some(f) = flushed {
                 self.publish(&handle, &run, f);
             }
@@ -534,28 +722,34 @@ impl Daemon {
     /// Closes runs left open by a daemon that stopped without finishing them.
     ///
     /// Must run at startup before the socket accepts anything, or the home screen would
-    /// claim a dead run is live. Opens every registered project, which happens once.
+    /// claim a dead run is live. Only the projects the index says have one are opened, since
+    /// every directory a command ran in is a project and there can be thousands. A project
+    /// the index does not know about is caught the first time it is opened.
     pub fn reconcile_orphaned_runs(&self) -> usize {
         let mut closed = 0;
-        for project in self.index.list().unwrap_or_default() {
-            let Ok(handle) = self.handle_for(project) else {
+        for id in self.index.projects_with_open_runs().unwrap_or_default() {
+            let Ok(Some(project)) = self.index.get(id) else {
                 continue;
             };
-            match logbear_core::store::write::close_orphaned_runs(&handle.db) {
-                Ok(n) => closed += n,
-                Err(e) => eprintln!("logbeard: could not reconcile {}: {e}", handle.project.name),
+            // Opening a project reconciles it. It is only counted here if it was not open.
+            let before = self.open_run_summaries(id);
+            if let Err(e) = self.handle_for(project) {
+                eprintln!("logbeard: could not reconcile project {id}: {e}");
+                continue;
             }
+            closed += before.saturating_sub(self.open_run_summaries(id));
         }
         closed
+    }
+
+    fn open_run_summaries(&self, id: ProjectId) -> usize {
+        self.index.open_run_count(id).unwrap_or(0)
     }
 
     /// Finishes everything still streaming on shutdown, so a clean stop does not leave
     /// behind the orphans the startup pass has to clean up.
     pub fn close_active_runs(&self) {
-        let live: Vec<Arc<LiveRun>> = match self.runs.lock() {
-            Ok(m) => m.values().cloned().collect(),
-            Err(_) => return,
-        };
+        let live: Vec<Arc<LiveRun>> = self.live_runs().values().cloned().collect();
         for run in live {
             let Ok(handle) = self.resolve(&ProjectRef::Id(run.project_id)) else {
                 continue;
@@ -567,14 +761,89 @@ impl Daemon {
     }
 
     pub fn active_run_count(&self) -> usize {
-        self.runs.lock().map(|r| r.len()).unwrap_or(0)
+        self.live_runs().len()
     }
 
     pub fn open_projects(&self) -> Vec<Arc<ProjectHandle>> {
-        self.projects
-            .lock()
-            .map(|p| p.values().cloned().collect())
-            .unwrap_or_default()
+        self.open_handles().values().cloned().collect()
+    }
+
+    /// Hands back what idle projects and the allocator are holding, for when nothing is
+    /// being captured.
+    pub fn release_idle_memory(&self) {
+        for handle in self.open_projects() {
+            if !self.has_live_run(handle.project.id) {
+                handle.db.release_memory();
+                // With no commits coming, nothing else would fold in what is left.
+                let _ = handle.db.checkpoint_truncate();
+            }
+        }
+        release_allocator_memory();
+    }
+}
+
+/// Opens a project's database, quarantining it if it is damaged.
+///
+/// Returns where a damaged file went. A newer database is passed up as an error: it is not
+/// damaged, and it is not this build's to move.
+fn open_project_db(project: &Project) -> Result<(Db, Option<PathBuf>)> {
+    let path = Path::new(&project.db_path);
+    match Db::open(path, project.id) {
+        Err(e) if e.is_corrupt() => {
+            let aside = store::quarantine(path)?;
+            Ok((Db::open(path, project.id)?, Some(aside)))
+        }
+        other => Ok((other?, None)),
+    }
+}
+
+/// Rebuilds a project's derived layer without holding up whoever asked for the project.
+/// Reads see the entries come back as it goes, and capture carries on alongside it. The
+/// thread holds the handle, which keeps the project from being closed under it.
+fn rebuild_in_background(handle: Arc<ProjectHandle>) {
+    let spawned = std::thread::Builder::new()
+        .name("logbear-rebuild".into())
+        .spawn(move || match retention::rebuild_derived(&handle.db) {
+            Ok(n) => eprintln!(
+                "{}: rebuilt {n} entries from chunks after a derived-schema change",
+                handle.project.name
+            ),
+            // Still marked as outstanding, so the next open picks it up.
+            Err(e) => eprintln!("{}: derived rebuild failed: {e}", handle.project.name),
+        });
+    if let Err(e) = spawned {
+        eprintln!("logbeard: could not start a rebuild: {e}");
+    }
+}
+
+/// How many projects fit in this process's file descriptor limit.
+fn open_project_limit() -> usize {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a valid out-pointer for the duration of the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return MIN_OPEN_PROJECTS;
+    }
+    let fit = limit.rlim_cur.saturating_sub(RESERVED_FDS) / FDS_PER_PROJECT;
+    (fit as usize).clamp(MIN_OPEN_PROJECTS, MAX_OPEN_PROJECTS)
+}
+
+/// Asks the allocator to return free memory to the system. Freed memory otherwise stays
+/// with the process, which is how a finished ingest could leave a daemon near a gigabyte.
+fn release_allocator_memory() {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut libc::c_void, goal: libc::size_t) -> libc::size_t;
+        }
+        // SAFETY: a null zone means every zone and a zero goal means as much as possible.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: takes no pointers and only touches the allocator's own state.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -596,6 +865,248 @@ pub(crate) mod tests {
     fn daemon(tmp: &tempfile::TempDir) -> Arc<Daemon> {
         std::env::set_var("LOGBEAR_HOME", tmp.path());
         Daemon::open().unwrap()
+    }
+
+    fn stamp_in(dir: &Path) -> RunStamp {
+        std::fs::create_dir_all(dir).unwrap();
+        RunStamp {
+            command: vec!["mix".into(), "phx.server".into()],
+            cwd: dir.to_string_lossy().into_owned(),
+            project_name: "p".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn live_runs_in_two_projects_with_the_same_id_stay_apart() {
+        // Every project numbers its runs from 1. Keyed on the id alone, the second run
+        // replaced the first in the map, and the first stopped being ticked or closed.
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = daemon(&tmp);
+        let (a, run_a) = d.start_run(&stamp_in(&tmp.path().join("a"))).unwrap();
+        let (b, run_b) = d.start_run(&stamp_in(&tmp.path().join("b"))).unwrap();
+        assert_eq!(run_a.run_id, run_b.run_id, "setup: the ids collide");
+        assert_ne!(a.project.id, b.project.id);
+        assert_eq!(d.active_run_count(), 2);
+
+        // An error in A, with no end yet, while B finishes.
+        d.ingest(&a, &run_a, b"[error] in project a\n", logbear_core::now_micros()).unwrap();
+        d.finish_run(&b, &run_b, Some(0), None).unwrap();
+        assert_eq!(d.active_run_count(), 1, "finishing B must not close A");
+
+        // A tick reaches it, so it shows up with nothing further from the producer.
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        d.tick_runs();
+        assert_eq!(read::errors_since(&a.db, 0).unwrap(), 1, "the error in A vanished");
+    }
+
+    #[test]
+    fn a_resume_waits_only_on_its_own_projects_run() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = daemon(&tmp);
+        let dir_a = tmp.path().join("a");
+        let (a, run_a) = d.start_run(&stamp_in(&dir_a)).unwrap();
+        d.finish_run(&a, &run_a, None, None).unwrap();
+        let stamp_b = stamp_in(&tmp.path().join("b"));
+        let (_b, _run_b) = d.start_run(&stamp_b).unwrap();
+
+        let started = std::time::Instant::now();
+        let stamp_a = stamp_in(&dir_a);
+        d.resume_run(&stamp_a, logbear_core::now_micros(), run_a.run_id).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "held up by a run in another project with the same id"
+        );
+    }
+
+    #[test]
+    fn open_projects_stay_within_the_limit_and_closed_ones_reopen() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut d = daemon(&tmp);
+        Arc::get_mut(&mut d).unwrap().max_open_projects = 4;
+
+        let first = tmp.path().join("p0");
+        for i in 0..12 {
+            let (h, live) = d.start_run(&stamp_in(&tmp.path().join(format!("p{i}")))).unwrap();
+            d.ingest(&h, &live, b"[info] hello\n", logbear_core::now_micros()).unwrap();
+            d.finish_run(&h, &live, Some(0), None).unwrap();
+            assert!(d.open_projects().len() <= 4, "{} open", d.open_projects().len());
+        }
+
+        let (h, live) = d.start_run(&stamp_in(&first)).unwrap();
+        assert_eq!(live.run_id, 2, "it reopened with its history");
+        d.finish_run(&h, &live, Some(0), None).unwrap();
+    }
+
+    #[test]
+    fn a_project_in_use_is_not_closed_to_make_room() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut d = daemon(&tmp);
+        Arc::get_mut(&mut d).unwrap().max_open_projects = 1;
+        let (a, live) = d.start_run(&stamp_in(&tmp.path().join("a"))).unwrap();
+        let (b, other) = d.start_run(&stamp_in(&tmp.path().join("b"))).unwrap();
+        assert_eq!(d.open_projects().len(), 2, "over the limit beats closing a live run");
+        d.finish_run(&b, &other, Some(0), None).unwrap();
+        d.finish_run(&a, &live, Some(0), None).unwrap();
+    }
+
+    #[test]
+    fn idle_projects_close_and_busy_ones_do_not() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = daemon(&tmp);
+        let (idle, idle_run) = d.start_run(&stamp_in(&tmp.path().join("idle"))).unwrap();
+        d.finish_run(&idle, &idle_run, Some(0), None).unwrap();
+        let idle_id = idle.project.id;
+        idle.last_used.store(0, Ordering::Relaxed);
+        drop(idle);
+        let (busy, busy_run) = d.start_run(&stamp_in(&tmp.path().join("busy"))).unwrap();
+        busy.last_used.store(0, Ordering::Relaxed);
+
+        d.close_idle_projects();
+
+        let open: Vec<ProjectId> = d.open_projects().iter().map(|h| h.project.id).collect();
+        assert_eq!(open, vec![busy.project.id]);
+        assert!(!open.contains(&idle_id));
+        d.finish_run(&busy, &busy_run, Some(0), None).unwrap();
+    }
+
+    #[test]
+    fn startup_opens_only_projects_with_something_to_reconcile() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let d = daemon(&tmp);
+            for name in ["a", "b", "c"] {
+                let (h, live) = d.start_run(&stamp_in(&tmp.path().join(name))).unwrap();
+                d.finish_run(&h, &live, Some(0), None).unwrap();
+            }
+            // Left open, as by a daemon that is killed.
+            let _left_open = d.start_run(&stamp_in(&tmp.path().join("crashed"))).unwrap();
+        }
+
+        let d = Daemon::open().unwrap();
+        assert_eq!(d.reconcile_orphaned_runs(), 1);
+        let open = d.open_projects();
+        assert_eq!(open.len(), 1, "every project was opened to find one orphan");
+        assert_eq!(read::active_runs(&open[0].db).unwrap().len(), 0);
+        assert!(d.index.projects_with_open_runs().unwrap().is_empty());
+
+        // And the next start has nothing to do.
+        assert_eq!(Daemon::open().unwrap().reconcile_orphaned_runs(), 0);
+    }
+
+    #[test]
+    fn a_run_the_index_never_heard_of_is_closed_when_its_project_opens() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a");
+        let (run_id, project) = {
+            let d = daemon(&tmp);
+            let (h, live) = d.start_run(&stamp_in(&dir)).unwrap();
+            d.index.forget_runs(h.project.id).unwrap();
+            (live.run_id, h.project.id)
+        };
+
+        let d = Daemon::open().unwrap();
+        let h = d.resolve(&ProjectRef::Id(project)).unwrap();
+        assert!(read::get_run(&h.db, run_id).unwrap().ended_at.is_some());
+    }
+
+    #[test]
+    fn a_damaged_project_database_is_quarantined_and_capture_carries_on() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a");
+        let d = daemon(&tmp);
+        let (h, live) = d.start_run(&stamp_in(&dir)).unwrap();
+        d.finish_run(&h, &live, Some(0), None).unwrap();
+        let path = h.db.path().to_path_buf();
+        drop(h);
+        drop(live);
+        d.close_idle_projects_now();
+
+        std::fs::write(&path, b"overwritten by something that is not a database").unwrap();
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+
+        let (h, live) = d.start_run(&stamp_in(&dir)).unwrap();
+        d.ingest(&h, &live, b"[info] back in business\n", logbear_core::now_micros()).unwrap();
+        d.finish_run(&h, &live, Some(0), None).unwrap();
+        assert_eq!(live.run_id, 1, "a new database");
+
+        let corrupt = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|f| f.as_ref().unwrap().file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(corrupt, 1, "the damaged file should be kept");
+    }
+
+    #[test]
+    fn a_database_from_a_newer_build_is_an_error_not_a_quarantine() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a");
+        let d = daemon(&tmp);
+        let (h, live) = d.start_run(&stamp_in(&dir)).unwrap();
+        d.finish_run(&h, &live, Some(0), None).unwrap();
+        let path = h.db.path().to_path_buf();
+        drop(h);
+        drop(live);
+        d.close_idle_projects_now();
+        logbear_core_raw_stamp(&path, 999);
+
+        let err = d.start_run(&stamp_in(&dir)).err().expect("must be refused");
+        assert!(err.to_string().contains("Upgrade logbear"), "{err}");
+        assert!(path.exists(), "the file must stay where it is");
+        let moved = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter(|f| f.as_ref().unwrap().file_name().to_string_lossy().contains(".corrupt-"))
+            .count();
+        assert_eq!(moved, 0);
+    }
+
+    fn logbear_core_raw_stamp(path: &Path, version: i64) {
+        // No sqlite here, so through the file header: `user_version` is at byte 60.
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.seek(SeekFrom::Start(60)).unwrap();
+        f.write_all(&(version as u32).to_be_bytes()).unwrap();
+    }
+
+    #[test]
+    fn a_refused_finish_is_retried_rather_than_lost() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = daemon(&tmp);
+        let (h, live) = d.start_run(&stamp_in(&tmp.path().join("a"))).unwrap();
+        let bytes: Vec<u8> = (0..4000).flat_map(|i| format!("[info] line {i} padding padding padding\n").into_bytes()).collect();
+        d.ingest(&h, &live, &bytes, logbear_core::now_micros()).ok();
+        h.db.with(|c| {
+            let pages: i64 = c.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            c.execute_batch(&format!("PRAGMA max_page_count = {pages};"))?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(d.finish_run(&h, &live, Some(7), None).is_err());
+        assert_eq!(d.active_run_count(), 0, "the shim has gone, so the run is not live");
+
+        h.db.with(|c| {
+            c.execute_batch("PRAGMA max_page_count = 1073741823;")?;
+            Ok(())
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        d.retry_unfinished();
+
+        let run = read::get_run(&h.db, live.run_id).unwrap();
+        assert_eq!(run.exit_code, Some(7));
+        assert_eq!(run.counters.n_entries, 4000);
     }
 
     #[test]
@@ -622,6 +1133,30 @@ pub(crate) mod tests {
 
         let run = read::get_run(&handle.db, live.run_id).unwrap();
         assert_eq!(run.exit_code, Some(1));
+    }
+
+    /// Notifications are built from this copy, not from the run row.
+    #[test]
+    fn a_live_run_holds_no_argv_secret() {
+        let _guard = HOME_LOCK.lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let d = daemon(&tmp);
+        let work = tmp.path().join("w3");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let stamp = RunStamp {
+            command: vec!["app".into(), "--password=hunter2".into()],
+            cwd: work.to_string_lossy().into_owned(),
+            project_name: "w3".into(),
+            ..Default::default()
+        };
+        let (handle, live) = d.start_run(&stamp).unwrap();
+        assert!(!live.command.contains("hunter2"), "{}", live.command);
+        d.finish_run(&handle, &live, Some(0), None).unwrap();
+
+        let resumed = d.resume_run(&stamp, logbear_core::now_micros(), live.run_id);
+        // Finished runs do not resume; what matters is that nothing here unmasks it.
+        assert!(resumed.unwrap().is_none());
     }
 
     #[test]

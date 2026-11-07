@@ -168,7 +168,7 @@
 		>
 			<button
 				type="button"
-				class="cursor-pointer px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {!aParam &&
+				class="cursor-pointer px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {!aParam &&
 				baselineKind === 'last_good'
 					? 'bg-base-content text-base-100'
 					: 'text-meta'}"
@@ -176,7 +176,7 @@
 			>
 			<button
 				type="button"
-				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[10px] tracking-[0.16em] uppercase {!aParam &&
+				class="cursor-pointer border-l border-hair px-[9px] py-[4px] text-[12px] tracking-[0.1em] uppercase {!aParam &&
 				baselineKind === 'last_bad'
 					? 'bg-base-content text-base-100'
 					: 'text-meta'}"
@@ -186,12 +186,12 @@
 		{#if aParam || bParam}
 			<button
 				type="button"
-				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase"
+				class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase"
 				onclick={clearPins}>reset to default</button
 			>
 		{/if}
 		<a
-			class="inline-flex items-center gap-1 text-[11px] text-meta hover:text-base-content"
+			class="inline-flex items-center gap-1 text-[12px] text-meta hover:text-base-content"
 			href="/project/{projectId}/runs">pick runs <ArrowRight {...INLINE} aria-hidden="true" /></a
 		>
 	{/snippet}
@@ -234,7 +234,7 @@
 			{#each [{ side: 'A', run: diff.a, note: aParam ? 'pinned' : baselineKind === 'last_bad' ? 'last failure' : 'last known good' }, { side: 'B', run: diff.b, note: bParam ? 'pinned' : 'latest' }] as col (col.side)}
 				<div class="min-w-0 px-4 py-[10px] {col.side === 'B' ? 'rule-l' : ''}">
 					<div class="flex items-baseline gap-2">
-						<span class="rounded-[2px] border border-hair-strong px-[5px] text-[11px] font-semibold"
+						<span class="rounded-[2px] border border-hair-strong px-[5px] text-[12px] font-semibold"
 							>{col.side}</span
 						>
 						<span class="label-xs">{col.note}</span>
@@ -245,12 +245,12 @@
 								>{fmtCommand(col.run.command)}</code
 							>
 						</a>
-						<div class="tnum mt-[5px] flex flex-wrap items-center gap-[10px] text-[11px] text-meta">
+						<div class="tnum mt-[5px] flex flex-wrap items-center gap-[10px] text-[12px] text-meta">
 							<span>{fmtStamp(col.run.started_at)}</span>
 							<span>{fmtDuration(runDuration(col.run))}</span>
 							<span>{shortSha(col.run.git_sha)} {col.run.git_branch ?? ''}</span>
 							{#if col.run.git_dirty_hash}<span
-									class="text-[9px] tracking-[0.16em] text-warning uppercase"
+									class="text-[12px] tracking-[0.1em] text-warning uppercase"
 										title="This run started with uncommitted changes">uncommitted</span
 								>{/if}
 							<ExitBadge run={col.run} />
@@ -275,7 +275,7 @@
 					class="tnum rounded-[2px] border border-flare bg-flare px-[6px] text-[12px] font-semibold text-flare-content"
 					>{diff.new_signatures.length}</span
 				>
-				<span class="text-[11px] font-normal text-meta">present in B, absent from A</span>
+				<span class="text-[12px] font-normal text-meta">present in B, absent from A</span>
 			</h2>
 			{#if diff.new_signatures.length === 0}
 				<p class="mb-3 max-w-[80ch] text-[12px] leading-[1.6] text-meta">
@@ -299,7 +299,7 @@
 								</div>
 								{#if s.sample}
 									<pre
-										class="mono-block mt-[7px] max-w-full overflow-x-auto border-l border-hair-strong bg-code-bg px-[9px] py-[7px] text-[11px]! text-meta">{s.sample}</pre>
+										class="mono-block mt-[7px] max-w-full overflow-x-auto border-l border-hair-strong bg-code-bg px-[9px] py-[7px] text-[12px]! text-meta">{s.sample}</pre>
 								{/if}
 							</div>
 						</li>
@@ -315,7 +315,7 @@
 					class="tnum rounded-[2px] border border-clear bg-clear px-[6px] text-[12px] font-semibold text-flare-content"
 					>{diff.resolved_signatures.length}</span
 				>
-				<span class="text-[11px] font-normal text-meta">present in A, absent from B</span>
+				<span class="text-[12px] font-normal text-meta">present in A, absent from B</span>
 			</h2>
 			{#if diff.resolved_signatures.length === 0}
 				<p class="mb-3 max-w-[80ch] text-[12px] leading-[1.6] text-meta">
@@ -352,7 +352,7 @@
 						class="tnum rounded-[2px] border border-hair-strong px-[6px] text-[12px] font-semibold"
 						>{diff.changed_counts.length}</span
 					>
-					<span class="text-[11px] font-normal text-meta">same signature, different volume</span>
+					<span class="text-[12px] font-normal text-meta">same signature, different volume</span>
 				</h2>
 				<ul class="mb-[10px]">
 					{#each diff.changed_counts as s (s.fingerprint_id)}
@@ -392,24 +392,24 @@
 							: ''}</span
 					>
 					{#if diff.git.commits.length}
-						<ul class="mt-[6px] text-[11.5px]">
+						<ul class="mt-[6px] text-[12px]">
 							{#each diff.git.commits as c (c.sha)}
 								<li class="grid grid-cols-[62px_1fr_auto] items-baseline gap-[10px] py-[2px]">
 									<span class="tnum text-meta">{shortSha(c.sha)}</span>
 									<span class="truncate">{c.subject}</span>
-									<span class="text-[10.5px] text-meta">{c.author}</span>
+									<span class="text-[12px] text-meta">{c.author}</span>
 								</li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 							Same commit{diff.git.dirty_changed
 								? ', but the uncommitted changes differed'
 								: ''}.
 						</p>
 					{/if}
 					{#if diff.git.branch_a !== diff.git.branch_b}
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6]">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6]">
 							Branch changed: <b>{diff.git.branch_a ?? '—'}</b> → <b>{diff.git.branch_b ?? '—'}</b>
 						</p>
 					{/if}
@@ -418,13 +418,13 @@
 				<div>
 					<span class="label-xs">files changed ({diff.git.files_changed.length})</span>
 					{#if diff.git.files_changed.length}
-						<ul class="mt-[6px] text-[11.5px]">
+						<ul class="mt-[6px] text-[12px]">
 							{#each diff.git.files_changed as f (f)}
 								<li><code class="text-meta">{f}</code></li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 							No tracked files differ.
 						</p>
 					{/if}
@@ -433,17 +433,17 @@
 				<div>
 					<span class="label-xs">lockfiles</span>
 					{#if diff.lockfiles_changed.length}
-						<ul class="mt-[6px] text-[11.5px]">
+						<ul class="mt-[6px] text-[12px]">
 							{#each diff.lockfiles_changed as l (l.file)}
 								<li class="flex flex-wrap items-baseline gap-[10px] py-[2px]">
 									<code>{l.file}</code>
 									<span class="tnum text-meta">{shortHash(l.hash_a)} → {shortHash(l.hash_b)}</span>
-									<span class="text-[9px] tracking-[0.16em] text-warning uppercase">moved</span>
+									<span class="text-[12px] tracking-[0.1em] text-warning uppercase">moved</span>
 								</li>
 							{/each}
 						</ul>
 					{:else}
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 							Unchanged. Dependencies are identical in both runs.
 						</p>
 					{/if}
@@ -455,21 +455,21 @@
 						<div class="mt-[6px] flex flex-wrap gap-[5px]">
 							{#each diff.env_added as k (k)}
 								<code
-									class="rounded-[2px] border border-[color-mix(in_oklch,var(--color-flare)_40%,transparent)] px-[6px] py-px text-[11px] text-flare"
+									class="rounded-[2px] border border-[color-mix(in_oklch,var(--color-flare)_40%,transparent)] px-[6px] py-px text-[12px] text-flare"
 									>+{k}</code
 								>
 							{/each}
 							{#each diff.env_removed as k (k)}
-								<code class="rounded-[2px] border border-hair px-[6px] py-px text-[11px] text-meta"
+								<code class="rounded-[2px] border border-hair px-[6px] py-px text-[12px] text-meta"
 									>−{k}</code
 								>
 							{/each}
 						</div>
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 							Names only. logbear never records environment values.
 						</p>
 					{:else}
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6] text-meta">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6] text-meta">
 							Same set of variables in both runs.
 						</p>
 					{/if}
@@ -478,11 +478,11 @@
 				{#if diff.command_changed}
 					<div class="col-span-full">
 						<span class="label-xs">command</span>
-						<p class="mt-[6px] max-w-[70ch] text-[11.5px] leading-[1.6]">
+						<p class="mt-[6px] max-w-[70ch] text-[12px] leading-[1.6]">
 							The command is not the same in both runs, so some of the difference above may simply
 							be a different program.
 						</p>
-						<div class="tnum mt-[7px] flex flex-col gap-[3px] text-[11.5px]">
+						<div class="tnum mt-[7px] flex flex-col gap-[3px] text-[12px]">
 							<code>A · {diff.a ? fmtCommand(diff.a.command) : '—'}</code>
 							<code>B · {diff.b ? fmtCommand(diff.b.command) : '—'}</code>
 						</div>

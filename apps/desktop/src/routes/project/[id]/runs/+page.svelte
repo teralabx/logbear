@@ -157,7 +157,7 @@
 >
 	{#snippet actions()}
 		<input
-			class="w-[230px] rounded-[2px] border border-hair bg-transparent px-[8px] py-[3px] text-[11.5px] text-base-content outline-none focus:border-hair-strong"
+			class="w-[230px] rounded-[2px] border border-hair bg-transparent px-[8px] py-[3px] text-[12px] text-base-content outline-none focus:border-hair-strong"
 			type="search"
 			placeholder="Filter by command, branch, SHA…"
 			bind:value={filter}
@@ -166,7 +166,7 @@
 		<button
 			type="button"
 			class={[
-				'cursor-pointer rounded-[2px] border px-[8px] py-[4px] text-[10px] tracking-[0.16em] uppercase',
+				'cursor-pointer rounded-[2px] border px-[8px] py-[4px] text-[12px] tracking-[0.1em] uppercase',
 				onlyFailed
 					? 'border-base-content bg-base-content text-base-100'
 					: 'border-hair bg-transparent text-meta'
@@ -200,40 +200,40 @@
 		</p>
 	{/if}
 
-	<div class="pane min-h-0 flex-1">
-		<table class="w-full min-w-[940px] border-collapse text-[12px]">
+	<div class="pane @container min-h-0 flex-1">
+		<table class="w-full table-fixed border-collapse text-[12px]">
 			<thead>
 				<tr>
 					<th
-						class="sticky top-0 z-[2] w-[30px] border-b border-hair-strong bg-base-100 py-[7px] pr-0 pl-[8px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[34px] border-b border-hair-strong bg-base-100 py-[7px] pr-0 pl-[8px] text-left text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col"><span class="sr-only">Compare</span></th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[108px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[138px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Started</th
 					>
 					<th
-						class="sticky top-0 z-[2] max-w-[320px] overflow-hidden border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-ellipsis text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] overflow-hidden border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[12px] font-medium tracking-[0.1em] text-ellipsis text-meta uppercase whitespace-nowrap"
 						scope="col">Command</th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[230px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[230px] @max-[1000px]:w-[92px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Commit</th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[82px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[92px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Duration</th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[62px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[80px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Exit</th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[148px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[150px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-left text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Errors</th
 					>
 					<th
-						class="sticky top-0 z-[2] w-[56px] border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[10px] font-medium tracking-[0.16em] text-meta uppercase whitespace-nowrap"
+						class="sticky top-0 z-[2] w-[62px] @max-[1000px]:hidden border-b border-hair-strong bg-base-100 px-[10px] py-[7px] text-right text-[12px] font-medium tracking-[0.1em] text-meta uppercase whitespace-nowrap"
 						scope="col">Warn</th
 					>
 				</tr>
@@ -265,7 +265,7 @@
 							<button
 								type="button"
 								class={[
-									'grid h-[17px] w-[17px] cursor-pointer place-items-center rounded-[2px] border text-[10px] leading-none font-semibold text-base-100',
+									'grid h-[17px] w-[17px] cursor-pointer place-items-center rounded-[2px] border text-[12px] leading-none font-semibold text-base-100',
 									selected.includes(r.id)
 										? 'border-base-content bg-base-content'
 										: 'border-hair-strong bg-transparent'
@@ -282,18 +282,18 @@
 							</button>
 						</td>
 						<td
-							class="meta tnum w-[108px] px-[10px] py-[5px] align-middle whitespace-nowrap"
+							class="meta tnum overflow-hidden px-[10px] py-[5px] align-middle text-ellipsis whitespace-nowrap"
 							title={fmtStamp(r.started_at)}>{fmtStamp(r.started_at)}</td
 						>
 						<td
-							class="max-w-[320px] overflow-hidden px-[10px] py-[5px] align-middle text-ellipsis whitespace-nowrap"
+							class="overflow-hidden px-[10px] py-[5px] align-middle text-ellipsis whitespace-nowrap"
 							><code class="text-[12px]">{fmtCommand(r.command)}</code></td
 						>
-						<td class="tnum w-[230px] px-[10px] py-[5px] align-middle whitespace-nowrap">
+						<td class="tnum overflow-hidden px-[10px] py-[5px] align-middle text-ellipsis whitespace-nowrap">
 							<span class="text-base-content">{shortSha(r.git_sha)}</span>
-							<span class="meta ml-[7px] text-[11px]">{r.git_branch ?? '—'}</span>
+							<span class="meta ml-[7px] text-[12px] @max-[1000px]:hidden">{r.git_branch ?? '—'}</span>
 							{#if r.git_dirty_hash}<span
-									class="ml-[6px] text-[9px] tracking-[0.16em] text-warning uppercase"
+									class="ml-[6px] text-[12px] tracking-[0.1em] text-warning uppercase @max-[1000px]:hidden"
 									title="This run started with uncommitted changes, so the commit above does not fully describe it"
 									>uncommitted</span
 								>{/if}
@@ -312,7 +312,7 @@
 							><ErrorCount total={err.total} neu={err.neu} size="sm" /></td
 						>
 						<td
-							class="meta tnum w-[56px] px-[10px] py-[5px] text-right align-middle whitespace-nowrap"
+							class="meta tnum px-[10px] py-[5px] text-right align-middle whitespace-nowrap @max-[1000px]:hidden"
 							>{r.counters.n_warn || '—'}</td
 						>
 					</tr>
@@ -326,7 +326,7 @@
 			<div class="px-4 py-3">
 				<button
 					type="button"
-					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[10px] tracking-[0.16em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
+					class="cursor-pointer rounded-[2px] border border-hair px-2 py-[4px] text-[12px] tracking-[0.1em] text-meta uppercase enabled:hover:border-hair-strong enabled:hover:text-base-content disabled:cursor-default disabled:opacity-50"
 					disabled={loadingMore}
 					onclick={loadMore}>{loadingMore ? 'loading…' : `load ${PAGE} older runs`}</button
 				>
@@ -349,7 +349,7 @@
 				{#each selected as id, i (id)}
 					{@const r = runs.find((x) => x.id === id)}
 					<span
-						class="max-w-[260px] overflow-hidden rounded-[2px] border border-hair px-[7px] py-[2px] text-[11px] text-ellipsis whitespace-nowrap"
+						class="max-w-[260px] overflow-hidden rounded-[2px] border border-hair px-[7px] py-[2px] text-[12px] text-ellipsis whitespace-nowrap"
 						><b class="mr-[6px] font-semibold">{i === 0 ? 'A' : 'B'}</b>#{id} · {r
 							? fmtCommand(r.command)
 							: ''}</span
@@ -358,12 +358,12 @@
 			</span>
 			<button
 				type="button"
-				class="ml-auto cursor-pointer text-[10px] tracking-[0.16em] text-meta uppercase hover:text-base-content"
+				class="ml-auto cursor-pointer text-[12px] tracking-[0.1em] text-meta uppercase hover:text-base-content"
 				onclick={() => (selected = [])}>clear</button
 			>
 			<button
 				type="button"
-				class="inline-flex cursor-pointer items-center gap-1.5 rounded-[2px] bg-base-content px-[12px] py-[5px] text-[11.5px] font-medium text-base-100 disabled:cursor-not-allowed disabled:opacity-40"
+				class="inline-flex cursor-pointer items-center gap-1.5 rounded-[2px] bg-base-content px-[12px] py-[5px] text-[12px] font-medium text-base-100 disabled:cursor-not-allowed disabled:opacity-40"
 				disabled={selected.length !== 2}
 				onclick={openDiff}>Diff these two runs <ArrowRight {...INLINE} aria-hidden="true" /></button
 			>

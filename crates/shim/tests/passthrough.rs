@@ -228,3 +228,58 @@ fn subcommands_say_the_daemon_is_down_instead_of_dumping_an_error() {
         assert_ne!(out.status.code(), Some(0), "`logbear {}`", args.join(" "));
     }
 }
+
+#[test]
+#[ignore = "spawns the real binary"]
+fn removing_an_agent_keeps_a_users_hook_and_backs_up_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let settings = home.join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let original = r#"{
+  "zebra": 1,
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "their-tool" },
+          { "type": "command", "command": "/somewhere/logbear-hook --harness claude" }
+        ]
+      }
+    ]
+  },
+  "apple": 2
+}
+"#;
+    std::fs::write(&settings, original).unwrap();
+
+    // Naming an agent keeps the run away from the daemon service and the PATH candidates,
+    // some of which are outside any temp HOME.
+    let out = logbear(dir.path())
+        .env("HOME", &home)
+        .env("SHELL", "/bin/sh")
+        .env_remove("HERMES_HOME")
+        .args(["setup", "--remove", "--agent", "claude", "--yes"])
+        .output()
+        .expect("logbear runs");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let after = std::fs::read_to_string(&settings).unwrap();
+    assert!(after.contains("their-tool"), "{after}");
+    assert!(!after.contains("logbear-hook"), "{after}");
+    assert!(after.find("zebra") < after.find("apple"), "{after}");
+
+    let backup = std::fs::read_dir(settings.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().contains("logbear-backup"))
+        .expect("a backup beside the config");
+    assert_eq!(std::fs::read_to_string(backup.path()).unwrap(), original);
+}

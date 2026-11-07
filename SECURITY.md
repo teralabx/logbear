@@ -14,12 +14,14 @@ you updated through to a fix and credit you in the advisory unless you prefer ot
 
 ## What counts as a vulnerability here
 
-logbear captures and stores development output on disk, so the interesting failures are
+LogBear captures and stores development output on disk, so the interesting failures are
 about data escaping where it should not:
 
 - **Redaction bypass** — a credential shape that reaches disk unmasked. Redaction happens
   on write, before the entry text or the fingerprint template is computed, so anything that
-  gets past it is stored permanently.
+  gets past it is stored permanently. Redaction is best effort rather than a guarantee, but
+  a common shape it misses is still worth reporting. Spool files can hold raw output until
+  they are ingested and are 0600, so a spool another account can read is in scope too.
 - **Environment variable values being recorded.** Names only, never values, no exception.
   A leak here is a vulnerability, not a bug.
 - **Sandbox escape from the agent SQL endpoint.** Agent queries run behind a read-only
@@ -34,7 +36,7 @@ about data escaping where it should not:
 
 ## Out of scope
 
-- Output you deliberately captured being readable by your own user account. logbear stores
+- Output you deliberately captured being readable by your own user account. LogBear stores
   it under `LOGBEAR_HOME` (default `~/.logbear`) with your user's permissions by design.
 - Anything requiring an attacker who already has code execution as your user.
 - The daemon has no network code and listens only on a unix socket, so there is no remote
@@ -43,4 +45,4 @@ about data escaping where it should not:
 
 ## Supported versions
 
-logbear is pre-1.0. Fixes land on the latest release only.
+LogBear is pre-1.0. Fixes land on the latest release only.

@@ -18,13 +18,13 @@
 </script>
 
 {#if total === 0}
-	<span class="text-meta {size === 'sm' ? 'text-[10px]' : 'text-[11px]'}">none</span>
+	<span class="text-meta {size === 'sm' ? 'text-[12px]' : 'text-[12px]'}">none</span>
 {:else}
 	<span
 		class="inline-flex items-stretch overflow-hidden rounded-[2px] leading-none whitespace-nowrap {size ===
 		'sm'
-			? 'h-[17px] text-[10px]'
-			: 'h-5 text-[11px]'}"
+			? 'h-[17px] text-[12px]'
+			: 'h-5 text-[12px]'}"
 	>
 		<span
 			class="tnum inline-flex items-center border-hair px-[7px] text-lvl-error {neu > 0

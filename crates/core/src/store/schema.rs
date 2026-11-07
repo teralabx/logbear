@@ -1,12 +1,18 @@
 //! Schema for a project database, and for the small central index.
 //!
-//! Two layers. `chunks` is the truth layer: append-only, never rewritten, holding the
-//! captured bytes and nothing else. `entries`, `fingerprints`, the counters and the FTS
-//! index are a derived projection that can be dropped and rebuilt from it.
+//! Two layers. `chunks` is the truth layer, holding the captured bytes and nothing else.
+//! `entries` and the FTS index are a derived projection that can be dropped and rebuilt
+//! from it. `fingerprints` and the counters are derived the same way but outlive the bytes,
+//! so they are kept across a rebuild; see [`DROP_DERIVED`].
 //!
 //! `entries` stores a line range and no text; text lives once in `chunks` and is rendered
 //! on demand by `logbear_render()`. A reparse therefore rewrites only the derived layer and
 //! can never lose or alter captured output.
+
+use crate::error::{Error, Result};
+use crate::store::{get_meta, set_meta};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use std::path::Path;
 
 /// Bumped whenever the derived layer's meaning changes. The daemon then rebuilds the index
 /// from chunks rather than migrating it.
@@ -16,29 +22,245 @@
 /// * 3 — in prefix mode an unprefixed exception banner starts its own entry instead of
 ///   continuing the one before it, so existing entries are regrouped.
 pub const DERIVED_VERSION: i64 = 3;
-/// Bumped when truth-layer tables change shape. Requires a migration.
-pub const SCHEMA_VERSION: i64 = 1;
 
-/// Drops the derived layer so it can be recreated at the current shape.
+/// The shape this build reads, held in `PRAGMA user_version`. Moving it means adding a step
+/// to [`MIGRATIONS`] and bringing [`PROJECT_SCHEMA`] to the same shape.
 ///
-/// Run when the stored `derived_version` is behind [`DERIVED_VERSION`]. Truth — `runs`,
-/// `chunks`, `meta` — is untouched, so a rebuild reproduces the index from the captured
-/// bytes. `CREATE TABLE IF NOT EXISTS` cannot add a column to an existing table, so
-/// dropping is what makes a shape change possible at all.
+/// * 1 — every database written before migrations existed. They carry `user_version` 0
+///   and differ among themselves only in [`LATE_COLUMNS`].
+/// * 2 — bounded indexes on `entries`, a signature index for error lookups, and the repair
+///   of derived layers left empty or uncounted by a crash or an earlier rebuild.
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// One step up. Each runs in its own transaction with the version bump, so a crash leaves
+/// the database wholly before or wholly after the step.
+pub struct Migration {
+    pub version: i64,
+    pub name: &'static str,
+    pub up: fn(&Connection) -> Result<()>,
+}
+
+/// In order, and never edited once shipped: a database may stop at any of them.
+pub const MIGRATIONS: &[Migration] = &[Migration {
+    version: 2,
+    name: "bounded entry indexes and derived-layer repair",
+    up: migrate_to_2,
+}];
+
+/// Refuses a database from a newer build before anything writes to it.
+///
+/// Reads only, and is the first thing done with a file, so it also surfaces a damaged one
+/// as an error rather than as a half-applied open.
+pub fn check_readable(conn: &Connection, path: &Path) -> Result<()> {
+    let refuse = |found: i64, supported: i64| Error::DatabaseTooNew {
+        path: path.to_path_buf(),
+        found,
+        supported,
+    };
+    let version = user_version(conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(refuse(version, SCHEMA_VERSION));
+    }
+    if table_exists(conn, "meta")? {
+        // Builds before `user_version` was read wrote these stamps and nothing else.
+        let stamp = |key| get_meta(conn, key).and_then(|v| v.parse::<i64>().ok());
+        if let Some(found) = stamp("schema_version").filter(|v| *v > SCHEMA_VERSION) {
+            return Err(refuse(found, SCHEMA_VERSION));
+        }
+        if let Some(found) = stamp("derived_version").filter(|v| *v > DERIVED_VERSION) {
+            return Err(refuse(found, DERIVED_VERSION));
+        }
+    }
+    Ok(())
+}
+
+/// Brings a database to [`SCHEMA_VERSION`].
+pub fn migrate(conn: &mut Connection) -> Result<()> {
+    let mut version = user_version(conn)?;
+    if version == 0 {
+        if !table_exists(conn, "runs")? {
+            return create(conn);
+        }
+        // A database from before migrations. Nothing is written yet: the first step is the
+        // one that moves `user_version`.
+        version = 1;
+    }
+    for step in MIGRATIONS.iter().filter(|m| m.version > version) {
+        apply(conn, step).map_err(|e| match e {
+            // Keep the code visible, so a damaged file is still recognised as one.
+            Error::Sqlite(_) => e,
+            other => Error::other(format!("migration to {} ({}): {other}", step.version, step.name)),
+        })?;
+    }
+    Ok(())
+}
+
+fn apply(conn: &mut Connection, step: &Migration) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Taken after the write lock, so a second process cannot apply the same step.
+    if user_version(&tx)? < step.version {
+        (step.up)(&tx)?;
+        stamp(&tx, step.version)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// A new database goes straight to the current shape, in one transaction, so a crash during
+/// creation leaves an empty file rather than a half-made schema.
+fn create(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch(PROJECT_SCHEMA)?;
+    stamp(&tx, SCHEMA_VERSION)?;
+    set_meta(&tx, "derived_version", &DERIVED_VERSION.to_string())?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn stamp(conn: &Connection, version: i64) -> Result<()> {
+    conn.pragma_update(None, "user_version", version)?;
+    // Still written: a build from before `user_version` reads nothing else.
+    set_meta(conn, "schema_version", &version.to_string())
+}
+
+pub fn user_version(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+pub(crate) fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn
+        .query_row("SELECT 1 FROM sqlite_master WHERE name = ?1", [name], |_| Ok(()))
+        .optional()?
+        .is_some())
+}
+
+/// Version 2.
+///
+/// The indexes dropped here were most of the cost of an entry: `entries_err` and
+/// `entries_time` covered every row to serve the rare error, and a partial index does that
+/// for almost nothing. See [`PROJECT_SCHEMA`] for what replaced them.
+///
+/// It also repairs what older builds could leave behind. A crash between dropping the
+/// derived layer and rebuilding it left empty entries with a current version stamp, and an
+/// old rebuild dropped squashed runs' counters; either way the data to fix it is in
+/// `chunks`, so a rebuild is scheduled.
+fn migrate_to_2(conn: &Connection) -> Result<()> {
+    add_late_columns(conn);
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS entries_err;
+         DROP INDEX IF EXISTS entries_time;
+         DROP INDEX IF EXISTS entries_fp;",
+    )?;
+    conn.execute_batch(PROJECT_SCHEMA)?;
+
+    let needs_rebuild: bool = conn.query_row(
+        "SELECT (EXISTS (SELECT 1 FROM chunks) AND NOT EXISTS (SELECT 1 FROM entries))
+             OR EXISTS (SELECT 1 FROM runs r
+                         WHERE r.squashed_at IS NOT NULL AND r.chunks_evicted = 0
+                           AND NOT EXISTS (SELECT 1 FROM run_counters c WHERE c.run_id = r.id))",
+        [],
+        |r| r.get(0),
+    )?;
+    if needs_rebuild {
+        mark_rebuild(conn)?;
+    }
+    Ok(())
+}
+
+/// Drops whatever of the derived layer is at a stale version, in one transaction with the
+/// record that it needs rebuilding. Returns true while a rebuild is outstanding, including
+/// one a crash interrupted.
+pub fn prepare_derived(conn: &mut Connection) -> Result<bool> {
+    let stored: Option<i64> = get_meta(conn, "derived_version").and_then(|v| v.parse().ok());
+    // The version stamp records intent; the table records reality. They diverge when a
+    // build writes the stamp without changing the shape, and then a correct build sees a
+    // current version over a stale table and rebuilds nothing. Only the shape is
+    // authoritative, so it is checked too.
+    let stale = stored.is_some_and(|v| v != DERIVED_VERSION) || !entries_shape_current(conn);
+    if stale {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(DROP_DERIVED)?;
+        tx.execute_batch(PROJECT_SCHEMA)?;
+        mark_rebuild(&tx)?;
+        set_meta(&tx, "derived_version", &DERIVED_VERSION.to_string())?;
+        tx.commit()?;
+    } else if stored.is_none() {
+        set_meta(conn, "derived_version", &DERIVED_VERSION.to_string())?;
+    }
+    Ok(get_meta(conn, REBUILD_UPTO).is_some())
+}
+
+/// Meta key: the newest run the outstanding rebuild covers. Its presence is what says a
+/// rebuild is outstanding. Runs after it are written by the current parser and left alone.
+pub const REBUILD_UPTO: &str = "derived_rebuild_upto";
+/// Meta key: the last run the outstanding rebuild finished, where a resume picks up.
+pub const REBUILD_AFTER: &str = "derived_rebuild_after";
+
+/// Meta key: this project's row in the central index, as JSON. See
+/// [`Db::stamp_identity`](crate::store::Db::stamp_identity).
+pub const PROJECT_IDENTITY: &str = "project_identity";
+
+fn mark_rebuild(conn: &Connection) -> Result<()> {
+    let upto: i64 = conn.query_row("SELECT COALESCE(max(id), 0) FROM runs", [], |r| r.get(0))?;
+    set_meta(conn, REBUILD_UPTO, &upto.to_string())?;
+    set_meta(conn, REBUILD_AFTER, "0")
+}
+
+/// Columns `entries` must carry for the current code to read it.
+///
+/// Kept beside the open path rather than derived from the DDL: the point is to catch a
+/// table whose DDL was never applied, so reading the expectation out of the database would
+/// defeat it.
+const ENTRIES_COLUMNS: &[&str] = &[
+    "id",
+    "run_id",
+    "start_line",
+    "end_line",
+    "captured_at",
+    "level",
+    "evidence",
+    "is_error",
+    "error_reason",
+    "fingerprint_id",
+    "boundaries",
+];
+
+/// True when `entries` is absent (a fresh database) or has every expected column.
+fn entries_shape_current(conn: &Connection) -> bool {
+    let Ok(mut stmt) = conn.prepare("SELECT name FROM pragma_table_info('entries')") else {
+        return true;
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return true;
+    };
+    let found: std::collections::HashSet<String> = rows.filter_map(|r| r.ok()).collect();
+    // No rows means no table, which `PROJECT_SCHEMA` is about to create correctly.
+    found.is_empty() || ENTRIES_COLUMNS.iter().all(|c| found.contains(*c))
+}
+
+/// Drops the part of the derived layer a rebuild can reproduce, so it can be recreated at
+/// the current shape.
+///
+/// Only that part. `fingerprints`, `run_fingerprints` and `run_counters` are derived too,
+/// but they outlive the bytes: a squashed run's counts describe output no longer stored,
+/// and an evicted run has no bytes left at all. Dropping them erased those runs' signatures
+/// and zeroed their error counts, so a run that failed could read as the last good one.
+/// A rebuild re-derives them for every run whose bytes survive and leaves the rest alone.
+///
+/// Truth — `runs`, `chunks`, `meta` — is untouched, so a rebuild reproduces the index from
+/// the captured bytes. `CREATE TABLE IF NOT EXISTS` cannot add a column to an existing
+/// table, so dropping is what makes a shape change possible at all.
 pub const DROP_DERIVED: &str = r#"
 DROP TABLE IF EXISTS entries;
-DROP TABLE IF EXISTS fingerprints;
-DROP TABLE IF EXISTS run_fingerprints;
-DROP TABLE IF EXISTS run_counters;
 DROP TABLE IF EXISTS entries_fts;
 "#;
 
 /// Columns added to existing tables after their table shipped.
 ///
 /// `CREATE TABLE IF NOT EXISTS` leaves an older database with the older column set, so the
-/// additions have to be applied separately. They carry defaults and hold no truth of their
-/// own — a session cursor is per-session state, rebuilt on demand — so this is not a
-/// migration and does not move [`SCHEMA_VERSION`].
+/// additions have to be applied separately. These predate migrations, which is why version 1
+/// comes in several shapes; [`migrate_to_2`] evens them out. New columns belong in a
+/// migration.
 const LATE_COLUMNS: &[&str] = &[
     "ALTER TABLE session_cursors ADD COLUMN nudge_entry_id INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE session_cursors ADD COLUMN change_blocks_issued INTEGER NOT NULL DEFAULT 0",
@@ -51,7 +273,7 @@ const LATE_COLUMNS: &[&str] = &[
 /// Adding a column that already exists is an error rather than a no-op, so each is attempted
 /// and its rejection ignored — cheaper and harder to get wrong than reading `PRAGMA
 /// table_info` back and diffing it.
-pub fn add_late_columns(conn: &rusqlite::Connection) {
+fn add_late_columns(conn: &rusqlite::Connection) {
     for stmt in LATE_COLUMNS {
         let _ = conn.execute(stmt, []);
     }
@@ -83,7 +305,9 @@ CREATE TABLE IF NOT EXISTS runs (
   delimiter_mode  TEXT    NOT NULL DEFAULT 'fallback',
   chunks_evicted  INTEGER NOT NULL DEFAULT 0,
   n_lines         INTEGER NOT NULL DEFAULT 0,
-  bytes_total     INTEGER NOT NULL DEFAULT 0
+  bytes_total     INTEGER NOT NULL DEFAULT 0,
+  -- When the run's stored output was squashed to its unique entries; null if it never was.
+  squashed_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_started ON runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS runs_session ON runs(session_group, started_at);
@@ -118,10 +342,11 @@ CREATE TABLE IF NOT EXISTS entries (
   fingerprint_id INTEGER REFERENCES fingerprints(id),
   boundaries     TEXT    NOT NULL DEFAULT 'inferred'
 );
+-- Each index on this table is written for every line captured, so there are as few as will
+-- do. Errors are rare, so the index that finds them is partial and costs nearly nothing.
 CREATE INDEX IF NOT EXISTS entries_run_time ON entries(run_id, captured_at);
-CREATE INDEX IF NOT EXISTS entries_fp       ON entries(fingerprint_id, captured_at);
-CREATE INDEX IF NOT EXISTS entries_err      ON entries(run_id, is_error, captured_at);
-CREATE INDEX IF NOT EXISTS entries_time     ON entries(captured_at DESC);
+CREATE INDEX IF NOT EXISTS entries_signature ON entries(fingerprint_id);
+CREATE INDEX IF NOT EXISTS entries_errors   ON entries(captured_at) WHERE is_error = 1;
 
 CREATE TABLE IF NOT EXISTS fingerprints (
   id          INTEGER PRIMARY KEY,
@@ -134,6 +359,7 @@ CREATE TABLE IF NOT EXISTS fingerprints (
   run_count   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS fingerprints_last ON fingerprints(last_seen DESC);
+CREATE INDEX IF NOT EXISTS fingerprints_errors ON fingerprints(id) WHERE level = 'error';
 
 -- Per-run rollup. A few KB per run, so it outlives chunk eviction and keeps
 -- "it worked three weeks ago" answerable long after the bytes are gone.
@@ -373,3 +599,7 @@ is capped at 256 KB; both report truncation rather than silently cutting.
 If a query is rejected the error names the construct that failed, so repair it and retry
 rather than giving up.
 "#;
+
+#[cfg(test)]
+#[path = "migration_tests.rs"]
+mod tests;

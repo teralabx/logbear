@@ -78,6 +78,11 @@ class Theme {
 		this.#apply();
 	}
 
+	/** What Settings shows as selected: the OS, or a fixed theme. */
+	get choice(): ThemeName | 'system' {
+		return this.followingSystem ? 'system' : this.current;
+	}
+
 	get isDark(): boolean {
 		return this.current === 'logbear-dark';
 	}

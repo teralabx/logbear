@@ -40,7 +40,8 @@ pub fn load() -> State {
 fn save(state: &State) -> Result<(), String> {
     let _ = paths::ensure_home();
     let body = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    std::fs::write(file(), body + "\n").map_err(|e| format!("{}: {e}", file().display()))
+    paths::write_private(&file(), (body + "\n").as_bytes())
+        .map_err(|e| format!("{}: {e}", file().display()))
 }
 
 /// `logbear updates [on|off|check]`.

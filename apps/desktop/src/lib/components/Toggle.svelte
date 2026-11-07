@@ -45,6 +45,6 @@
 			{disabled}
 			onclick={flip}>{label}</button
 		>
-		{#if hint}<p class="meta mt-0.5 max-w-[60ch] text-[11px] leading-[1.5]">{hint}</p>{/if}
+		{#if hint}<p class="meta mt-0.5 max-w-[60ch] text-[12px] leading-[1.5]">{hint}</p>{/if}
 	</div>
 </div>
