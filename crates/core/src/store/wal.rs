@@ -9,8 +9,11 @@
 //! once every frame is backfilled, and frames keep arriving while the checkpoint runs, so
 //! the file would grow for as long as the writer does. Two things stop that:
 //!
-//! * Each pass ends by taking the writer's mutex for a moment and restarting the log. The
-//!   passive passes before it have done nearly all the work, so the stall is short.
+//! * Each pass ends by asking the writer to restart the log, which it does on its next
+//!   commit. The passive passes before it have done nearly all the work, so the stall is
+//!   short. The writer does it, rather than the thread taking the writer's mutex, because
+//!   `std`'s mutex is not fair on Linux: a writer that commits back to back takes the lock
+//!   straight back every time, and the thread waited there for as long as the writes went on.
 //! * Past [`WAL_HARD_PAGES`] the writer stops and checkpoints for itself. That is the
 //!   backstop for a reader pinning the log, and it is a stall by design: an unbounded WAL
 //!   is worse, since it would count against retention and eat the disk.
@@ -20,7 +23,8 @@ use rusqlite::hooks::Wal;
 use std::cell::Cell;
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::time::Duration;
 
 /// Log size at which the background thread is woken: 32 MB at the 4 KB page size.
@@ -30,8 +34,8 @@ pub const WAL_HARD_PAGES: i32 = 32 * 1024;
 /// What a reset log may keep on disk.
 pub const JOURNAL_SIZE_LIMIT: i64 = 32 * 1024 * 1024;
 
-/// How long the restart at the end of a pass may wait for readers, with the writer stopped.
-const RESTART_BUSY_MS: i64 = 100;
+/// How long the writer's restart after a pass may wait for readers.
+const RESTART_WAIT: Duration = Duration::from_millis(100);
 /// Frames still unbackfilled at which it is worth stopping the writer to finish the job.
 const RESTART_WHEN_BEHIND_PAGES: i64 = 512;
 const MAX_PASSIVE_PASSES: usize = 4;
@@ -83,6 +87,15 @@ struct Shared {
     path: PathBuf,
     state: Mutex<State>,
     wake: Condvar,
+    /// Held by whoever is checkpointing. SQLite runs one checkpoint at a time and turns a
+    /// second away at once with busy, without waiting, so the writer and the thread take
+    /// turns here rather than failing each other.
+    checkpointing: Mutex<()>,
+    /// Set when a pass has backfilled the log, so the writer's next commit restarts it. No
+    /// new pass starts until the writer has.
+    restart_ready: AtomicBool,
+    /// Passes finished, for tests.
+    passes: AtomicUsize,
 }
 
 /// One per open project database, shared by every clone of its [`Db`](super::Db).
@@ -98,16 +111,36 @@ impl Checkpointer {
                 path: path.to_path_buf(),
                 state: Mutex::new(State::default()),
                 wake: Condvar::new(),
+                checkpointing: Mutex::new(()),
+                restart_ready: AtomicBool::new(false),
+                passes: AtomicUsize::new(0),
             }),
             next_blocking_at: Mutex::new(0),
         }
     }
 
     /// Called after every write with the writer's mutex held.
-    pub fn after_write(&self, conn: &Connection, writer: &Arc<Mutex<Connection>>) {
+    pub fn after_write(&self, conn: &Connection) {
         let pages = take_pages();
+        if self.shared.restart_ready.load(Ordering::Acquire) {
+            // Never waits: a pass that is still running gets the next commit instead.
+            let held = match self.shared.checkpointing.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            };
+            if let Some(_held) = held {
+                self.shared.restart_ready.store(false, Ordering::Release);
+                // A restart reuses the file rather than shrinking it, so past the hard limit
+                // the truncate below still runs. Below it, the log now starts over and the
+                // length noted before no longer applies.
+                if restart(conn) && pages < WAL_HARD_PAGES {
+                    return;
+                }
+            }
+        }
         if pages >= WAL_SOFT_PAGES {
-            self.request(Arc::downgrade(writer));
+            self.request();
         }
         if pages >= WAL_HARD_PAGES {
             self.checkpoint_blocking(conn);
@@ -127,12 +160,17 @@ impl Checkpointer {
         drop(next);
         // Best effort, and brief: capture is stopped for as long as this waits. A reader that
         // outlasts it leaves the log as it is, and the next attempt comes round in a second.
+        let _held = self
+            .shared
+            .checkpointing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let _ = conn.busy_timeout(BLOCKING_WAIT);
         let _ = checkpoint(conn, "TRUNCATE");
         let _ = conn.busy_timeout(crate::store::BUSY_TIMEOUT);
     }
 
-    fn request(&self, writer: Weak<Mutex<Connection>>) {
+    fn request(&self) {
         let mut state = self.shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.wanted = true;
         if state.running {
@@ -143,7 +181,7 @@ impl Checkpointer {
         let shared = self.shared.clone();
         let spawned = std::thread::Builder::new()
             .name("logbear-checkpoint".into())
-            .spawn(move || run(shared, writer));
+            .spawn(move || run(shared));
         // Out of threads: the hard limit still bounds the log.
         if spawned.is_err() {
             state.running = false;
@@ -159,7 +197,7 @@ impl Drop for Checkpointer {
     }
 }
 
-fn run(shared: Arc<Shared>, writer: Weak<Mutex<Connection>>) {
+fn run(shared: Arc<Shared>) {
     let Ok(conn) = open(&shared.path) else {
         shared.state.lock().unwrap_or_else(PoisonError::into_inner).running = false;
         return;
@@ -183,7 +221,7 @@ fn run(shared: Arc<Shared>, writer: Weak<Mutex<Connection>>) {
             }
             state.wanted = false;
         }
-        pass(&conn, &writer);
+        pass(&conn, &shared);
     }
 }
 
@@ -193,27 +231,43 @@ fn open(path: &Path) -> rusqlite::Result<Connection> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.execute_batch(&format!(
-        "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = {RESTART_BUSY_MS};"
+        "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = {};",
+        RESTART_WAIT.as_millis()
     ))?;
     Ok(conn)
 }
 
-/// Backfills without stopping anyone, then restarts the log in the quiet moment that buys.
-fn pass(conn: &Connection, writer: &Weak<Mutex<Connection>>) {
-    for _ in 0..MAX_PASSIVE_PASSES {
-        match checkpoint(conn, "PASSIVE") {
-            Ok(c) if c.log_pages - c.backfilled_pages <= RESTART_WHEN_BEHIND_PAGES => break,
-            Ok(_) => {}
-            Err(_) => return,
+/// Backfills without stopping anyone, then hands the restart to the writer.
+///
+/// Never takes the writer's mutex. See the module docs for why.
+fn pass(conn: &Connection, shared: &Shared) {
+    // The writer has not restarted since the last pass. It will on its next commit, and
+    // another pass now would only take the checkpoint from under it.
+    if shared.restart_ready.load(Ordering::Acquire) {
+        return;
+    }
+    {
+        let _held = shared.checkpointing.lock().unwrap_or_else(PoisonError::into_inner);
+        for _ in 0..MAX_PASSIVE_PASSES {
+            match checkpoint(conn, "PASSIVE") {
+                Ok(c) if c.log_pages - c.backfilled_pages <= RESTART_WHEN_BEHIND_PAGES => break,
+                Ok(_) => {}
+                Err(_) => return,
+            }
         }
     }
-    let Some(writer) = writer.upgrade() else {
-        return;
-    };
-    // Held so no frame arrives while the log restarts. A reader still on the log fails this
-    // with busy; the next pass tries again.
-    let _quiet = writer.lock().unwrap_or_else(PoisonError::into_inner);
-    let _ = checkpoint(conn, "RESTART");
+    shared.restart_ready.store(true, Ordering::Release);
+    shared.passes.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Restarts the log from the writer, which holds its own mutex, so no frame arrives while it
+/// runs. Only the frames committed since the last pass are left to backfill. A reader still
+/// on the log fails this with busy, and the next pass asks again. Whether it restarted.
+fn restart(conn: &Connection) -> bool {
+    let _ = conn.busy_timeout(RESTART_WAIT);
+    let done = matches!(checkpoint(conn, "RESTART"), Ok(c) if !c.busy);
+    let _ = conn.busy_timeout(crate::store::BUSY_TIMEOUT);
+    done
 }
 
 /// What a checkpoint managed.
@@ -272,6 +326,31 @@ mod tests {
         assert!(
             peak <= (WAL_HARD_PAGES as u64 + 2048) * 4096,
             "400 MB written and the log reached {peak} bytes"
+        );
+    }
+
+    /// The Linux failure, forced on every platform: the writer never lets go of its mutex,
+    /// as a writer committing back to back on an unfair lock never effectively does. The
+    /// checkpoint thread used to wait on that mutex, so it finished nothing and the log grew
+    /// to twice the hard limit. It must get its work done without the lock.
+    #[test]
+    fn the_log_is_restarted_while_the_writer_never_lets_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Db::open(&tmp.path().join("p.db"), 1).unwrap();
+        let conn = db.writer();
+        conn.execute_batch("CREATE TABLE t(x BLOB);").unwrap();
+        let blob = vec![7u8; 2 * 1024 * 1024];
+        let mut peak = 0;
+        for _ in 0..200 {
+            conn.execute("INSERT INTO t VALUES (?1)", [&blob]).unwrap();
+            db.checkpointer.after_write(&conn);
+            peak = peak.max(wal_len(db.path()));
+        }
+        let passes = db.checkpointer.shared.passes.load(Ordering::Relaxed);
+        assert!(passes > 0, "the checkpoint thread finished no pass while the writer held its lock");
+        assert!(
+            peak <= (WAL_HARD_PAGES as u64 + 2048) * 4096,
+            "400 MB written with the writer's lock held and the log reached {peak} bytes"
         );
     }
 

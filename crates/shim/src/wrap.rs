@@ -245,7 +245,7 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
             &mut slave,
             std::ptr::null_mut(),
             settings_ptr,
-            &mut size,
+            &raw mut size,
         )
     };
     if rc != 0 {

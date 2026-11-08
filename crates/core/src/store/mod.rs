@@ -102,7 +102,7 @@ impl Db {
     pub fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let conn = self.writer();
         let out = f(&conn);
-        self.checkpointer.after_write(&conn, &self.conn);
+        self.checkpointer.after_write(&conn);
         out
     }
 
@@ -136,7 +136,7 @@ impl Db {
     pub fn with_mut<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         let mut conn = self.writer();
         let out = f(&mut conn);
-        self.checkpointer.after_write(&conn, &self.conn);
+        self.checkpointer.after_write(&conn);
         out
     }
 
