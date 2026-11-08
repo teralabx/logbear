@@ -112,20 +112,37 @@ fn bounded(mut cmd: Command, stdin: Option<&[u8]>) -> Finished {
 /// `sh -c <script>` with `$LOGBEAR` naming the binary, for the shapes that need a shell to
 /// build a pipeline around it.
 fn shell(dir: &Path, script: &str) -> Finished {
-    let exe = logbear(dir).get_program().to_owned();
-    let mut cmd = logbear(dir);
-    let envs: Vec<_> = cmd
-        .get_envs()
-        .map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned())))
-        .collect();
-    cmd = Command::new("/bin/sh");
-    for (k, v) in envs {
-        if let Some(v) = v {
-            cmd.env(k, v);
+    // The shell runs the binary, not this process, so a busy binary is retried whole.
+    retrying_busy(|| {
+        let exe = logbear(dir).get_program().to_owned();
+        let envs: Vec<_> = logbear(dir)
+            .get_envs()
+            .map(|(k, v)| (k.to_owned(), v.map(|v| v.to_owned())))
+            .collect();
+        let mut cmd = Command::new("/bin/sh");
+        for (k, v) in envs {
+            if let Some(v) = v {
+                cmd.env(k, v);
+            }
         }
+        cmd.env("LOGBEAR", exe).args(["-c", script]);
+        bounded(cmd, None)
+    })
+}
+
+/// Runs `run` again while what it ran reports a program busy.
+///
+/// For when the program that hits `ETXTBSY`, for the reason given at [`logbear`], is not
+/// this process but a shell or the binary under test, so [`spawn`] cannot retry it.
+fn retrying_busy(run: impl Fn() -> Finished) -> Finished {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let done = run();
+        if !String::from_utf8_lossy(&done.stderr).contains("Text file busy") || Instant::now() > deadline {
+            return done;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    cmd.env("LOGBEAR", exe).args(["-c", script]);
-    bounded(cmd, None)
 }
 
 fn spools(dir: &Path) -> Vec<PathBuf> {
@@ -298,19 +315,23 @@ fn a_wedged_daemon_cannot_stop_the_child_starting() {
 
 #[test]
 fn a_private_session_inside_a_wrapper_is_not_captured() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    // A stand-in `docker` that prints its arguments. Linked rather than written as a script:
-    // a file just written can fail to run with `ETXTBSY` on Linux, for the reason given at
-    // [`logbear`], and here it is the binary under test that runs it, so there is nothing to
-    // retry.
     let docker = dir.path().join("docker");
-    std::os::unix::fs::symlink("/bin/echo", &docker).unwrap();
+    std::fs::write(&docker, "#!/bin/sh\necho session-output\n").unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let mut cmd = logbear(dir.path());
-    cmd.arg(&docker).args(["exec", "-it", "db", "psql"]);
-    let done = bounded(cmd, None);
+    // A script just written can fail to run with `ETXTBSY` on Linux, and here it is the
+    // binary under test that runs it. Not a symlink to `echo` instead: uutils, Ubuntu's
+    // coreutils from 25.10, is one binary that picks its tool by name, and called `docker`
+    // it is not `echo`.
+    let done = retrying_busy(|| {
+        let mut cmd = logbear(dir.path());
+        cmd.arg(&docker).args(["exec", "-it", "db", "psql"]);
+        bounded(cmd, None)
+    });
 
-    assert_eq!(done.stdout, b"exec -it db psql\n");
+    assert_eq!(done.stdout, b"session-output\n", "{}", String::from_utf8_lossy(&done.stderr));
     assert!(spools(dir.path()).is_empty(), "a database session was recorded");
 }
 
