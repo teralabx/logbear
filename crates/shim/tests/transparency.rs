@@ -20,7 +20,15 @@ const BOUND: Duration = Duration::from_secs(10);
 fn logbear(dir: &Path) -> Command {
     let exe = dir.join("logbear");
     if !exe.exists() {
-        std::fs::copy(env!("CARGO_BIN_EXE_logbear"), &exe).expect("copy the binary");
+        // Linked rather than copied where the filesystem allows it. A copy is open for
+        // writing while it is made, and on Linux a test forking at that moment hands the
+        // open file to its child, so running the copy, from here or from a shell a test
+        // starts, fails with `ETXTBSY` until that child execs. A link is never open for
+        // writing.
+        let built = env!("CARGO_BIN_EXE_logbear");
+        if std::fs::hard_link(built, &exe).is_err() {
+            std::fs::copy(built, &exe).expect("copy the binary");
+        }
     }
     let mut cmd = Command::new(&exe);
     cmd.env("LOGBEAR_HOME", dir);
@@ -28,6 +36,22 @@ fn logbear(dir: &Path) -> Command {
     cmd.env("PATH", "/usr/bin:/bin");
     cmd.env("LOGBEAR_DAEMON", dir.join("no-such-logbeard"));
     cmd
+}
+
+/// Spawns, retrying while Linux reports the binary busy.
+///
+/// For when [`logbear`] had to copy the binary, across filesystems: see there. The window is
+/// the fork to exec of an unrelated process, so a brief retry gets past it.
+fn spawn(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => return other,
+        }
+    }
 }
 
 struct Finished {
@@ -47,7 +71,7 @@ fn bounded(mut cmd: Command, stdin: Option<&[u8]>) -> Finished {
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.process_group(0);
-    let mut child = cmd.spawn().expect("spawn");
+    let mut child = spawn(&mut cmd).expect("spawn");
     if let Some(bytes) = stdin {
         let mut input = child.stdin.take().unwrap();
         let bytes = bytes.to_vec();
@@ -274,17 +298,19 @@ fn a_wedged_daemon_cannot_stop_the_child_starting() {
 
 #[test]
 fn a_private_session_inside_a_wrapper_is_not_captured() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
+    // A stand-in `docker` that prints its arguments. Linked rather than written as a script:
+    // a file just written can fail to run with `ETXTBSY` on Linux, for the reason given at
+    // [`logbear`], and here it is the binary under test that runs it, so there is nothing to
+    // retry.
     let docker = dir.path().join("docker");
-    std::fs::write(&docker, "#!/bin/sh\necho session-output\n").unwrap();
-    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("/bin/echo", &docker).unwrap();
 
     let mut cmd = logbear(dir.path());
     cmd.arg(&docker).args(["exec", "-it", "db", "psql"]);
     let done = bounded(cmd, None);
 
-    assert_eq!(done.stdout, b"session-output\n");
+    assert_eq!(done.stdout, b"exec -it db psql\n");
     assert!(spools(dir.path()).is_empty(), "a database session was recorded");
 }
 
@@ -316,7 +342,7 @@ fn terminal() -> Terminal {
     let (mut m, mut s) = (0, 0);
     let mut ws = libc::winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
     let rc = unsafe {
-        libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws)
+        libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws)
     };
     assert_eq!(rc, 0);
     unsafe {
@@ -347,7 +373,7 @@ fn on_terminal(cmd: &mut Command, term: &Terminal, streams: [bool; 3]) -> std::p
             Ok(())
         });
     }
-    cmd.spawn().expect("spawn on a terminal")
+    spawn(cmd).expect("spawn on a terminal")
 }
 
 /// Reads the terminal until `want` appears.

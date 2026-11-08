@@ -622,6 +622,7 @@ fn service_body() -> Result<String, String> {
     if !exe.exists() {
         return Err(format!("logbeard is missing from {}", bin_dir().display()));
     }
+    #[cfg(target_os = "macos")]
     let log = logbear_core::paths::daemon_log();
 
     // `Adaptive` rather than `Background`: the daemon idles most of the time but the app

@@ -52,6 +52,29 @@ jobs:
       # These spawn the real binary under a PTY, so they are ignored by default.
       - run: cargo test -p logbear -- --ignored
 
+  linux:
+    name: Rust on Linux
+    # Linux is not supported yet, but everything but the desktop app builds there, and
+    # behaviour can differ: `std`'s mutex is unfair on Linux, which once starved the WAL
+    # checkpoint thread and let the log grow past its limit (`crates/core/src/store/wal.rs`).
+    # The desktop app is left out because it needs WebKitGTK, and the PTY tests because the
+    # paths they exercise are macOS-only.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+
+      - run: cargo clippy --workspace --exclude logbear-desktop --all-targets -- -D warnings
+
+      - run: cargo test --workspace --exclude logbear-desktop
+
   msrv:
     name: Minimum Rust version
     runs-on: macos-latest
