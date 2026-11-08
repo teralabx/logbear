@@ -158,17 +158,26 @@ fn a_replaced_daemon_exits_for_its_successor() {
     let exe = dir.path().join("logbeard");
     std::fs::copy(env!("CARGO_BIN_EXE_logbeard"), &exe).unwrap();
 
-    let mut daemon = Daemon(
-        Command::new(&exe)
-            .arg("serve")
-            .env("LOGBEAR_HOME", &home)
-            .env_remove("LOGBEAR_SOCKET")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("logbeard should start"),
-    );
+    let mut cmd = Command::new(&exe);
+    cmd.arg("serve")
+        .env("LOGBEAR_HOME", &home)
+        .env_remove("LOGBEAR_SOCKET")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // A file copied a moment ago can fail to run with `ETXTBSY` on Linux: another test that
+    // forks while the copy is open for writing hands it to its child until that child execs.
+    // The window is short, so a brief retry gets past it. macOS has no such error.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let child = loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            other => break other.expect("logbeard should start"),
+        }
+    };
+    let mut daemon = Daemon(child);
     wait_until_serving(&home.join("logbeard.sock"));
 
     // install.sh's way: remove, then copy a new file to the same path.
