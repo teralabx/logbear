@@ -28,6 +28,8 @@ perl -pi -e 's/^version = ".*"/version = "'"$version"'"/ if !$done && /^version 
 perl -pi -e 's/^(logbear-(?:core|setup) = \{.*version = ")[^"]*/${1}'"$version"'/' Cargo.toml
 perl -pi -e 's/^(  "version": ")[^"]*/${1}'"$version"'/' \
   apps/desktop/src-tauri/tauri.conf.json apps/desktop/package.json
+# The MCP Registry entry: the server's own version and its crates.io package's.
+perl -pi -e 's/^((?:  |      )"version": ")[^"]*/${1}'"$version"'/' server.json
 cargo metadata --format-version 1 >/dev/null # rewrites Cargo.lock's own entries
 
 # Skipped for a pre-release, whose notes stay under Unreleased for the real one.

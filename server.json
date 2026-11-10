@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.teralabx/logbear",
+  "title": "LogBear",
+  "description": "Local dev server logs for coding agents: errors, runs and diffs as read-only SQL.",
+  "repository": {
+    "url": "https://github.com/teralabx/logbear",
+    "source": "github"
+  },
+  "version": "0.1.3",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "logbear-mcp",
+      "version": "0.1.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
