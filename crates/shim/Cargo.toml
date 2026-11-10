@@ -9,7 +9,7 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Wrap a command, capture everything it emits, and push errors at your agent"
+description = "Local dev server logs for agents: wrap a command, capture everything it emits, and push errors at your agent"
 
 [[bin]]
 name = "logbear"

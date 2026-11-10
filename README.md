@@ -2,7 +2,7 @@
   <img src="docs/assets/logbear.svg" alt="The LogBear mascot" width="96" height="96">
 </p>
 
-# LogBear
+# LogBear — local dev server logs for agents
 
 [![CI](https://github.com/teralabx/logbear/actions/workflows/ci.yml/badge.svg)](https://github.com/teralabx/logbear/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/logbear.svg)](https://crates.io/crates/logbear)
@@ -11,8 +11,9 @@
 
 **Your coding agent can't see your dev server crash.**
 
-LogBear wraps a development process, records everything it emits, and tells your coding
-agent the moment something breaks.
+LogBear gives coding agents — Claude Code, Codex, pi and Hermes — your local dev server
+logs. It wraps a development process, records everything it emits, and tells your agent
+the moment something breaks.
 
 ```
 logbear mix phx.server
