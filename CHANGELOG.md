@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `cargo install logbear logbeard logbear-mcp logbear-hook`, as the README describes, now
+  works. Releases publish the crates to crates.io; until now none of them were there.
+
 ## [0.1.2] — 2026-11-08
 
 ### Fixed
