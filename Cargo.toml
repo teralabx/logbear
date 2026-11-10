@@ -18,7 +18,7 @@ license = "MIT"
 repository = "https://github.com/teralabx/logbear"
 homepage = "https://logbear.sh"
 readme = "README.md"
-keywords = ["logging", "observability", "mcp", "cli", "developer-tools"]
+keywords = ["logging", "dev-server", "ai-agents", "mcp", "developer-tools"]
 categories = ["command-line-utilities", "development-tools", "development-tools::debugging"]
 
 [workspace.dependencies]
