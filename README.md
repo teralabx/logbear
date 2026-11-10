@@ -325,6 +325,9 @@ Agent SQL runs behind five independent layers: a read-only connection with
 loading, a five-second interrupt timer, row and byte caps that report truncation, and one
 project database per connection so a query cannot reach anything else on disk.
 
+The server is `logbear-mcp`, listed in the official MCP Registry as
+mcp-name: io.github.teralabx/logbear
+
 ### Loop safety
 
 A `Stop` hook that blocks unconditionally traps an agent forever. Three guards:
