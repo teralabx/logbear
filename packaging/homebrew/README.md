@@ -26,11 +26,21 @@ gh secret set HOMEBREW_TAP_DEPLOY_KEY --repo teralabx/logbear < tap_key
 rm tap_key tap_key.pub
 ```
 
-## Publishing to crates.io
+## One-time crates.io setup
 
-Order matters. `cargo publish` resolves against the real index, so each crate's
-dependencies have to exist there first: everything depends on `logbear-core`, and
-`logbear` (the CLI) and the desktop app also depend on `logbear-setup`:
+Releases publish the six crates with a crates.io API token. Create one at
+<https://crates.io/settings/tokens> with the `publish-new` and `publish-update` scopes,
+limited to the crate pattern `logbear*`, then store it:
+
+```sh
+gh secret set CARGO_REGISTRY_TOKEN --repo teralabx/logbear
+```
+
+Order matters, and the release job handles it. `cargo publish` resolves against the real
+index, so each crate's dependencies have to exist there first: everything depends on
+`logbear-core`, and `logbear` (the CLI) and the desktop app also depend on `logbear-setup`.
+To publish by hand, for example a version tagged before the job existed, check out its tag
+and run the same order:
 
 ```sh
 cargo publish -p logbear-core
@@ -53,7 +63,7 @@ git push origin master v0.2.0
 section into this release, commits, and tags. It pushes nothing, so the last line above is
 the point of no return.
 
-The tag runs [`release.yml`](../../.github/workflows/release.yml), which has three stages:
+The tag runs [`release.yml`](../../.github/workflows/release.yml), which has four stages:
 
 1. **Build:** checks the tag against the workspace version, runs the tests, and builds the
    four binaries for both macOS architectures.
@@ -61,12 +71,15 @@ The tag runs [`release.yml`](../../.github/workflows/release.yml), which has thr
    from the changelog.
 3. **Homebrew:** renders the formula with those hashes, pushes it to the tap, then installs
    it from the tap on a clean runner and runs `brew test`.
+4. **crates.io:** publishes the six crates in dependency order, after the GitHub release
+   exists, so `cargo install` gets the same version.
 
 A tag with a suffix, like `v0.2.0-rc.1`, is published as a pre-release and stops before the
-Homebrew stage. Neither the tap nor `logbear upgrade` will offer it.
+Homebrew and crates.io stages. Neither the tap, crates.io nor `logbear upgrade` will offer it.
 
 If the Homebrew stage fails, the release is already public and only `brew` users are behind.
-Fix the cause and use **Re-run failed jobs**; it reads the hashes back from the release.
+Fix the cause and use **Re-run failed jobs**; it reads the hashes back from the release. The
+crates.io stage re-runs the same way and skips any crate this version already has there.
 
 To try a formula without releasing, render it against any archive:
 
